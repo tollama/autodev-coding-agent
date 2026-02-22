@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic
+pytest
+ruff
+mypy
+pip-audit
+bandit
+
