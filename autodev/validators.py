@@ -36,7 +36,11 @@ class Validators:
             r = self.k.run(self.k.module_cmd(py, "bandit", "-q", "-r", "src"))
         elif name == "semgrep":
             # local rules only; fail if findings
-            r = self.k.run(["semgrep", "--config", ".semgrep.yml", "--error"])
+            import os
+            semgrep_bin = os.path.join(os.path.dirname(py), "semgrep")
+            if os.name == "nt":
+                semgrep_bin += ".exe"
+            r = self.k.run([semgrep_bin, "--config", ".semgrep.yml", "--error"])
         elif name == "sbom":
             r = self.k.run(self.k.script_cmd(py, "scripts/generate_sbom.py"))
         elif name == "docker_build":

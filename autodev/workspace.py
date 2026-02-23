@@ -30,6 +30,8 @@ class Workspace:
                 shutil.copy2(src, dst)
 
     def _abs(self, rel_path: str) -> str:
+        # strip leading slash so os.path.join treats it strictly as relative
+        rel_path = rel_path.lstrip("/\\")
         abs_path = os.path.abspath(os.path.join(self.root, rel_path))
         try:
             common = os.path.commonpath([self.root, abs_path])

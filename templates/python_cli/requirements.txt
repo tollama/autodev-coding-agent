@@ -4,4 +4,3 @@ ruff
 mypy
 pip-audit
 bandit
-semgrep

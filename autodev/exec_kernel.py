@@ -42,9 +42,9 @@ class ExecKernel:
         if cmd[0] == "docker":
             return len(cmd) >= 2 and cmd[1] in {"version", "build"}
 
-        if cmd[0] == "semgrep":
+        if cmd[0] == "semgrep" or cmd[0].endswith("/semgrep") or cmd[0].endswith("\\semgrep") or cmd[0].endswith("semgrep.exe"):
             # allow local semgrep with local config only
-            return cmd == ["semgrep", "--config", ".semgrep.yml", "--error"]
+            return cmd[1:] == ["--config", ".semgrep.yml", "--error"]
 
         if not self._is_python(cmd[0]):
             return False
@@ -70,12 +70,16 @@ class ExecKernel:
     def run(self, cmd: List[str]) -> CmdResult:
         if not self._allowed(cmd):
             raise RuntimeError(f"Command not allowed: {cmd}")
-        p = subprocess.run(
-            cmd,
-            cwd=self.cwd,
-            capture_output=True,
-            text=True,
-            timeout=self.timeout,
-            check=False,
-        )
-        return CmdResult(cmd=cmd, returncode=p.returncode, stdout=p.stdout, stderr=p.stderr)
+        try:
+            p = subprocess.run(
+                cmd,
+                cwd=self.cwd,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                check=False,
+            )
+            return CmdResult(cmd=cmd, returncode=p.returncode, stdout=p.stdout, stderr=p.stderr)
+        except Exception as e:
+            # e.g. FileNotFoundError, subprocess errors
+            return CmdResult(cmd=cmd, returncode=127, stdout="", stderr=str(e))

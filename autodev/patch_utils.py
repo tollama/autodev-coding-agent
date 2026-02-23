@@ -53,9 +53,22 @@ def parse_unified_diff(diff_text: str) -> List[Hunk]:
     return hunks
 
 def apply_unified_diff(original: str, diff_text: str) -> str:
-    orig_lines = original.splitlines(keepends=True)
-    hunks = parse_unified_diff(diff_text)
+    # clean markdown blocks if any
+    if diff_text.strip().startswith('```'):
+        lines = diff_text.strip().splitlines()
+        if lines[0].startswith('```'): lines = lines[1:]
+        if lines and lines[-1].startswith('```'): lines = lines[:-1]
+        diff_text = '\n'.join(lines) + '\n'
 
+    try:
+        hunks = parse_unified_diff(diff_text)
+    except ValueError as e:
+        if str(e) == 'No hunks found in diff':
+            # fallback: treat as full rewrite
+            return diff_text
+        raise e
+
+    orig_lines = original.splitlines(keepends=True)
     out: List[str] = []
     orig_idx = 0  # 0-based index into orig_lines
 
