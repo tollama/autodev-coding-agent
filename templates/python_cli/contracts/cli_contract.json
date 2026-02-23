@@ -1,0 +1,6 @@
+{
+  "title": "AutoDev CLI Contract",
+  "args": [
+    {"flag": "--hello", "required": false}
+  ]
+}

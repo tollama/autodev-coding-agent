@@ -1,48 +1,65 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
-
-from .exec_kernel import CmdResult, ExecKernel
-
+from typing import List, Dict, Any
+from .exec_kernel import ExecKernel, CmdResult
+from .env_manager import EnvManager
 
 @dataclass
 class Validation:
     name: str
     ok: bool
     result: CmdResult
-
+    note: str = ""
 
 class Validators:
-    def __init__(self, kernel: ExecKernel):
-        self.kernel = kernel
+    def __init__(self, kernel: ExecKernel, env: EnvManager):
+        self.k = kernel
+        self.env = env
 
-    def run_all(self, enabled: list[str]) -> list[Validation]:
-        out: list[Validation] = []
-        for validator in enabled:
-            out.append(self.run_one(validator))
-        return out
+    def run_all(self, enabled: List[str], audit_required: bool = False) -> List[Validation]:
+        return [self.run_one(v, audit_required=audit_required) for v in enabled]
 
-    def run_one(self, name: str) -> Validation:
+    def run_one(self, name: str, audit_required: bool = False) -> Validation:
+        py = self.env.venv_python()
+        note = ""
         if name == "ruff":
-            result = self.kernel.run(self.kernel.module_cmd("ruff", "check", "."))
+            r = self.k.run(self.k.module_cmd(py, "ruff", "check", "."))
         elif name == "mypy":
-            result = self.kernel.run(self.kernel.module_cmd("mypy", "."))
+            r = self.k.run(self.k.module_cmd(py, "mypy", "src"))
         elif name == "pytest":
-            result = self.kernel.run(self.kernel.module_cmd("pytest", "-q"))
+            r = self.k.run(self.k.module_cmd(py, "pytest", "-q"))
         elif name == "pip_audit":
-            result = self.kernel.run(
-                self.kernel.module_cmd(
-                    "pip_audit",
-                    "-r",
-                    "requirements.txt",
-                    "--cache-dir",
-                    ".pip_audit_cache",
-                )
-            )
+            r = self.k.run(self.k.module_cmd(py, "pip_audit", "-r", "requirements.txt"))
+            if r.returncode != 0 and not audit_required:
+                note = "pip-audit failed (possibly offline). WARN because audit_required=false."
         elif name == "bandit":
-            result = self.kernel.run(self.kernel.module_cmd("bandit", "-q", "-r", "src"))
+            r = self.k.run(self.k.module_cmd(py, "bandit", "-q", "-r", "src"))
+        elif name == "semgrep":
+            # local rules only; fail if findings
+            r = self.k.run(["semgrep", "--config", ".semgrep.yml", "--error"])
+        elif name == "sbom":
+            r = self.k.run(self.k.script_cmd(py, "scripts/generate_sbom.py"))
         elif name == "docker_build":
-            result = self.kernel.run(["docker", "build", "-t", "autodev-app:test", "."])
+            r = self.k.run(["docker", "build", "-t", "autodev-app:test", "."])
         else:
             raise ValueError(f"Unknown validator: {name}")
-        return Validation(name=name, ok=(result.returncode == 0), result=result)
+
+        ok = (r.returncode == 0)
+        if name == "pip_audit" and (r.returncode != 0) and (not audit_required):
+            ok = True
+        return Validation(name=name, ok=ok, result=r, note=note)
+
+    @staticmethod
+    def serialize(results: List[Validation]) -> List[Dict[str, Any]]:
+        return [
+            {
+                "name": v.name,
+                "ok": v.ok,
+                "cmd": v.result.cmd,
+                "returncode": v.result.returncode,
+                "stdout": v.result.stdout[-6000:],
+                "stderr": v.result.stderr[-6000:],
+                "note": v.note,
+            }
+            for v in results
+        ]

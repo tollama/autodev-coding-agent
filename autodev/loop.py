@@ -1,139 +1,197 @@
 from __future__ import annotations
-
-import json
-from typing import Any
-
+import os
+from typing import Any, Dict, List, Tuple
 from jsonschema import validate
 
-from .exec_kernel import ExecKernel
 from .llm_client import LLMClient
-from .prd_parser import PRDStruct
+from .json_utils import strict_json_loads, json_dumps
 from .roles import prompts
-from .schemas import ROLE_SCHEMA
+from .schemas import PRD_SCHEMA, PLAN_SCHEMA, CHANGESET_SCHEMA
+from .workspace import Workspace, Change
+from .exec_kernel import ExecKernel
+from .env_manager import EnvManager
 from .validators import Validators
-from .workspace import FileWrite, Workspace
 
+def _msg(system: str, user: str):
+    return [{"role":"system","content":system},{"role":"user","content":user}]
 
-def _json_load(text: str) -> dict[str, Any]:
-    text = text.strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            return json.loads(text[start : end + 1])
-        raise
+async def _llm_json(client: LLMClient, system: str, user: str, schema: Dict[str, Any], max_repair: int = 2) -> Dict[str, Any]:
+    raw = await client.chat(_msg(system, user), temperature=0.2)
+    for _ in range(max_repair + 1):
+        try:
+            data = strict_json_loads(raw)
+            validate(instance=data, schema=schema)
+            return data
+        except Exception as e:
+            repair_user = f"""Your previous output did not match the required JSON schema.
+Error: {e}
 
+Return ONLY a corrected JSON object that matches the schema.
+Do not include markdown fences or additional text.
+"""
+            raw = await client.chat(_msg(system, repair_user), temperature=0.2)
+    data = strict_json_loads(raw)
+    validate(instance=data, schema=schema)
+    return data
 
-def _messages(system: str, user: str) -> list[dict[str, str]]:
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
+def _toposort(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    by_id = {t["id"]: t for t in tasks}
+    indeg = {t["id"]: 0 for t in tasks}
+    graph = {t["id"]: [] for t in tasks}
+    for t in tasks:
+        for dep in t["depends_on"]:
+            if dep in graph:
+                graph[dep].append(t["id"])
+                indeg[t["id"]] += 1
+    q = [tid for tid, d in indeg.items() if d == 0]
+    out = []
+    while q:
+        tid = q.pop(0)
+        out.append(by_id[tid])
+        for nxt in graph[tid]:
+            indeg[nxt] -= 1
+            if indeg[nxt] == 0:
+                q.append(nxt)
+    return out if len(out) == len(tasks) else tasks
 
-
-async def run_enterprise_autodev(
+async def run_autodev_enterprise(
     client: LLMClient,
     ws: Workspace,
-    template_dir: str,
-    prd_struct: PRDStruct,
-    validators_enabled: list[str],
-    max_fix_loops: int,
-    max_role_retries: int = 1,
-) -> dict[str, Any]:
-    forbidden_paths = {"ruff.py", "mypy.py", "pip_audit.py", "bandit.py", "docker"}
+    prd_markdown: str,
+    template_root: str,
+    template_candidates: List[str],
+    validators_enabled: List[str],
+    audit_required: bool,
+    max_fix_loops_total: int,
+    max_fix_loops_per_task: int,
+    max_json_repair: int,
+    verbose: bool = True,
+) -> Tuple[bool, Dict[str, Any], Dict[str, Any], Any]:
+    p = prompts()
+
+    # 1) Normalize PRD with LLM (strict schema)
+    prd_struct = await _llm_json(
+        client,
+        p["prd_normalizer"]["system"],
+        f"PRD_MARKDOWN:\n{prd_markdown}\n\nTASK:\n{p['prd_normalizer']['task']}",
+        PRD_SCHEMA,
+        max_repair=max_json_repair,
+    )
+
+    # 2) Plan
+    plan = await _llm_json(
+        client,
+        p["planner"]["system"],
+        json_dumps({
+            "template_candidates": template_candidates,
+            "prd_struct": prd_struct,
+            "task": p["planner"]["task"],
+        }),
+        PLAN_SCHEMA,
+        max_repair=max_json_repair,
+    )
+
+    # 3) Scaffold
+    project_type = plan["project"]["type"]
+    template_dir = os.path.join(template_root, project_type)
     ws.apply_template(template_dir)
 
-    prompt_map = prompts()
-    role: str | None = "planner"
-    fix_loops = 0
-    last_validation: list[dict[str, Any]] | None = None
+    # Persist autodev artifacts
+    ws.write_text(".autodev/prd_struct.json", json_dumps(prd_struct))
+    ws.write_text(".autodev/plan.json", json_dumps(plan))
 
-    kernel = ExecKernel(cwd=ws.root, timeout_sec=900)
-    validators = Validators(kernel)
+    # 4) Prepare env
+    kernel = ExecKernel(cwd=ws.root, timeout_sec=1800)
+    env = EnvManager(kernel)
+    env.ensure_venv(system_python="python")
+    env.install_requirements()
+    validators = Validators(kernel, env)
 
-    while role is not None:
-        file_list = ws.list_files()
-        data: dict[str, Any] | None = None
-        retry_error: str | None = None
-        last_raw: str = ""
+    tasks = _toposort(plan["tasks"])
+    total_fix_loops = 0
+    last_validation = None
 
-        for attempt in range(max_role_retries + 1):
-            user_payload = {
-                "prd_struct": prd_struct.__dict__,
-                "repo_files": file_list[:200],
-                "last_validation": last_validation,
-                "task": prompt_map[role]["task"],
-                "role_retry_error": retry_error,
-                "role_retry_attempt": attempt,
-            }
-
-            last_raw = await client.chat(
-                _messages(
-                    prompt_map[role]["system"],
-                    json.dumps(user_payload, ensure_ascii=False),
-                ),
-                temperature=0.2,
-            )
-            try:
-                candidate = _json_load(last_raw)
-                validate(instance=candidate, schema=ROLE_SCHEMA)
-                data = candidate
-                break
-            except Exception as exc:
-                retry_error = f"{type(exc).__name__}: {exc}"
-
-        if data is None:
-            return {
-                "ok": False,
-                "reason": "invalid_role_output",
-                "role": role,
-                "error": retry_error,
-                "raw_tail": last_raw[-4000:],
-                "last_validation": last_validation,
-            }
-
-        writes = [FileWrite(path=item["path"], content=item["content"]) for item in data["writes"]]
-        invalid_paths = [
-            write.path
-            for write in writes
-            if write.path.strip().lstrip("./").replace("\\", "/") in forbidden_paths
-        ]
-        if invalid_paths:
-            return {
-                "ok": False,
-                "reason": "forbidden_generated_file",
-                "role": role,
-                "paths": invalid_paths,
-                "last_validation": last_validation,
-            }
-        ws.write_files(writes)
-        role = data["next_role"]
-
-        if role == "validator":
-            results = validators.run_all(validators_enabled)
-            last_validation = [
-                {
-                    "name": r.name,
-                    "ok": r.ok,
-                    "cmd": r.result.cmd,
-                    "returncode": r.result.returncode,
-                    "stdout": r.result.stdout[-6000:],
-                    "stderr": r.result.stderr[-6000:],
-                }
-                for r in results
-            ]
-            if all(result["ok"] for result in last_validation):
-                role = None
+    for t in tasks:
+        if verbose:
+            print(f"\n== TASK {t['id']} == {t['title']}")
+        # Provide rich file context for patching
+        files_ctx: Dict[str, str] = {}
+        for fp in t["files"][:30]:
+            if ws.exists(fp):
+                try:
+                    files_ctx[fp] = ws.read_text(fp)[:20000]
+                except Exception:
+                    files_ctx[fp] = "<unreadable>"
             else:
-                role = "fixer"
-                fix_loops += 1
-                if fix_loops > max_fix_loops:
-                    return {
-                        "ok": False,
-                        "reason": "max_fix_loops_exceeded",
-                        "last_validation": last_validation,
-                    }
+                files_ctx[fp] = "<missing>"
 
-    return {"ok": True, "last_validation": last_validation}
+        repo_files = ws.list_files()[:500]
+        impl_payload = {
+            "plan": plan,
+            "task": t,
+            "repo_files": repo_files,
+            "files_context": files_ctx,
+            "guidance": p["implementer"]["task"],
+        }
+        changeset = await _llm_json(
+            client,
+            p["implementer"]["system"],
+            json_dumps(impl_payload),
+            CHANGESET_SCHEMA,
+            max_repair=max_json_repair,
+        )
+
+        changes: List[Change] = []
+        for c in changeset["changes"]:
+            changes.append(Change(op=c["op"], path=c["path"], content=c.get("content")))
+        ws.apply_changes(changes)
+
+        # Validate: focus set or default fast checks
+        focus = t.get("validator_focus") or ["ruff", "mypy", "pytest"]
+        run_set = [v for v in focus if v in validators_enabled]
+        if not run_set:
+            run_set = [v for v in ["ruff", "mypy", "pytest"] if v in validators_enabled] or list(
+                validators_enabled
+            )
+        res = validators.run_all(run_set, audit_required=audit_required)
+        last_validation = Validators.serialize(res)
+        all_ok = all(x["ok"] for x in last_validation)
+
+        loops = 0
+        while not all_ok:
+            loops += 1
+            total_fix_loops += 1
+            if loops > max_fix_loops_per_task or total_fix_loops > max_fix_loops_total:
+                return (False, prd_struct, plan, last_validation)
+
+            fixer_payload = {
+                "plan": plan,
+                "task": t,
+                "validation": last_validation,
+                "repo_files": ws.list_files()[:500],
+                "files_context": files_ctx,
+                "guidance": p["fixer"]["task"],
+            }
+            fix = await _llm_json(
+                client,
+                p["fixer"]["system"],
+                json_dumps(fixer_payload),
+                CHANGESET_SCHEMA,
+                max_repair=max_json_repair,
+            )
+            fix_changes: List[Change] = []
+            for c in fix["changes"]:
+                fix_changes.append(Change(op=c["op"], path=c["path"], content=c.get("content")))
+            ws.apply_changes(fix_changes)
+
+            res = validators.run_all(run_set, audit_required=audit_required)
+            last_validation = Validators.serialize(res)
+            all_ok = all(x["ok"] for x in last_validation)
+
+        ws.write_text(f".autodev/task_{t['id']}_last_validation.json", json_dumps(last_validation))
+
+    # Final enterprise validation (all enabled)
+    res = validators.run_all(validators_enabled, audit_required=audit_required)
+    last_validation = Validators.serialize(res)
+    ok = all(x["ok"] for x in last_validation)
+    return (ok, prd_struct, plan, last_validation)

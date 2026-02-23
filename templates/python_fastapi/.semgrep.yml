@@ -1,0 +1,13 @@
+rules:
+  - id: no-eval
+    message: "Avoid eval()"
+    languages: [python]
+    severity: ERROR
+    patterns:
+      - pattern: eval(...)
+  - id: no-shell-true
+    message: "Avoid subprocess with shell=True"
+    languages: [python]
+    severity: ERROR
+    patterns:
+      - pattern: subprocess.$FUNC(..., shell=True, ...)

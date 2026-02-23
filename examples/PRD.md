@@ -1,33 +1,41 @@
-# Team Task API
+# Tollama Forecast Service (v1)
 
 ## Goals
-- Provide a REST API for creating and listing team tasks.
-- Ensure basic input validation and deterministic error responses.
-- Ship with tests and CI.
+- Provide a simple HTTP API to run time-series forecasts against uploaded CSV.
+- Support horizon up to 168.
+- Return structured errors (JSON) with consistent error codes.
+- Include tests, CI, Docker, security scanning, semgrep, and SBOM generation.
 
 ## Non-Goals
-- Authentication and authorization.
-- Multi-tenant data isolation.
+- Realtime streaming.
+- Multi-tenant auth (v1 is public).
 
 ## Features
-### Create Task
-- Endpoint `POST /tasks` creates a task with title and optional description.
-- Title is required and max 120 chars.
+### Forecast Endpoint
+- POST /forecast accepts CSV text or file upload.
+- Request includes: model_name (string), horizon (int), optional frequency (string).
+- Response includes: timestamps + forecast values.
 
-### List Tasks
-- Endpoint `GET /tasks` returns tasks sorted by creation order.
-
-### Health Check
-- Endpoint `GET /health` returns `{"ok": true}`.
-
-## Non-Functional Requirements
-Performance: P95 API latency under 200ms in local test setup.
-Reliability: Unit tests must pass in CI.
-Security: Dependency and static security scans must run in CI.
+### Model Abstraction
+- A pluggable model interface.
+- Provide at least one dummy model implementation for v1 to keep it runnable.
 
 ## Acceptance Criteria
-- Creating a task with valid input returns 201.
-- Creating a task with missing title returns 422.
-- Listing tasks returns the created tasks.
-- Health endpoint returns HTTP 200 and `ok=true`.
+- /health returns 200 with {"ok": true}.
+- /forecast returns 200 with forecast JSON for valid input.
+- /forecast returns 400 with structured error JSON for invalid horizon or invalid CSV.
+- Unit tests cover success and key error cases.
+- OpenAPI contract test validates presence of declared endpoints.
+- ruff/mypy/pytest pass locally.
+- Docker build succeeds.
+- pip-audit, bandit, semgrep run in CI (audit may warn if offline).
+- SBOM and license report are generated in CI.
 
+## Non-Functional Requirements
+- latency_ms: < 1000 for dummy model on small CSV
+- observability: include request_id in logs; structured logging recommended
+- reliability: handle invalid inputs gracefully
+
+## Constraints
+- Python 3.11+
+- Use FastAPI for API

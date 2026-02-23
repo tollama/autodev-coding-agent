@@ -1,78 +1,57 @@
 from __future__ import annotations
-
-import argparse
-import asyncio
-import os
-from typing import Any
-
+import argparse, os
 from .config import load_config
 from .llm_client import LLMClient
-from .loop import run_enterprise_autodev
-from .prd_parser import parse_prd_markdown
-from .report import write_report
 from .workspace import Workspace
+from .loop import run_autodev_enterprise
+from .report import write_report
 
+def cli():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--prd", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--profile", default="enterprise")
+    ap.add_argument("--config", default="config.yaml")
+    args = ap.parse_args()
 
-def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--prd", required=True)
-    parser.add_argument("--out", required=True)
-    parser.add_argument("--profile", default="enterprise")
-    parser.add_argument("--config", default="config.yaml")
-    return parser
-
-
-def cli() -> None:
-    parser = _build_arg_parser()
-    args = parser.parse_args()
-
-    cfg: dict[str, Any] = load_config(args.config)
-    profile = cfg["profiles"][args.profile]
-    validators_enabled = profile["validators"]
-    template_name = profile["repo_template"]
+    cfg = load_config(args.config)
+    prof = cfg["profiles"][args.profile]
 
     with open(args.prd, "r", encoding="utf-8") as f:
         prd_md = f.read()
-    prd_struct = parse_prd_markdown(prd_md)
 
     llm_cfg = cfg["llm"]
     client = LLMClient(
         base_url=llm_cfg["base_url"],
-        api_key=llm_cfg.get("api_key", ""),
+        api_key=llm_cfg.get("api_key",""),
         model=llm_cfg["model"],
-        timeout_sec=int(llm_cfg.get("timeout_sec", 180)),
-        max_tokens=int(llm_cfg["max_tokens"]) if llm_cfg.get("max_tokens") is not None else None,
+        timeout_sec=int(llm_cfg.get("timeout_sec", 240)),
     )
 
-    workspace = Workspace(args.out)
-    template_dir = os.path.join(os.path.dirname(__file__), "..", "templates", template_name)
+    ws = Workspace(args.out)
+    template_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "templates"))
 
-    async def run() -> dict[str, Any]:
-        try:
-            result = await run_enterprise_autodev(
-                client=client,
-                ws=workspace,
-                template_dir=os.path.abspath(template_dir),
-                prd_struct=prd_struct,
-                validators_enabled=validators_enabled,
-                max_fix_loops=int(cfg["run"].get("max_fix_loops", 6)),
-                max_role_retries=int(cfg["run"].get("max_role_retries", 1)),
-            )
-        except Exception as exc:
-            result = {
-                "ok": False,
-                "reason": "orchestrator_exception",
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            }
-        write_report(workspace.root, prd_struct, result)
-        return result
+    import asyncio
+    ok, prd_struct, plan, last_validation = asyncio.run(
+        run_autodev_enterprise(
+            client=client,
+            ws=ws,
+            prd_markdown=prd_md,
+            template_root=template_root,
+            template_candidates=prof["template_candidates"],
+            validators_enabled=prof["validators"],
+            audit_required=bool(prof.get("security", {}).get("audit_required", False)),
+            max_fix_loops_total=int(cfg["run"].get("max_fix_loops_total", 10)),
+            max_fix_loops_per_task=int(cfg["run"].get("max_fix_loops_per_task", 4)),
+            max_json_repair=int(cfg["run"].get("max_json_repair", 2)),
+            verbose=bool(cfg["run"].get("verbose", True)),
+        )
+    )
 
-    result = asyncio.run(run())
-    print(result)
-    if not result.get("ok", False):
+    write_report(ws.root, prd_struct, plan, last_validation, ok)
+    print({"ok": ok, "out": os.path.abspath(args.out)})
+    if not ok:
         raise SystemExit(1)
-
 
 if __name__ == "__main__":
     cli()

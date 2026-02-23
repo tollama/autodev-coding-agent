@@ -1,72 +1,70 @@
-from __future__ import annotations
+COMMON_RULES = """
+You MUST output ONLY valid JSON. No markdown fences, no extra prose.
 
-COMMON_JSON_RULES = """
-You MUST output ONLY JSON (no markdown fences) with this schema:
+You are operating in an automated SDLC system. Keep scope small and changes reviewable.
 
-{
-  "role": "...",
-  "summary": "...",
-  "writes": [
-    {"path":"relative/path.ext", "content":"full file content"}
-  ],
-  "next_role": "..." | null,
-  "notes": ["..."]
-}
+IMPORTANT FILE EDITING RULES:
+- Prefer op="patch" for modifying existing files. Provide a unified diff with @@ hunks.
+- Use op="write" for new files OR when patch is too complex.
+- Use op="delete" to remove files.
 
-Rules:
-- writes must be complete file contents (not diffs).
-- Never suggest dangerous commands.
-- Never create fake tool modules or wrappers that bypass validation (e.g. ruff.py, mypy.py, pip_audit.py, bandit.py, docker script stubs).
-- Keep changes minimal and focused.
+Patch requirements:
+- The diff must apply cleanly to the CURRENT file contents.
+- Include only one file per patch entry.
+- You may omit diff --git headers; @@ hunks are required.
 """
 
-
-def prompts() -> dict[str, dict[str, str]]:
+def prompts():
     return {
-        "planner": {
-            "system": (
-                "You are a Staff Engineer planning from PRD into a repo scaffold.\n"
-                + COMMON_JSON_RULES
-            ),
+        "prd_normalizer": {
+            "system": "You are a senior requirements engineer. Convert Markdown PRD into a strict JSON structure.\n" + COMMON_RULES,
             "task": """
-Given PRD structure, produce:
-- repo structure
-- minimal runnable FastAPI app OR CLI (decide based on PRD)
-- requirements.txt
-- basic tests scaffold
-Return writes for initial files.
-Set next_role="builder".
+Convert the provided PRD markdown into a JSON object that matches PRD_SCHEMA.
+- Preserve as much detail as possible.
+- Put feature-level requirements under features[].requirements
+- If PRD includes API details, add them to features[].api_surface like "POST /forecast".
+Return JSON object only (not wrapped).
 """,
         },
-        "builder": {
-            "system": "You are a Senior Software Engineer implementing tasks.\n"
-            + COMMON_JSON_RULES,
+        "planner": {
+            "system": "You are a Staff Engineer and Tech Lead. Produce an enterprise-ready implementation plan.\n" + COMMON_RULES,
             "task": """
-Implement core features + unit tests. Keep code production-ready.
-Return writes for files you modify/create.
-Set next_role="validator".
+Create a PLAN (JSON) that matches PLAN_SCHEMA.
+
+Requirements:
+- Choose project.type: python_fastapi if PRD implies HTTP API; otherwise python_cli.
+- Create SMALL tasks that cover:
+  1) repo scaffold sanity
+  2) API/CLI contract file updates + contract tests
+  3) core feature implementation
+  4) structured error handling & validation
+  5) tests (unit + key edge cases)
+  6) docs (README updates)
+  7) CI (GitHub Actions) updates if needed
+  8) Dockerfile validity
+  9) Security scanning (pip-audit + bandit + semgrep local rules)
+  10) SBOM + license report generation (scripts/generate_sbom.py)
+
+Notes:
+- Include target files per task in tasks[].files
+- Provide validator_focus where relevant (e.g., ["pytest"] for test-only tasks).
+""",
+        },
+        "implementer": {
+            "system": "You are a Senior Software Engineer. Implement ONE task at a time.\n" + COMMON_RULES,
+            "task": """
+Given the PLAN and a specific TASK, generate a CHANGESET that matches CHANGESET_SCHEMA.
+- Only modify/create files required for this task.
+- Add/adjust tests where appropriate.
+- Keep changes minimal and patch-based when editing existing files.
 """,
         },
         "fixer": {
-            "system": (
-                "You are a debugging expert. You will fix failing tests/lint/type errors based "
-                "on logs.\n" + COMMON_JSON_RULES
-            ),
+            "system": "You are a debugging expert. Fix failures from lint/typecheck/test/security/semgrep/sbom.\n" + COMMON_RULES,
             "task": """
-Given validation failures (stdout/stderr), update the minimal set of files to make all checks pass.
-Return writes with full contents.
-Set next_role="validator".
-""",
-        },
-        "validator": {
-            "system": "You are a QA/DevOps gatekeeper. You only decide what to run and interpret results.\n"
-            + COMMON_JSON_RULES,
-            "task": """
-You will not run commands. The orchestrator will.
-Given current repo file list + last results, decide whether to proceed or request fixes.
-If fixes needed, set next_role="fixer" and add notes explaining root cause categories.
-If OK, set next_role=null.
-Writes usually empty here.
+Given validation results and current file contents, produce a CHANGESET to fix failures.
+- Fix root causes.
+- Keep changes minimal; prefer patch.
 """,
         },
     }

@@ -1,22 +1,28 @@
 llm:
-  base_url: "http://127.0.0.1:1234/v1"
+  base_url: "http://localhost:1234/v1"
   api_key: "lm-studio"
-  model: "openai/gpt-oss-20b"
-  timeout_sec: 600
-  max_tokens: 2048
+  model: "gpt-oss-20b-4q"
+  timeout_sec: 240
 
 run:
-  max_role_retries: 3
-  max_fix_loops: 6
+  max_json_repair: 2
+  max_fix_loops_total: 10
+  max_fix_loops_per_task: 4
   verbose: true
 
 profiles:
   enterprise:
-    repo_template: "python_fastapi"
+    template_candidates:
+      - "python_fastapi"
+      - "python_cli"
     validators:
       - ruff
       - mypy
       - pytest
       - pip_audit
       - bandit
+      - semgrep
+      - sbom
       - docker_build
+    security:
+      audit_required: false

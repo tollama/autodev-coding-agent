@@ -1,0 +1,7 @@
+rules:
+  - id: no-eval
+    message: "Avoid eval()"
+    languages: [python]
+    severity: ERROR
+    patterns:
+      - pattern: eval(...)

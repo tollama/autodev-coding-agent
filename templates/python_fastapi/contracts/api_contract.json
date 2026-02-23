@@ -1,0 +1,10 @@
+{
+  "title": "AutoDev API Contract",
+  "endpoints": [
+    {
+      "method": "get",
+      "path": "/health",
+      "responses": ["200"]
+    }
+  ]
+}

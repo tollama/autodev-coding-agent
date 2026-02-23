@@ -1,26 +1,28 @@
 from __future__ import annotations
-
-import json
 import os
 from datetime import datetime
+from typing import Any, Dict
+from .json_utils import json_dumps
 
-from .prd_parser import PRDStruct
+def _write(repo_root: str, rel_path: str, content: str) -> None:
+    p = os.path.join(repo_root, rel_path)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(content)
 
-
-def write_report(repo_root: str, prd: PRDStruct, result: dict) -> None:
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    report = {
-        "timestamp": timestamp,
-        "prd_title": prd.title,
-        "goals": prd.goals,
-        "non_goals": prd.non_goals,
-        "features": prd.features,
-        "nfr": prd.nfr,
-        "acceptance_criteria": prd.acceptance_criteria,
-        "result": result,
-    }
-
-    path = os.path.join(repo_root, "AUTODEV_REPORT.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
-
+def write_report(repo_root: str, prd_struct: Dict[str, Any], plan: Dict[str, Any], final_validation: Any, ok: bool) -> None:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    md = []
+    md.append("# AUTODEV REPORT")
+    md.append(f"- timestamp: {ts}")
+    md.append(f"- ok: {ok}")
+    md.append("")
+    md.append("## Project")
+    md.append(f"- title: {prd_struct.get('title')}")
+    md.append(f"- type: {plan.get('project',{}).get('type')}")
+    md.append("")
+    md.append("## Final Validation")
+    md.append("```json")
+    md.append(json_dumps(final_validation))
+    md.append("```")
+    _write(repo_root, ".autodev/REPORT.md", "\n".join(md))

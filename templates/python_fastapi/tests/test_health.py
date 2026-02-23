@@ -1,11 +1,13 @@
+from pathlib import Path
+import sys
+
 from fastapi.testclient import TestClient
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from app.main import app
 
-
-def test_health() -> None:
-    client = TestClient(app)
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json()["ok"] is True
-
+def test_health():
+    c = TestClient(app)
+    r = c.get("/health")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
