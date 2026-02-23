@@ -1,7 +1,7 @@
 llm:
   base_url: "http://localhost:1234/v1"
   api_key: "lm-studio"
-  model: "gpt-oss-20b-4q"
+  model: "qwen3-coder-30b-a3b-instruct-mlx"
   timeout_sec: 240
 
 run:

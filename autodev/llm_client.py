@@ -23,6 +23,11 @@ class LLMClient:
         }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             r = await client.post(url, headers=headers, json=payload)
-            r.raise_for_status()
+            try:
+                r.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                print(f"HTTPStatusError: {e}")
+                print(f"Response body: {r.text}")
+                raise
             data = r.json()
         return data["choices"][0]["message"]["content"]
