@@ -10,6 +10,15 @@ from .workspace import Workspace
 from .loop import run_autodev_enterprise
 from .report import write_report
 
+def _ensure_str_list(value, default):
+    if value is None:
+        return list(default)
+    if isinstance(value, list):
+        return [str(x) for x in value]
+    if isinstance(value, tuple):
+        return [str(x) for x in value]
+    return [str(value)]
+
 def _slugify_prd_stem(prd_path: str) -> str:
     stem = Path(prd_path).stem.strip()
     if not stem:
@@ -40,8 +49,20 @@ def cli():
     ap.add_argument("--config", default="config.yaml")
     args = ap.parse_args()
 
-    cfg = load_config(args.config)
+    try:
+        cfg = load_config(args.config)
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
     prof = cfg["profiles"][args.profile]
+    validator_policy = prof.get("validator_policy", {})
+    per_task_soft = _ensure_str_list(
+        validator_policy.get("per_task", {}).get("soft_fail"),
+        default=["docker_build", "pip_audit", "sbom"],
+    )
+    final_soft = _ensure_str_list(
+        validator_policy.get("final", {}).get("soft_fail"),
+        default=[],
+    )
 
     with open(args.prd, "r", encoding="utf-8") as f:
         prd_md = f.read()
@@ -71,6 +92,8 @@ def cli():
             max_fix_loops_total=int(cfg["run"].get("max_fix_loops_total", 10)),
             max_fix_loops_per_task=int(cfg["run"].get("max_fix_loops_per_task", 4)),
             max_json_repair=int(cfg["run"].get("max_json_repair", 2)),
+            task_soft_validators=per_task_soft,
+            final_soft_validators=final_soft,
             verbose=bool(cfg["run"].get("verbose", True)),
         )
     )

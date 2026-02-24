@@ -24,3 +24,11 @@ profiles:
       - sbom
     security:
       audit_required: false
+    validator_policy:
+      per_task:
+        soft_fail:
+          - docker_build
+          - pip_audit
+          - sbom
+      final:
+        soft_fail: []

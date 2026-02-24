@@ -1,5 +1,6 @@
 from __future__ import annotations
-import os, shutil
+import os
+import shutil
 from dataclasses import dataclass
 from typing import List
 from .patch_utils import apply_unified_diff
@@ -11,6 +12,20 @@ class Change:
     content: str | None = None
 
 class Workspace:
+    CONTEXT_EXCLUDED_DIRS = {
+        ".git",
+        ".venv",
+        ".autodev",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "__pycache__",
+        "sbom",
+        "dist",
+        "build",
+    }
+    CONTEXT_EXCLUDED_SUFFIXES = {".pyc"}
+
     def __init__(self, root: str):
         self.root = os.path.abspath(root)
         os.makedirs(self.root, exist_ok=True)
@@ -67,6 +82,31 @@ class Workspace:
                 rel = os.path.relpath(os.path.join(base, fn), self.root)
                 out.append(rel)
                 if len(out) >= max_files:
+                    return sorted(out)
+        return sorted(out)
+
+    @classmethod
+    def _context_file_allowed(cls, rel_path: str) -> bool:
+        rel_norm = rel_path.replace("\\", "/")
+        parts = rel_norm.split("/")
+        for part in parts[:-1]:
+            if part in cls.CONTEXT_EXCLUDED_DIRS:
+                return False
+        for suffix in cls.CONTEXT_EXCLUDED_SUFFIXES:
+            if rel_norm.endswith(suffix):
+                return False
+        return True
+
+    def list_context_files(self, max_files: int | None = 1200) -> List[str]:
+        out: List[str] = []
+        for base, dirs, files in os.walk(self.root):
+            dirs[:] = [d for d in dirs if d not in self.CONTEXT_EXCLUDED_DIRS]
+            for fn in files:
+                rel = os.path.relpath(os.path.join(base, fn), self.root)
+                if not self._context_file_allowed(rel):
+                    continue
+                out.append(rel)
+                if max_files is not None and len(out) >= max_files:
                     return sorted(out)
         return sorted(out)
 

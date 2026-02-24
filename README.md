@@ -63,6 +63,11 @@ profiles:
     validators: ["ruff", "mypy", "pytest", "pip_audit", "bandit", "sbom"]
     security:
       audit_required: false
+    validator_policy:
+      per_task:
+        soft_fail: ["docker_build", "pip_audit", "sbom"]
+      final:
+        soft_fail: []
 ```
 
 ## Run
@@ -116,6 +121,9 @@ Notes:
 - `pip_audit` can be treated as warning when `audit_required: false`.
 - `semgrep` uses local rule file `.semgrep.yml`.
 - `docker_build` runs `docker build -t autodev-app:test .`.
+- `validator_policy.per_task.soft_fail` controls which validators are non-blocking inside task fix loops.
+- `validator_policy.final.soft_fail` controls which validators are non-blocking in final project validation.
+- Config load validates validator names and policy structure; invalid entries fail fast with path-specific errors.
 
 ## Recommended PRD Structure
 The parser accepts free-form markdown, but this structure works best:
