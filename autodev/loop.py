@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import logging
 from datetime import datetime
 from pathlib import PurePosixPath
 import os
 import time
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple, cast
 from uuid import uuid4
 
 from jsonschema import validate  # type: ignore[import-untyped]
@@ -62,6 +63,9 @@ QUALITY_TASK_LAST_FILE_TMPL = ".autodev/task_{task_id}_last_validation.json"
 QUALITY_PROFILE_FILE = ".autodev/quality_profile.json"
 QUALITY_SUMMARY_METADATA_FILE = ".autodev/quality_run_summary.json"
 QUALITY_RESOLUTION_FILE = ".autodev/quality_resolution.json"
+PLAN_CACHE_FILE = ".autodev/generate_cache.json"
+PLAN_CACHE_VERSION = 1
+
 
 
 def _resolve_gate_profile(
@@ -129,6 +133,111 @@ def _failure_signature(validation_rows: List[Dict[str, Any]]) -> tuple:
         if not row["ok"]
     ]
     return tuple(failers)
+
+
+def _failed_validator_names(validation_rows: List[Dict[str, Any]]) -> List[str]:
+    return [row["name"] for row in validation_rows if not row["ok"]]
+
+
+def _merge_validation_rows(
+    previous: List[Dict[str, Any]],
+    fresh: List[Dict[str, Any]],
+    run_set: List[str],
+) -> List[Dict[str, Any]]:
+    by_name = {row["name"]: row for row in previous}
+    fresh_by_name = {row["name"]: row for row in fresh}
+
+    merged: List[Dict[str, Any]] = []
+    for name in run_set:
+        if name in fresh_by_name:
+            merged.append(fresh_by_name[name])
+        elif name in by_name:
+            merged.append(by_name[name])
+
+    existing = {row["name"] for row in merged}
+    for row in fresh_by_name.values():
+        if row["name"] not in existing:
+            merged.append(row)
+
+    return merged
+
+
+def _hash_payload(payload: Any) -> str:
+    return hashlib.sha256(json_dumps(payload).encode("utf-8")).hexdigest()
+
+
+def _generation_cache_key(
+    prd_markdown: str,
+    template_candidates: List[str],
+    validators_enabled: List[str],
+    quality_profile: Dict[str, Any] | None,
+) -> str:
+    key_payload = {
+        "version": PLAN_CACHE_VERSION,
+        "prd_sha256": hashlib.sha256((prd_markdown or "").encode("utf-8")).hexdigest(),
+        "template_candidates": template_candidates,
+        "validators": validators_enabled,
+        "quality_profile": quality_profile or {},
+    }
+    return _hash_payload(key_payload)
+
+
+def _read_generation_cache(ws: Workspace) -> Dict[str, Any] | None:
+    if not ws.exists(PLAN_CACHE_FILE):
+        return None
+    try:
+        payload = strict_json_loads(ws.read_text(PLAN_CACHE_FILE))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("version") != PLAN_CACHE_VERSION:
+        return None
+    return payload
+
+
+def _write_generation_cache(
+    ws: Workspace,
+    cache_key: str,
+    prd_struct: Dict[str, Any],
+    plan: Dict[str, Any],
+) -> None:
+    ws.write_text(
+        PLAN_CACHE_FILE,
+        json_dumps(
+            {
+                "version": PLAN_CACHE_VERSION,
+                "cache_key": cache_key,
+                "prd_struct": prd_struct,
+                "plan": plan,
+                "updated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            }
+        ),
+    )
+
+
+def _build_task_payload(plan: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "plan": {
+            "project": {
+                "type": plan["project"].get("type"),
+                "name": plan["project"].get("name"),
+                "quality_gate_profile": plan["project"].get("quality_gate_profile"),
+                "default_artifacts": plan["project"].get("default_artifacts", []),
+            }
+        },
+        "task": {
+            "id": task["id"],
+            "title": task["title"],
+            "goal": task.get("goal", ""),
+            "files": task.get("files", []),
+            "acceptance": task.get("acceptance", []),
+            "depends_on": task.get("depends_on", []),
+            "quality_expectations": task.get("quality_expectations", {}),
+            "validator_focus": task.get("validator_focus", []),
+        },
+    }
+
 
 
 def _build_validator_counts(validation_rows: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -290,8 +399,8 @@ def _canonicalize_task_files(plan: Dict[str, Any], repo_files: List[str]) -> Dic
 def _build_files_context(
     ws: Workspace,
     files: List[str],
-    max_files: int = 30,
-    max_chars_per_file: int = 20_000,
+    max_files: int = 12,
+    max_chars_per_file: int = 8_000,
 ) -> Dict[str, str]:
     files_ctx: Dict[str, str] = {}
     for fp in files[:max_files]:
@@ -517,35 +626,61 @@ async def run_autodev_enterprise(
     p = prompts()
 
     quality_profile = quality_profile or {}
-    # 1) Normalize PRD with LLM (strict schema)
-    prd_struct = await _llm_json(
-        client,
-        p["prd_normalizer"]["system"],
-        f"PRD_MARKDOWN:\n{prd_markdown}\n\nTASK:\n{p['prd_normalizer']['task']}",
-        PRD_SCHEMA,
-        max_repair=max_json_repair,
-        run_id=run_id,
-        request_id=request_id,
-        profile=profile,
-        component="prd_normalizer",
+    cache_key = _generation_cache_key(
+        prd_markdown=prd_markdown,
+        template_candidates=template_candidates,
+        validators_enabled=validators_enabled,
+        quality_profile=quality_profile,
+    )
+    cache_payload = _read_generation_cache(ws)
+    use_cached = (
+        isinstance(cache_payload, dict)
+        and cache_payload.get("cache_key") == cache_key
+        and isinstance(cache_payload.get("prd_struct"), dict)
+        and isinstance(cache_payload.get("plan"), dict)
     )
 
-    # 2) Plan
-    plan = await _llm_json(
-        client,
-        p["planner"]["system"],
-        json_dumps({
-            "template_candidates": template_candidates,
-            "prd_struct": prd_struct,
-            "task": p["planner"]["task"],
-        }),
-        PLAN_SCHEMA,
-        max_repair=max_json_repair,
-        run_id=run_id,
-        request_id=request_id,
-        profile=profile,
-        component="planner",
-    )
+    if use_cached:
+        prd_struct = cast(Dict[str, Any], cache_payload["prd_struct"])
+        plan = cast(Dict[str, Any], cache_payload["plan"])
+        _log_event(
+            "run.cache_hit",
+            run_id=run_id,
+            request_id=request_id,
+            profile=profile,
+            cache_key=cache_key,
+        )
+    else:
+        # 1) Normalize PRD with LLM (strict schema)
+        prd_struct = await _llm_json(
+            client,
+            p["prd_normalizer"]["system"],
+            f"PRD_MARKDOWN:\n{prd_markdown}\n\nTASK:\n{p['prd_normalizer']['task']}",
+            PRD_SCHEMA,
+            max_repair=max_json_repair,
+            run_id=run_id,
+            request_id=request_id,
+            profile=profile,
+            component="prd_normalizer",
+        )
+
+        # 2) Plan
+        plan = await _llm_json(
+            client,
+            p["planner"]["system"],
+            json_dumps({
+                "template_candidates": template_candidates,
+                "prd_struct": prd_struct,
+                "task": p["planner"]["task"],
+            }),
+            PLAN_SCHEMA,
+            max_repair=max_json_repair,
+            run_id=run_id,
+            request_id=request_id,
+            profile=profile,
+            component="planner",
+        )
+        _write_generation_cache(ws, cache_key, prd_struct, plan)
 
     # 3) Scaffold
     project_type = plan["project"]["type"]
@@ -699,14 +834,11 @@ async def run_autodev_enterprise(
         loops = 0
         last_failure_signature: tuple[Any, ...] = tuple()
         repair_used = False
+        previous_validation_rows: List[Dict[str, Any]] = []
 
-        impl_payload = {
-            "plan": plan,
-            "task": t,
-            "repo_files": ws.list_context_files(max_files=500),
-            "files_context": files_ctx,
-            "guidance": p["implementer"]["task"],
-        }
+        impl_payload = _build_task_payload(plan, t)
+        impl_payload["files_context"] = files_ctx
+        impl_payload["guidance"] = p["implementer"]["task"]
         changeset = await _llm_json(
             client,
             p["implementer"]["system"],
@@ -727,18 +859,59 @@ async def run_autodev_enterprise(
 
         while True:
             start = time.perf_counter()
-            validation_results = validators.run_all(
-                run_set,
-                audit_required=audit_required,
-                soft_validators=task_soft,
-                phase="per_task",
-                run_id=run_id,
-                request_id=request_id,
-                profile=profile,
-                task_id=t["id"],
-                iteration=loops + 1,
-            )
-            last_validation = Validators.serialize(validation_results)
+            if previous_validation_rows:
+                failed_names = _failed_validator_names(previous_validation_rows)
+                run_names = [name for name in run_set if name in failed_names]
+                if not run_names:
+                    run_names = list(run_set)
+                if hasattr(validators, "run_one"):
+                    rerun_rows = []
+                    for name in run_names:
+                        rerun_rows.append(
+                            Validators.serialize([
+                                validators.run_one(
+                                    name,
+                                    audit_required=audit_required,
+                                    phase="per_task",
+                                    run_id=run_id,
+                                    request_id=request_id,
+                                    profile=profile,
+                                    task_id=t["id"],
+                                    iteration=loops + 1,
+                                )
+                            ])[0]
+                        )
+                    validation_results = _merge_validation_rows(previous_validation_rows, rerun_rows, run_set)
+                else:
+                    validation_results = Validators.serialize(
+                        validators.run_all(
+                            run_set,
+                            audit_required=audit_required,
+                            soft_validators=task_soft,
+                            phase="per_task",
+                            run_id=run_id,
+                            request_id=request_id,
+                            profile=profile,
+                            task_id=t["id"],
+                            iteration=loops + 1,
+                        )
+                    )
+            else:
+                validation_results = Validators.serialize(
+                    validators.run_all(
+                        run_set,
+                        audit_required=audit_required,
+                        soft_validators=task_soft,
+                        phase="per_task",
+                        run_id=run_id,
+                        request_id=request_id,
+                        profile=profile,
+                        task_id=t["id"],
+                        iteration=loops + 1,
+                    )
+                )
+            last_validation = validation_results
+            previous_validation_rows = last_validation
             signature = _failure_signature(last_validation)
             duration_ms = int((time.perf_counter() - start) * 1000)
             row = _build_quality_row(
@@ -850,25 +1023,18 @@ async def run_autodev_enterprise(
             repair_mode = "normal"
             if signature == last_failure_signature and not repair_used:
                 repair_mode = "targeted"
-                repair_payload = {
-                    "mode": "repair",
-                    "plan": plan,
-                    "task": t,
-                    "validation": last_validation,
-                    "repo_files": ws.list_context_files(max_files=500),
-                    "files_context": files_ctx,
-                    "guidance": "Do a task-level repair pass before targeted fix cycles. Address same failure pattern.",
-                }
+                repair_payload = _build_task_payload(plan, t)
+                repair_payload["files_context"] = files_ctx
+                repair_payload["validation"] = last_validation
+                repair_payload["guidance"] = (
+                    "Do a task-level repair pass before targeted fix cycles. Address same failure pattern."
+                )
                 repair_used = True
             else:
-                repair_payload = {
-                    "plan": plan,
-                    "task": t,
-                    "validation": last_validation,
-                    "repo_files": ws.list_context_files(max_files=500),
-                    "files_context": files_ctx,
-                    "guidance": p["fixer"]["task"],
-                }
+                repair_payload = _build_task_payload(plan, t)
+                repair_payload["validation"] = last_validation
+                repair_payload["files_context"] = files_ctx
+                repair_payload["guidance"] = p["fixer"]["task"]
             last_failure_signature = signature
 
             _log_event(

@@ -9,7 +9,10 @@ def test_workspace_patch_change_requires_valid_unified_diff_for_existing_file(tm
     ws = Workspace(tmp_path)
     ws.write_text("app.py", "a = 1\n")
 
-    valid_patch = """@@ -1,1 +1,1\n-a = 1\n+a = 2\n"""
+    valid_patch = """@@ -1,1 +1,1
+-a = 1
++a = 2
+"""
     ws.apply_changes([Change(op="patch", path="app.py", content=valid_patch)])
 
     assert ws.read_text("app.py") == "a = 2\n"
@@ -36,7 +39,10 @@ def test_workspace_apply_changes_supports_dry_run(tmp_path: Path):
     ws = Workspace(tmp_path)
     ws.write_text("app.py", "a = 1\n")
 
-    valid_patch = """@@ -1,1 +1,1\n-a = 1\n+a = 2\n"""
+    valid_patch = """@@ -1,1 +1,1
+-a = 1
++a = 2
+"""
     ws.apply_changes([Change(op="patch", path="app.py", content=valid_patch)], dry_run=True)
 
     assert ws.read_text("app.py") == "a = 1\n"
@@ -46,7 +52,10 @@ def test_workspace_apply_changes_rolls_back_partial_apply_on_failure(tmp_path: P
     ws = Workspace(tmp_path)
     ws.write_text("before.txt", "keep\n")
 
-    good_patch = """@@ -1,1 +1,1\n-keep\n+safe\n"""
+    good_patch = """@@ -1,1 +1,1
+-keep
++safe
+"""
     bad_patch = "not a unified diff"
 
     with pytest.raises(ValueError, match="No hunks found"):
@@ -60,3 +69,21 @@ def test_workspace_apply_changes_rolls_back_partial_apply_on_failure(tmp_path: P
 
     assert not ws.exists("touch.txt")
     assert ws.read_text("before.txt") == "keep\n"
+
+
+def test_workspace_apply_changes_skips_unchanged_write(tmp_path: Path):
+    ws = Workspace(tmp_path)
+    ws.write_text("app.py", "a = 1\n")
+
+    writes = {"count": 0}
+    original_write_text = ws.write_text
+
+    def tracked_write_text(path: str, content: str) -> None:
+        writes["count"] += 1
+        return original_write_text(path, content)
+
+    ws.write_text = tracked_write_text
+
+    ws.apply_changes([Change(op="write", path="app.py", content="a = 1\n")])
+
+    assert writes["count"] == 0

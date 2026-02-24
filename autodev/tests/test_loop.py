@@ -132,6 +132,10 @@ class _FakeValidators:
             )
         return out
 
+
+    def run_one(self, name, audit_required=False, phase="task", **kwargs):
+        return _FakeValidation(name, True, "passed", 0)
+
     def run_all(self, enabled, audit_required=False, soft_validators=None, phase="task", **kwargs):
         _FakeValidators.calls.append((phase, list(enabled), sorted(soft_validators or []), kwargs))
 
@@ -384,7 +388,7 @@ def test_run_loop_repair_escalation_path(tmp_path, monkeypatch):
     assert Path(ws.root, ".autodev/task_core_quality.json").exists()
     assert Path(ws.root, ".autodev/task_core_last_validation.json").exists()
     assert Path(ws.root, ".autodev/task_quality_index.json").exists()
-    assert len([c for c in _FakeValidators.calls if c[0] == "per_task"]) >= 3
+    assert len([c for c in _FakeValidators.calls if c[0] == "per_task"]) >= 1
 
 
 def test_run_loop_end_to_end_reports_and_quality_payloads(tmp_path, monkeypatch):
@@ -666,3 +670,235 @@ def test_run_loop_emits_structured_loop_events(monkeypatch, tmp_path):
     assert any(e.get("event") == "validation.attempt" and e.get("run_id") == "run-log-1" for e in events)
     assert any(e.get("event") == "validation.final_summary" for e in events)
     assert any(e.get("run_id") == "run-log-1" for e in events)
+
+
+class _FakeSelectiveValidators:
+    calls: list[tuple[str, str]] = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    @staticmethod
+    def serialize(results):
+        out = []
+        for r in results:
+            out.append(
+                {
+                    "name": r.name,
+                    "ok": r.ok,
+                    "status": r.status,
+                    "returncode": r.result.returncode,
+                    "duration_ms": r.duration_ms,
+                    "tool_version": r.tool_version,
+                    "error_classification": r.error_classification,
+                    "stdout": "",
+                    "stderr": "",
+                    "note": r.note,
+                }
+            )
+        return out
+
+    @staticmethod
+    def reset() -> None:
+        _FakeSelectiveValidators.calls = []
+
+    def run_all(self, enabled, audit_required=False, soft_validators=None, phase="task", **kwargs):
+        _FakeSelectiveValidators.calls.append((phase, ",".join(enabled)))
+        if phase != "per_task":
+            return [_FakePassingValidation(name) for name in enabled]
+
+        if len([c for c in _FakeSelectiveValidators.calls if c[0] == "per_task"]) == 1:
+            return [_FakeValidation("ruff", False, "failed", 1), _FakeValidation("pytest", True, "passed", 0)] if "ruff" in enabled else [_FakePassingValidation(name) for name in enabled]
+        return [_FakePassingValidation(name) for name in enabled]
+
+    def run_one(self, name, audit_required=False, phase="task", **kwargs):
+        _FakeSelectiveValidators.calls.append((phase + ":one", name))
+        return _FakeValidation(name, True, "passed", 0)
+
+
+def test_run_loop_only_reruns_failed_validators(tmp_path, monkeypatch):
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "targeted-reruns"))
+    _FakeSelectiveValidators.reset()
+
+    responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-fake",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "tasks": [
+                {
+                    "id": "core",
+                    "title": "Create core task",
+                    "goal": "Build core endpoint",
+                    "acceptance": [
+                        "Add tests for core route",
+                        "Validate success and error handling",
+                    ],
+                    "files": ["src/app/main.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff", "pytest"],
+                }
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "repair", "changes": [], "notes": []},
+    ]
+
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakeSelectiveValidators)
+
+    ok, _, _, _ = asyncio.run(
+        run_autodev_enterprise(
+            client=cast(LLMClient, _FakeLLM(responses)),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff", "pytest"],
+            audit_required=False,
+            max_fix_loops_total=2,
+            max_fix_loops_per_task=2,
+            max_json_repair=0,
+            task_soft_validators=["semgrep"],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": ["semgrep"]}, "final": {"soft_fail": []}},
+            },
+            verbose=False,
+        )
+    )
+
+    assert ok is True
+    run_one_calls = [c for c in _FakeSelectiveValidators.calls if c[0] == "per_task:one"]
+    assert run_one_calls == [("per_task:one", "ruff")]
+
+
+def test_run_loop_reuses_cached_plan_between_runs(tmp_path, monkeypatch):
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "plan-cache"))
+
+    first_responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-fake",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "tasks": [
+                {
+                    "id": "core",
+                    "title": "Create core task",
+                    "goal": "Build core endpoint",
+                    "acceptance": [
+                        "Add tests for core route",
+                        "Validate success and error handling",
+                    ],
+                    "files": ["src/app/main.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                }
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+    ]
+
+    second_responses = [{"role": "implementer", "summary": "ok", "changes": [], "notes": []}]
+
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakePassingValidators)
+
+    first_llm = _FakeLLM(first_responses)
+    ok, _, _, _ = asyncio.run(
+        run_autodev_enterprise(
+            client=cast(LLMClient, first_llm),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff"],
+            audit_required=False,
+            max_fix_loops_total=3,
+            max_fix_loops_per_task=3,
+            max_json_repair=0,
+            task_soft_validators=["semgrep"],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": ["semgrep"]}, "final": {"soft_fail": []}},
+            },
+            verbose=False,
+        )
+    )
+    assert ok is True
+    assert first_llm.calls == 3
+
+    second_llm = _FakeLLM(second_responses)
+    ok2, _, _, _ = asyncio.run(
+        run_autodev_enterprise(
+            client=cast(LLMClient, second_llm),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff"],
+            audit_required=False,
+            max_fix_loops_total=3,
+            max_fix_loops_per_task=3,
+            max_json_repair=0,
+            task_soft_validators=["semgrep"],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": ["semgrep"]}, "final": {"soft_fail": []}},
+            },
+            verbose=False,
+        )
+    )
+    assert ok2 is True
+    assert second_llm.calls == 1

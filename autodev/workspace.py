@@ -130,6 +130,7 @@ class Workspace:
                     "backup": backup,
                     "backup_exists": existed,
                     "next_content": c.content,
+                    "noop": existed and backup == c.content,
                 })
             elif c.op == "delete":
                 existed = self.exists(c.path)
@@ -163,6 +164,7 @@ class Workspace:
                     "backup": backup,
                     "backup_exists": backup_exists,
                     "next_content": updated,
+                    "noop": backup_exists and updated == backup,
                 })
             else:
                 raise ValueError(f"Unknown op: {c.op}")
@@ -174,12 +176,16 @@ class Workspace:
         try:
             for p in pending:
                 if p["op"] == "write":
+                    if p.get("noop"):
+                        continue
                     self.write_text(p["path"], p["next_content"])
                     applied.append(p)
                 elif p["op"] == "delete":
                     self.delete(p["path"])
                     applied.append(p)
                 elif p["op"] == "patch":
+                    if p.get("noop"):
+                        continue
                     self.write_text(p["path"], p["next_content"])
                     applied.append(p)
         except Exception:
