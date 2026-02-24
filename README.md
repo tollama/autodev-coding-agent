@@ -54,6 +54,8 @@ llm:
 
 ## Switching LLM providers
 
+⚡ **Quick summary:** You can switch LLM providers by updating only `llm.base_url`, `llm.api_key`, and `llm.model`. Verify in 30 seconds with the provider swap checklist below.
+
 AutoDev is OpenAI-compatible transport only. To switch providers, only the `llm` block needs to change.
 
 - LM Studio (local):
