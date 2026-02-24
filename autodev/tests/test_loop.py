@@ -3,12 +3,14 @@ import sys
 import json
 import asyncio
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from autodev.loop import _toposort, _resolve_validators, _validations_ok, _build_quality_row, _build_pass_map
-from autodev.loop import run_autodev_enterprise
+from autodev.loop import _llm_json, run_autodev_enterprise
 from autodev.workspace import Workspace
 from autodev.report import write_report
 
@@ -56,7 +58,7 @@ def test_validations_ok_respects_soft_and_hard_rules():
     ]
 
     assert _validations_ok(rows, {"semgrep"}) is False
-    assert _validations_ok(rows, {"semgrep", "ruff"}) is False
+    assert _validations_ok(rows, {"semgrep", "ruff"}) is True
 
 
 def test_quality_row_and_pass_map_builder():
@@ -165,9 +167,92 @@ class _FakeLLM:
         self.calls = 0
 
     async def chat(self, messages, temperature: float = 0.2):
-        resp = self.responses[self.calls]
-        self.calls += 1
+        if self.calls >= len(self.responses):
+            resp = self.responses[-1]
+        else:
+            resp = self.responses[self.calls]
+            self.calls += 1
+        if isinstance(resp, Exception):
+            raise resp
         return json.dumps(resp)
+
+
+class _ScriptedLLM:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = 0
+
+    async def chat(self, messages, temperature: float = 0.2):
+        if self.calls >= len(self.responses):
+            raise RuntimeError("LLM had no scripted response")
+        out = self.responses[self.calls]
+        self.calls += 1
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+
+def test_llm_json_repair_eventually_succeeds():
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+        "additionalProperties": False,
+    }
+    llm = _ScriptedLLM([
+        "not-json",
+        '{"name": 123}',
+        '{"name": "ok"}',
+    ])
+
+    result = asyncio.run(_llm_json(llm, "system", "user", schema, max_repair=2))
+
+    assert result == {"name": "ok"}
+
+
+def test_llm_json_raises_with_clear_message_when_all_repairs_fail():
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+        "additionalProperties": False,
+    }
+
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(
+            _llm_json(
+                _ScriptedLLM(["bad", '{"name": 123}']),
+                "system",
+                "user",
+                schema,
+                max_repair=0,
+            )
+        )
+
+    msg = str(exc.value)
+    assert "Structured JSON generation failed" in msg
+    assert "Last raw output" in msg
+
+
+def test_llm_json_raises_on_chat_failure_before_parse():
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+    }
+
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(
+            _llm_json(
+                _ScriptedLLM([RuntimeError("network")]),
+                "system",
+                "user",
+                schema,
+                max_repair=1,
+            )
+        )
+
+    assert "LLM call failed while generating structured output" in str(exc.value)
 
 
 class _FakePassingValidation:

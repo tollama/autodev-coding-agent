@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from typing import List
@@ -51,6 +52,37 @@ class ExecKernel:
 
     def _normalize_cmd(self, cmd: List[str]) -> List[str]:
         return [str(c) for c in cmd]
+
+    def is_command_available(self, cmd: List[str]) -> bool:
+        if not cmd:
+            return False
+        normalized = self._normalize_cmd(cmd)
+        if not self._allowed(normalized):
+            return False
+
+        base = normalized[0]
+        if base in {"semgrep", "semgrep.exe"}:
+            return shutil.which(base) is not None
+
+        if self._looks_like_semgrep(normalized) and self._is_python(base):
+            # python -I -m semgrep
+            return True
+
+        if base in {"docker", "docker.exe"}:
+            return shutil.which(base) is not None
+
+        if not self._is_python(base):
+            return False
+
+        if len(normalized) >= 4 and normalized[1] == "-I" and normalized[2] == "-m":
+            # python module invocation; command exists if executable exists
+            return shutil.which(base) is not None
+
+        if len(normalized) >= 4 and normalized[1] == "-I":
+            rel = self._normalize_relpath(normalized[2])
+            return os.path.exists(os.path.join(self.cwd, rel))
+
+        return False
 
     @staticmethod
     def _looks_like_semgrep(cmd: List[str]) -> bool:

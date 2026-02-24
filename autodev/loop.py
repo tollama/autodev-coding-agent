@@ -357,6 +357,13 @@ def _quality_metadata_from_changeset(
     return out
 
 
+def _shorten_text(value: str, limit: int = 1400) -> str:
+    text = value.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 5] + " ..."
+
+
 async def _llm_json(
     client: LLMClient,
     system: str,
@@ -364,24 +371,41 @@ async def _llm_json(
     schema: Dict[str, Any],
     max_repair: int = 2,
 ) -> Dict[str, Any]:
-    raw = await client.chat(_msg(system, user), temperature=0.2)
-    for _ in range(max_repair + 1):
+    prompt_user = user
+    last_raw = ""
+    last_error: Exception | None = None
+
+    for attempt in range(max_repair + 1):
+        try:
+            raw = await client.chat(_msg(system, prompt_user), temperature=0.2)
+            last_raw = raw
+        except Exception as e:
+            raise ValueError(f"LLM call failed while generating structured output (attempt {attempt + 1}/{max_repair + 1}): {e}") from e
+
         try:
             data = strict_json_loads(raw)
             validate(instance=data, schema=schema)
             return data
         except Exception as e:
+            last_error = e
+            if attempt >= max_repair:
+                break
             repair_user = f"""Your previous output did not match the required JSON schema.
 Error: {e}
 
 Return ONLY a corrected JSON object that matches the schema.
 Do not include markdown fences or additional text.
 """
-            raw = await client.chat(_msg(system, repair_user), temperature=0.2)
+            prompt_user = repair_user
 
-    data = strict_json_loads(raw)
-    validate(instance=data, schema=schema)
-    return data
+    if last_error is None:
+        raise ValueError("LLM output could not be validated, but no parser/runtime error was captured.")
+
+    raise ValueError(
+        "Structured JSON generation failed after "
+        f"{max_repair + 1} attempts. Last error: {last_error}. "
+        f"Last raw output: { _shorten_text(last_raw) }"
+    )
 
 
 async def run_autodev_enterprise(

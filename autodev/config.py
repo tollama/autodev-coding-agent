@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Dict, List
 
@@ -17,8 +18,16 @@ _QUALITY_PROFILE_KEYS = {
     "by_level",
     "escalation",
 }
+_PROFILE_REQUIRED_KEYS = {"validators", "template_candidates"}
+_PROFILE_OPTIONAL_KEYS = {
+    "security",
+    "validator_policy",
+    "quality_profile",
+}
+_PROFILE_ALLOWED_KEYS = _PROFILE_REQUIRED_KEYS | _PROFILE_OPTIONAL_KEYS
 _AUTODEV_API_KEY_ENV = "AUTODEV_LLM_API_KEY"
 _AUTODEV_API_KEY_PLACEHOLDER = f"${{{_AUTODEV_API_KEY_ENV}}}"
+_DEFAULT_PROFILE_QUALITY_PROFILE = {"validator_policy": {"per_task": {}, "final": {}}}
 
 
 def _resolve_api_key(value: Any) -> Any:
@@ -33,6 +42,28 @@ def _fmt_path(path_parts: List[str]) -> str:
     return ".".join(path_parts)
 
 
+def _coerce_int(value: Any, path: str, errors: List[str], default: int | None = None) -> int | None:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        errors.append(f"{path} must be an integer, not a boolean.")
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        if value.strip() == "":
+            errors.append(f"{path} must be an integer, got empty string.")
+            return default
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    errors.append(f"{path} must be an integer, got {type(value).__name__}.")
+    return default
+
+
 def _validate_string_list(value: Any, path_parts: List[str], errors: List[str]) -> List[str]:
     if not isinstance(value, list):
         errors.append(f"{_fmt_path(path_parts)} must be a list of strings.")
@@ -44,6 +75,86 @@ def _validate_string_list(value: Any, path_parts: List[str], errors: List[str]) 
             continue
         out.append(item)
     return out
+
+
+def _validate_required_profile_fields(profile_name: str, profile: dict[str, Any], errors: List[str]) -> None:
+    for key in sorted(_PROFILE_REQUIRED_KEYS):
+        if key not in profile:
+            errors.append(f"profiles.{profile_name}.{key} is required.")
+
+
+def _validate_profile_keys(profile_name: str, profile: dict[str, Any], errors: List[str]) -> None:
+    unknown = sorted(set(profile.keys()) - _PROFILE_ALLOWED_KEYS)
+    if unknown:
+        errors.append(
+            f"profiles.{profile_name} has unknown key(s): {unknown}. "
+            f"Allowed keys: {sorted(_PROFILE_ALLOWED_KEYS)}."
+        )
+
+
+def _normalize_profile_defaults(profile_name: str, profile: dict[str, Any], errors: List[str]) -> None:
+    security = profile.get("security")
+    if security is None:
+        profile["security"] = {"audit_required": False}
+    elif not isinstance(security, dict):
+        errors.append(f"profiles.{profile_name}.security must be an object.")
+    elif security.get("audit_required") is None:
+        security["audit_required"] = False
+    elif not isinstance(security.get("audit_required"), bool):
+        errors.append(f"profiles.{profile_name}.security.audit_required must be a boolean.")
+
+    quality_profile = profile.get("quality_profile")
+    if quality_profile is None:
+        profile["quality_profile"] = dict(_DEFAULT_PROFILE_QUALITY_PROFILE)
+        return
+    if not isinstance(quality_profile, dict):
+        errors.append(f"profiles.{profile_name}.quality_profile must be an object.")
+        return
+
+    legacy_policy = profile.get("validator_policy")
+    if legacy_policy is None:
+        return
+    if not isinstance(legacy_policy, dict):
+        errors.append(f"profiles.{profile_name}.validator_policy must be an object.")
+        return
+    legacy_serialized = json.dumps(legacy_policy, sort_keys=True)
+    new_policy = quality_profile.get("validator_policy")
+    if new_policy is None:
+        quality_profile["validator_policy"] = legacy_policy
+        return
+    if not isinstance(new_policy, dict):
+        return
+    if json.dumps(new_policy, sort_keys=True) != legacy_serialized:
+        errors.append(
+            f"profiles.{profile_name} has ambiguous policy configuration: "
+            "profiles.validator_policy and quality_profile.validator_policy differ. "
+            "Configure policy only in quality_profile.validator_policy."
+        )
+
+
+def _validate_profile_types(profile_name: str, profile: dict[str, Any], errors: List[str]) -> None:
+    validators = _validate_string_list(
+        profile.get("validators"),
+        ["profiles", profile_name, "validators"],
+        errors,
+    )
+    if validators == []:
+        errors.append(f"profiles.{profile_name}.validators must be a non-empty list of strings.")
+    else:
+        for i, name in enumerate(validators):
+            item_path = _fmt_path(["profiles", profile_name, f"validators[{i}]"])
+            if name not in VALIDATORS:
+                errors.append(
+                    f"{item_path} has unknown validator '{name}'. "
+                    f"Allowed validators: {VALIDATORS}."
+                )
+
+    template_candidates = profile.get("template_candidates")
+    if template_candidates is None:
+        return
+    candidates = _validate_string_list(template_candidates, ["profiles", profile_name, "template_candidates"], errors)
+    if template_candidates is not None and candidates == []:
+        errors.append(f"profiles.{profile_name}.template_candidates must be a non-empty list of strings.")
 
 
 def _validate_validator_policy(
@@ -86,7 +197,7 @@ def _validate_validator_policy(
             continue
         soft_fail = _validate_string_list(section_value["soft_fail"], section_path + ["soft_fail"], errors)
         for i, name in enumerate(soft_fail):
-            item_path = _fmt_path(section_path + [f"soft_fail[{i}]"])
+            item_path = _fmt_path(section_path + ["soft_fail", f"[{i}]"])
             if name not in known_set:
                 errors.append(
                     f"{item_path} has unknown validator '{name}'. "
@@ -242,9 +353,7 @@ def _validate_quality_profile(profile_name: str, quality_profile: Any, errors: L
 
     enabled = repeat_guard.get("enabled")
     if enabled is not None and not isinstance(enabled, bool):
-        errors.append(
-            f"{_fmt_path(base + ['escalation', 'repeat_failure_guard', 'enabled'])} must be a boolean."
-        )
+        errors.append(f"{_fmt_path(base + ['escalation', 'repeat_failure_guard', 'enabled'])} must be a boolean.")
 
     repeats = repeat_guard.get("max_retries_before_targeted_fix")
     if repeats is not None:
@@ -255,47 +364,79 @@ def _validate_quality_profile(profile_name: str, quality_profile: Any, errors: L
             )
 
 
-def _validate_config(config: Any) -> Dict[str, Any]:
-    errors: List[str] = []
-    if not isinstance(config, dict):
-        raise ValueError("Invalid config: top-level YAML must be an object.")
+def _validate_llm_section(llm_cfg: Any, errors: List[str]) -> None:
+    if not isinstance(llm_cfg, dict):
+        errors.append("llm must be an object.")
+        return
 
-    profiles = config.get("profiles")
+    base_url = llm_cfg.get("base_url")
+    if not isinstance(base_url, str) or not base_url.strip():
+        errors.append("llm.base_url is required and must be a non-empty string.")
+
+    model = llm_cfg.get("model")
+    if not isinstance(model, str) or not model.strip():
+        errors.append("llm.model is required and must be a non-empty string.")
+
+    resolved_api_key = _resolve_api_key(llm_cfg.get("api_key"))
+    llm_cfg["api_key"] = resolved_api_key
+    if not isinstance(resolved_api_key, str) or not resolved_api_key.strip():
+        errors.append(
+            "llm.api_key is required. Set llm.api_key in config.yaml or define AUTODEV_LLM_API_KEY in environment."
+        )
+
+    timeout = _coerce_int(llm_cfg.get("timeout_sec"), "llm.timeout_sec", errors, default=240)
+    if timeout is not None:
+        if timeout <= 0:
+            errors.append("llm.timeout_sec must be a positive integer.")
+        else:
+            llm_cfg["timeout_sec"] = timeout
+
+
+def _validate_profile_map(profiles: Any, errors: List[str]) -> None:
     if not isinstance(profiles, dict):
         errors.append("profiles must be an object mapping profile name to settings.")
-        profiles = {}
+        return
+    if not profiles:
+        errors.append("profiles must contain at least one profile.")
+        return
 
-    known_set = set(VALIDATORS)
     for profile_name, profile in profiles.items():
         profile_path = ["profiles", str(profile_name)]
         if not isinstance(profile, dict):
             errors.append(f"{_fmt_path(profile_path)} must be an object.")
             continue
 
-        validators_value = profile.get("validators")
-        validators: List[str] = _validate_string_list(validators_value, profile_path + ["validators"], errors)
-        for i, name in enumerate(validators):
-            item_path = _fmt_path(profile_path + [f"validators[{i}]"])
-            if name not in known_set:
-                errors.append(
-                    f"{item_path} has unknown validator '{name}'. "
-                    f"Allowed validators: {VALIDATORS}."
-                )
-
-        _validate_validator_policy(
-            profile_name=str(profile_name),
-            policy=profile.get("validator_policy"),
-            errors=errors,
-        )
+        _validate_profile_keys(profile_name=str(profile_name), profile=profile, errors=errors)
+        _validate_required_profile_fields(profile_name=str(profile_name), profile=profile, errors=errors)
+        _validate_profile_types(profile_name=str(profile_name), profile=profile, errors=errors)
+        _normalize_profile_defaults(profile_name=str(profile_name), profile=profile, errors=errors)
         _validate_quality_profile(
             profile_name=str(profile_name),
             quality_profile=profile.get("quality_profile"),
             errors=errors,
         )
 
+
+def _validate_config(config: Any) -> Dict[str, Any]:
+    errors: List[str] = []
+    if not isinstance(config, dict):
+        raise ValueError("Invalid config: top-level YAML must be an object.")
+
     llm_cfg = config.get("llm")
-    if isinstance(llm_cfg, dict):
-        llm_cfg["api_key"] = _resolve_api_key(llm_cfg.get("api_key"))
+    if llm_cfg is None:
+        errors.append("Missing required section: llm")
+    else:
+        _validate_llm_section(llm_cfg, errors)
+
+    profiles = config.get("profiles")
+    _validate_profile_map(profiles, errors)
+
+    run = config.get("run")
+    if run is None:
+        config["run"] = {}
+    if not isinstance(config["run"], dict):
+        errors.append("run must be an object.")
+        config["run"] = {}
 
     if errors:
         msg = "Invalid config:\n- " + "\n- ".join(errors)

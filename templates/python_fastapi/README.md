@@ -1,5 +1,8 @@
 # Generated FastAPI App (AutoDev)
 
+Template CI contract and pinned tool versions live in:
+`docs/ops/template-validation-contract.json`.
+
 Run locally:
 ```bash
 pip install -r requirements.txt

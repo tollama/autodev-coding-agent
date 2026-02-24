@@ -60,15 +60,39 @@ run:
 profiles:
   enterprise:
     template_candidates: ["python_fastapi", "python_cli"]
-    validators: ["ruff", "mypy", "pytest", "pip_audit", "bandit", "sbom"]
+    validators: ["ruff", "mypy", "pytest", "pip_audit", "bandit", "semgrep", "sbom", "docker_build"]
     security:
       audit_required: false
-    validator_policy:
-      per_task:
-        soft_fail: ["docker_build", "pip_audit", "sbom"]
-      final:
-        soft_fail: []
+    quality_profile:
+      name: balanced
+      validator_policy:
+        per_task:
+          soft_fail: ["docker_build", "pip_audit", "sbom", "semgrep"]
+        final:
+          soft_fail: ["pip_audit", "sbom", "semgrep"]
+      per_task_soft: ["docker_build", "pip_audit", "sbom", "semgrep"]
+      final_soft: ["pip_audit", "sbom", "semgrep"]
+      by_level:
+        strict:
+          per_task_soft: ["docker_build"]
+          final_soft: []
 ```
+
+## Profiles
+Profile-specific execution settings live under `profiles` in `config.yaml`.
+
+Required profile fields:
+- `template_candidates` (non-empty list)
+- `validators` (non-empty list)
+
+Optional profile fields:
+- `security.audit_required` (default `false`)
+- `quality_profile` (execution policy, defaults to permissive runtime behavior)
+
+CLI behavior:
+- `--profile` defaults to the only defined profile when exactly one profile exists.
+- If multiple profiles are defined, `--profile` is required to avoid ambiguous behavior.
+- If the requested profile does not exist, CLI exits with a clear list of available names.
 
 ## Run
 Use either module form:
@@ -121,9 +145,10 @@ Notes:
 - `pip_audit` can be treated as warning when `audit_required: false`.
 - `semgrep` uses local rule file `.semgrep.yml`.
 - `docker_build` runs `docker build -t autodev-app:test .`.
-- `validator_policy.per_task.soft_fail` controls which validators are non-blocking inside task fix loops.
-- `validator_policy.final.soft_fail` controls which validators are non-blocking in final project validation.
-- Config load validates validator names and policy structure; invalid entries fail fast with path-specific errors.
+- `quality_profile.validator_policy.per_task.soft_fail` controls which validators are non-blocking inside task fix loops.
+- `quality_profile.validator_policy.final.soft_fail` controls which validators are non-blocking in final project validation.
+- Legacy top-level `validator_policy` is normalized into `quality_profile.validator_policy` for backward compatibility.
+- Config load validates validator names and profile structure; invalid entries fail fast with path-specific errors.
 
 ## Recommended PRD Structure
 The parser accepts free-form markdown, but this structure works best:

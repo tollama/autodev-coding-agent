@@ -5,8 +5,9 @@ from autodev.exec_kernel import ExecKernel, CmdResult
 
 
 class _FakeKernel:
-    def __init__(self, command_results=None):
+    def __init__(self, command_results=None, available=True):
         self.command_results = dict(command_results or {})
+        self._available = available
 
     def run(self, cmd):
         cmd_key = tuple(cmd)
@@ -21,6 +22,9 @@ class _FakeKernel:
         else:
             code = 0
         return CmdResult(cmd=cmd, returncode=code, stdout="", stderr="")
+
+    def is_command_available(self, cmd):
+        return bool(self._available)
 
     def module_cmd(self, python_executable, module, *args):
         return [python_executable, "-I", "-m", module, *args]
@@ -83,5 +87,33 @@ def test_run_all_preserves_phase_and_soft_split():
     payload = Validators.serialize(results)
 
     assert payload[0]["phase"] == "per_task"
-    assert payload[1]["name"] == "pip_audit"
-    assert payload[1]["phase"] == "per_task"
+    assert {r["name"] for r in payload} == {"ruff", "pip_audit", "semgrep"}
+    assert payload[1]["name"] == "semgrep"
+    assert payload[2]["name"] == "pip_audit"
+    assert payload[2]["phase"] == "per_task"
+
+
+def test_unavailable_tool_is_reported_as_failed_without_throwing():
+    fake_kernel = _FakeKernel(available=False)
+    validators = Validators(kernel=fake_kernel, env=_FakeEnvManager(fake_kernel))
+
+    result = validators.run_one("docker_build", phase="final")
+    assert result.status == "failed"
+    assert result.ok is False
+    assert result.error_classification == "tool_unavailable"
+    assert result.note == "validator command unavailable"
+    assert result.result.returncode == 127
+
+
+def test_disallowed_command_exception_maps_to_failed_validation():
+    class _RejectingKernel(_FakeKernel):
+        def run(self, cmd):
+            raise RuntimeError("Command not allowed")
+
+    kernel = _RejectingKernel()
+    validators = Validators(kernel=kernel, env=_FakeEnvManager(kernel))
+
+    result = validators.run_one("ruff")
+    assert result.status == "failed"
+    assert result.ok is False
+    assert result.error_classification == "tool_error"

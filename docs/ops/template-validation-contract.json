@@ -1,0 +1,31 @@
+{
+  "name": "template-ci-gates",
+  "description": "Canonical validation contract for generated Python templates",
+  "python_version": "3.11",
+  "tool_versions": {
+    "ruff": "0.5.7",
+    "mypy": "1.11.1",
+    "pip_audit": "2.7.3",
+    "bandit": "1.7.10",
+    "semgrep": "1.90.0"
+  },
+  "tool_version_env": {
+    "ruff": "RUFF_VERSION",
+    "mypy": "MYPY_VERSION",
+    "pip_audit": "PIP_AUDIT_VERSION",
+    "bandit": "BANDIT_VERSION",
+    "semgrep": "SEMGREP_VERSION"
+  },
+  "required_commands": [
+    "python -m ruff check .",
+    "python -m mypy src",
+    "PYTHONPATH=src python -m pytest -q",
+    "python -m pip_audit -r requirements.txt",
+    "python -m bandit -q -r src",
+    "python -m semgrep --config .semgrep.yml --error",
+    "python scripts/generate_sbom.py"
+  ],
+  "notes": {
+    "status": "required"
+  }
+}

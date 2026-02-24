@@ -1,0 +1,32 @@
+from pathlib import Path
+
+import pytest
+
+from autodev.exec_kernel import ExecKernel
+
+
+def test_is_command_available_checks_binary_presence(monkeypatch, tmp_path: Path):
+    kernel = ExecKernel(cwd=str(tmp_path), timeout_sec=10)
+
+    def fake_which(cmd):
+        if cmd == "semgrep":
+            return None
+        if cmd == "python":
+            return "/usr/bin/python"
+        return "/usr/bin/docker"
+
+    monkeypatch.setattr("autodev.exec_kernel.shutil.which", fake_which)
+    assert kernel.is_command_available(["semgrep", "--config", ".semgrep.yml", "--error"]) is False
+    assert kernel.is_command_available(["python", "-I", "-m", "ruff", "--version"]) is True
+
+
+def test_is_command_available_blocks_disallowed_shape():
+    kernel = ExecKernel(cwd=".", timeout_sec=10)
+    assert kernel.is_command_available(["python", "-c", "print('x')"]) is False
+    assert kernel.is_command_available(["docker", "run", "hello"]) is False
+
+
+def test_run_rejects_disallowed_shape():
+    kernel = ExecKernel(cwd=".", timeout_sec=10)
+    with pytest.raises(RuntimeError):
+        kernel.run(["python", "-c", "print('x')"])

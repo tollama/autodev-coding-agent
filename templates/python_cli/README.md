@@ -1,5 +1,8 @@
 # Generated CLI App (AutoDev)
 
+Template CI contract and pinned tool versions live in:
+`docs/ops/template-validation-contract.json`.
+
 Run:
 ```bash
 python -m app.cli --hello world

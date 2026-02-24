@@ -11,10 +11,27 @@ class Hunk:
     new_len: int
     lines: List[str]  # includes leading ' ', '+', '-'
 
-_HUNK_RE = re.compile(r'^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@')
+_HUNK_RE = re.compile(r'^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?(?:\s+@@)?$')
+
+
+def _strip_diff_fence(diff_text: str) -> str:
+    cleaned = diff_text.strip()
+    if not cleaned.startswith("```"):
+        return diff_text
+
+    lines = cleaned.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].startswith("```"):
+        lines = lines[:-1]
+    if not lines:
+        return ""
+    return "\n".join(lines) + "\n"
+
 
 def parse_unified_diff(diff_text: str) -> List[Hunk]:
-    lines = diff_text.splitlines(keepends=True)
+    text = _strip_diff_fence(diff_text)
+    lines = text.splitlines(keepends=True)
     hunks: List[Hunk] = []
     i = 0
     while i < len(lines):
@@ -52,20 +69,20 @@ def parse_unified_diff(diff_text: str) -> List[Hunk]:
         raise ValueError('No hunks found in diff')
     return hunks
 
+
+def validate_unified_diff(diff_text: str) -> None:
+    parse_unified_diff(diff_text)
+
+
 def apply_unified_diff(original: str, diff_text: str) -> str:
-    # clean markdown blocks if any
-    if diff_text.strip().startswith('```'):
-        lines = diff_text.strip().splitlines()
-        if lines[0].startswith('```'): lines = lines[1:]
-        if lines and lines[-1].startswith('```'): lines = lines[:-1]
-        diff_text = '\n'.join(lines) + '\n'
+    text = _strip_diff_fence(diff_text)
 
     try:
-        hunks = parse_unified_diff(diff_text)
+        hunks = parse_unified_diff(text)
     except ValueError as e:
         if str(e) == 'No hunks found in diff':
             # fallback: treat as full rewrite
-            return diff_text
+            return text
         raise e
 
     orig_lines = original.splitlines(keepends=True)
@@ -84,23 +101,23 @@ def apply_unified_diff(original: str, diff_text: str) -> str:
 
         for dl in h.lines:
             prefix = dl[:1]
-            text = dl[1:]
+            text_line = dl[1:]
             if prefix == ' ':
                 # context must match
                 if orig_idx >= len(orig_lines):
                     raise ValueError('Context beyond EOF')
-                if orig_lines[orig_idx] != text:
+                if orig_lines[orig_idx] != text_line:
                     raise ValueError('Context mismatch')
-                out.append(text)
+                out.append(text_line)
                 orig_idx += 1
             elif prefix == '-':
                 if orig_idx >= len(orig_lines):
                     raise ValueError('Delete beyond EOF')
-                if orig_lines[orig_idx] != text:
+                if orig_lines[orig_idx] != text_line:
                     raise ValueError('Delete mismatch')
                 orig_idx += 1
             elif prefix == '+':
-                out.append(text)
+                out.append(text_line)
             else:
                 raise ValueError(f'Unknown prefix: {prefix!r}')
 

@@ -3,7 +3,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from typing import List
-from .patch_utils import apply_unified_diff
+from .patch_utils import apply_unified_diff, validate_unified_diff
 
 @dataclass
 class Change:
@@ -121,13 +121,16 @@ class Workspace:
             elif c.op == "patch":
                 if c.content is None:
                     raise ValueError("patch op requires content(diff)")
-                if not self.exists(c.path):
-                    # fallback: if patch is requested on missing file, treat as write (full rewrite)
-                    updated = apply_unified_diff("", c.content)
-                    self.write_text(c.path, updated)
-                else:
+                if c.content == "":
+                    raise ValueError("patch content must not be empty")
+                if self.exists(c.path):
+                    # ensure this is a valid unified diff before attempting apply
+                    validate_unified_diff(c.content)
                     original = self.read_text(c.path)
                     updated = apply_unified_diff(original, c.content)
-                    self.write_text(c.path, updated)
+                else:
+                    # fallback: if patch is requested on missing file, treat as write (full rewrite)
+                    updated = apply_unified_diff("", c.content)
+                self.write_text(c.path, updated)
             else:
                 raise ValueError(f"Unknown op: {c.op}")
