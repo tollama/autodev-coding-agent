@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from app.cli import build_parser, main
+from app.cli import build_parser, main, _cached_greeting_outputs
 
 
 def test_cli_contract_structure_and_examples(capsys):
@@ -49,3 +49,10 @@ def test_cli_error_and_fallback_paths(capsys):
     out = capsys.readouterr()
     assert rc == 0
     assert out.out == "hello world\n"
+
+
+def test_cli_greeting_cache_is_reused():
+    first = _cached_greeting_outputs("agent", 2)
+    second = _cached_greeting_outputs("agent", 2)
+    assert first == second
+    assert first is second

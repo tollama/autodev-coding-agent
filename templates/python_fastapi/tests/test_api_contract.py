@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from jsonschema import validate as js_validate
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from app.main import app
+from app.main import app, _cached_echo_values, _to_payload
 
 
 def _load_contract() -> Dict[str, Any]:
@@ -194,3 +194,18 @@ def test_echo_rejects_domain_range_violation_and_surfaces_request_id():
     assert bad.headers.get("x-request-id") == "req-test-123"
     body = bad.json()
     assert body["error"]["code"] == "INVALID_REQUEST"
+
+def test_echo_uses_cached_response_shape_and_values() -> None:
+    values_first = _cached_echo_values("warm", 3)
+    values_second = _cached_echo_values("warm", 3)
+    assert values_first == values_second
+    assert values_first is values_second
+
+
+def test_error_payload_serializes_via_json_mode() -> None:
+    class _Model:
+        def model_dump(self, mode: str = "python"):
+            return {"error": {"code": "x", "message": "y", "details": {}}}
+
+    payload = _to_payload(_Model())  # type: ignore[arg-type]
+    assert payload == {"error": {"code": "x", "message": "y", "details": {}}}

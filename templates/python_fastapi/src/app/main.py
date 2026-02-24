@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
-import uuid
+import os
+from functools import lru_cache
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -11,9 +13,21 @@ from pydantic import BaseModel, Field
 
 from app.models import ErrorDetail, ErrorResponse, HealthResponse
 
-logger = logging.getLogger(__name__)
+LOG_LEVEL = os.getenv("AUTODEV_LOG_LEVEL", "INFO").upper()
+LOG_REQUEST_LOGGING = os.getenv("AUTODEV_REQUEST_LOGGING", "true").lower() in {"1", "true", "yes", "on"}
 
-app = FastAPI(title="AutoDev App")
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger(__name__)
+logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+
+app = FastAPI(
+    title="AutoDev App",
+    # Performance-oriented default: omit nulls in responses and keep payloads compact for clients.
+    response_model_exclude_none=True,
+)
 
 
 def _error_response(code: str, message: str, details: dict[str, Any] | None = None) -> ErrorResponse:
@@ -21,20 +35,41 @@ def _error_response(code: str, message: str, details: dict[str, Any] | None = No
 
 
 def _to_payload(response: ErrorResponse) -> dict[str, Any]:
-    return response.model_dump() if hasattr(response, "model_dump") else response.dict()
+    """Serialize FastAPI response models using Pydantic JSON mode for predictable payloads."""
+
+    # Pydantic v2: `mode="json"` avoids Python-specific conversion surprises and is the
+    # fast path when models are the app contract boundary.
+    return response.model_dump(mode="json")
+
+
+@lru_cache(maxsize=128)
+def _cached_echo_values(payload: str, repeat: int) -> tuple[str, ...]:
+    """Cache repeated echo payload expansion to avoid re-allocating on hot paths."""
+
+    return tuple(payload for _ in range(repeat))
 
 
 @app.middleware("http")
 async def add_request_context(request: Request, call_next):
-    request_id = request.headers.get("x-request-id") or f"req-{uuid.uuid4()}"
+    request_id = request.headers.get("x-request-id") or f"req-{uuid4()}"
     request.state.request_id = request_id
-    logger.info("request.start", extra={"request_id": request_id, "path": str(request.url.path), "method": request.method})
+    path = str(request.url.path)
+
+    if LOG_REQUEST_LOGGING and logger.isEnabledFor(logging.INFO):
+        logger.info(
+            "request.start",
+            extra={"request_id": request_id, "path": path, "method": request.method},
+        )
+
     response = await call_next(request)
     response.headers["x-request-id"] = request_id
-    logger.info(
-        "request.finish",
-        extra={"request_id": request_id, "status_code": response.status_code, "path": str(request.url.path)},
-    )
+
+    if LOG_REQUEST_LOGGING and logger.isEnabledFor(logging.INFO):
+        logger.info(
+            "request.finish",
+            extra={"request_id": request_id, "status_code": response.status_code, "path": path},
+        )
+
     return response
 
 
@@ -56,7 +91,7 @@ class EchoResponse(BaseModel):
 
 @app.post("/echo", response_model=EchoResponse)
 def echo(payload: EchoPayload) -> EchoResponse:
-    values = [payload.payload for _ in range(payload.repeat)]
+    values = list(_cached_echo_values(payload.payload, payload.repeat))
     return EchoResponse(payload=payload.payload, repeats=payload.repeat, values=values)
 
 
@@ -78,7 +113,10 @@ async def value_error_handler(request: Request, exc: ValueError):
 @app.exception_handler(RequestValidationError)
 async def validation_handler(request: Request, exc: RequestValidationError):
     request_id = getattr(request.state, "request_id", request.headers.get("x-request-id", "req-unknown"))
-    logger.warning("request.validation_error", extra={"request_id": request_id, "errors": len(exc.errors())})
+    logger.warning(
+        "request.validation_error",
+        extra={"request_id": request_id, "errors": len(exc.errors())},
+    )
     response = _error_response(
         code="INVALID_REQUEST",
         message="Request validation failed",
