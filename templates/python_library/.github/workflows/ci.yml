@@ -24,7 +24,7 @@ jobs:
       - name: Security scan
         run: python -m bandit -q -r src
       - name: Tests
-        run: python -m pytest -q tests
+        run: PYTHONPATH=src python -m pytest -q tests
       - name: Dependency security audit
         run: python -m pip_audit -r requirements.txt
       - name: Semgrep scan

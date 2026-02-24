@@ -2,6 +2,7 @@ from pathlib import Path
 import sys
 import json
 import asyncio
+from typing import Any, cast
 
 import pytest
 
@@ -13,6 +14,9 @@ from autodev.loop import _toposort, _resolve_validators, _validations_ok, _build
 from autodev.loop import _llm_json, run_autodev_enterprise  # noqa: E402
 from autodev.workspace import Workspace  # noqa: E402
 from autodev.report import write_report  # noqa: E402
+from autodev.exec_kernel import ExecKernel, CmdResult  # noqa: E402
+from autodev.env_manager import EnvManager  # noqa: E402
+from autodev.llm_client import LLMClient  # noqa: E402
 
 
 def test_toposort_orders_by_dependencies():
@@ -103,7 +107,7 @@ class _FakeValidation:
 
 
 class _FakeValidators:
-    calls: list[tuple[str, list[str], list[str]]] = []
+    calls: list[tuple[str, list[str], list[str], dict[str, Any]]] = []
 
     def __init__(self, *args, **kwargs):
         pass
@@ -139,17 +143,17 @@ class _FakeValidators:
         return [_FakeValidation("ruff", True, "passed", 0)]
 
 
-class _FakeKernel:
+class _FakeKernel(ExecKernel):
     def __init__(self, cwd: str, timeout_sec: int = 1200):
-        self.cwd = cwd
+        super().__init__(cwd=cwd, timeout_sec=timeout_sec)
 
-    def run(self, cmd):
-        return type("R", (), {"cmd": cmd, "returncode": 0, "stdout": "", "stderr": ""})()
+    def run(self, cmd: list[str]) -> CmdResult:
+        return CmdResult(cmd=cmd, returncode=0, stdout="", stderr="")
 
 
-class _FakeEnvManager:
-    def __init__(self, kernel):
-        pass
+class _FakeEnvManager(EnvManager):
+    def __init__(self, kernel: ExecKernel):
+        self.k = kernel
 
     def ensure_venv(self, system_python: str = "python") -> None:
         return None
@@ -161,12 +165,13 @@ class _FakeEnvManager:
         return "/fake/python"
 
 
-class _FakeLLM:
+class _FakeLLM(LLMClient):
     def __init__(self, responses):
+        # Keep a lightweight in-memory stub; no network calls.
         self.responses = responses
         self.calls = 0
 
-    async def chat(self, messages, temperature: float = 0.2):
+    async def chat(self, messages: list[dict[str, str]], temperature: float = 0.2) -> str:
         if self.calls >= len(self.responses):
             resp = self.responses[-1]
         else:
@@ -177,12 +182,12 @@ class _FakeLLM:
         return json.dumps(resp)
 
 
-class _ScriptedLLM:
+class _ScriptedLLM(LLMClient):
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = 0
 
-    async def chat(self, messages, temperature: float = 0.2):
+    async def chat(self, messages: list[dict[str, str]], temperature: float = 0.2) -> str:
         if self.calls >= len(self.responses):
             raise RuntimeError("LLM had no scripted response")
         out = self.responses[self.calls]
@@ -205,7 +210,7 @@ def test_llm_json_repair_eventually_succeeds():
         '{"name": "ok"}',
     ])
 
-    result = asyncio.run(_llm_json(llm, "system", "user", schema, max_repair=2))
+    result = asyncio.run(_llm_json(cast(LLMClient, llm), "system", "user", schema, max_repair=2))
 
     assert result == {"name": "ok"}
 
@@ -221,7 +226,7 @@ def test_llm_json_raises_with_clear_message_when_all_repairs_fail():
     with pytest.raises(ValueError) as exc:
         asyncio.run(
             _llm_json(
-                _ScriptedLLM(["bad", '{"name": 123}']),
+                cast(LLMClient, _ScriptedLLM(["bad", '{"name": 123}'])),
                 "system",
                 "user",
                 schema,
@@ -244,7 +249,7 @@ def test_llm_json_raises_on_chat_failure_before_parse():
     with pytest.raises(ValueError) as exc:
         asyncio.run(
             _llm_json(
-                _ScriptedLLM([RuntimeError("network")]),
+                cast(LLMClient, _ScriptedLLM([RuntimeError("network")]),),
                 "system",
                 "user",
                 schema,
@@ -268,7 +273,7 @@ class _FakePassingValidation:
 
 
 class _FakePassingValidators:
-    calls: list[tuple[str, list[str], list[str]]] = []
+    calls: list[tuple[str, list[str], list[str], dict[str, Any]]] = []
 
     def __init__(self, *args, **kwargs):
         pass
@@ -354,7 +359,7 @@ def test_run_loop_repair_escalation_path(tmp_path, monkeypatch):
 
     ok, _, plan, _ = asyncio.run(
         run_autodev_enterprise(
-            client=_FakeLLM(responses),
+            client=cast(LLMClient, _FakeLLM(responses)),
             ws=ws,
             prd_markdown="",
             template_root=str(ROOT / "templates"),
@@ -440,7 +445,7 @@ def test_run_loop_end_to_end_reports_and_quality_payloads(tmp_path, monkeypatch)
 
     ok, prd_struct, plan, last_validation = asyncio.run(
         run_autodev_enterprise(
-            client=_FakeLLM(responses),
+            client=cast(LLMClient, _FakeLLM(responses)),
             ws=ws,
             prd_markdown="",
             template_root=str(ROOT / "templates"),
@@ -533,7 +538,7 @@ def test_run_loop_resolves_gate_profile_by_plan_quality_level(tmp_path, monkeypa
 
     ok, _, _, _ = asyncio.run(
         run_autodev_enterprise(
-            client=_FakeLLM(responses),
+            client=cast(LLMClient, _FakeLLM(responses)),
             ws=ws,
             prd_markdown="",
             template_root=str(ROOT / "templates"),
@@ -629,7 +634,7 @@ def test_run_loop_emits_structured_loop_events(monkeypatch, tmp_path):
 
     ok, _, _, _ = asyncio.run(
         loop.run_autodev_enterprise(
-            client=_FakeLLM(responses),
+            client=cast(LLMClient, _FakeLLM(responses)),
             ws=ws,
             prd_markdown="",
             template_root=str(ROOT / "templates"),

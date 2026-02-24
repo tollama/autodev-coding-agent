@@ -4,13 +4,14 @@ import pytest
 from autodev.validators import Validators, register_validator, get_validator_definition
 from autodev import validators as validators_module
 from autodev.exec_kernel import ExecKernel, CmdResult
+from autodev.env_manager import EnvManager
 
 
-class _FakeKernel:
+class _FakeKernel(ExecKernel):
     def __init__(self, command_results=None, available=True):
+        super().__init__(cwd=".")
         self.command_results = dict(command_results or {})
         self._available = available
-        self.cwd = "."
 
     def run(self, cmd):
         cmd_key = tuple(cmd)
@@ -29,16 +30,16 @@ class _FakeKernel:
     def is_command_available(self, cmd):
         return bool(self._available)
 
-    def module_cmd(self, python_executable, module, *args):
+    def module_cmd(self, python_executable: str, module: str, *args: str) -> list[str]:
         return [python_executable, "-I", "-m", module, *args]
 
-    def script_cmd(self, python_executable, script_rel_path, *args):
+    def script_cmd(self, python_executable: str, script_rel_path: str, *args: str) -> list[str]:
         return [python_executable, "-I", script_rel_path, *args]
 
 
-class _FakeEnvManager:
+class _FakeEnvManager(EnvManager):
     def __init__(self, kernel: _FakeKernel):
-        self._kernel = kernel
+        self.k = kernel
 
     def venv_python(self) -> str:
         return "/fake/python"
@@ -137,7 +138,11 @@ def test_validator_result_events_include_context(monkeypatch):
     monkeypatch.setattr(vmod, "_log_event", _capture)
 
     validators.run_one("ruff", run_id="run-log", request_id="req-log", profile="minimal", task_id="task-1", iteration=2)
-    validators._version = lambda _v, python_executable="python": "1.2.3"
+
+    def _fake_version(_self: object, _validator: str, python_executable: str = "python") -> str:
+        return "1.2.3"
+
+    validators._version = _fake_version  # type: ignore[method-assign, assignment]
 
     assert any(evt.get("event") == "validator.result" for evt in events)
     evt = next(evt for evt in events if evt.get("event") == "validator.result")

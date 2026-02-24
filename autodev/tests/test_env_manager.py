@@ -7,19 +7,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))  # noqa: E402
 
 from autodev.env_manager import EnvManager  # noqa: E402
-from autodev.exec_kernel import CmdResult  # noqa: E402
+from autodev.exec_kernel import ExecKernel, CmdResult  # noqa: E402
 
 
-class FakeKernel:
+class FakeKernel(ExecKernel):
     def __init__(self, results):
-        self.cwd = os.getcwd()
+        super().__init__(cwd=os.getcwd())
         self.results = list(results)
-        self.commands = []
+        self.commands: list[object] = []
 
-    def module_cmd(self, *args):
-        return list(args)
+    def module_cmd(self, python_executable: str, module: str, *args: str) -> list[str]:
+        return [python_executable, "-I", "-m", module, *args]
 
-    def run(self, cmd):
+    def run(self, cmd: list[str]):
         self.commands.append(cmd)
         if not self.results:
             return CmdResult(cmd=cmd, returncode=0, stdout="", stderr="")
@@ -29,7 +29,7 @@ class FakeKernel:
 def test_ensure_venv_raises_on_bootstrap_failure():
     kernel = FakeKernel([CmdResult(cmd=["python", "-m", "venv", ".venv"], returncode=1, stdout="", stderr="venv failed")])
     em = EnvManager(kernel)
-    em.venv_python = lambda: "/tmp/nonexistent-env/bin/python"
+    em.venv_python = lambda: "/tmp/nonexistent-env/bin/python"  # type: ignore[method-assign, assignment]
 
     try:
         em.ensure_venv(system_python="python")
@@ -49,7 +49,7 @@ def test_install_requirements_raises_on_bootstrap_failure():
         CmdResult(cmd=["/tmp/env/bin/python", "-m", "pip", "install", "-r", "requirements.txt"], returncode=2, stdout="", stderr="bad requirements"),
     ])
     em = EnvManager(kernel)
-    em.venv_python = lambda: "/tmp/env/bin/python"
+    em.venv_python = lambda: "/tmp/env/bin/python"  # type: ignore[method-assign, assignment]
 
     try:
         em.install_requirements()

@@ -154,12 +154,20 @@ profiles:
     cfg_path, prd_path = _build_fake_args(tmp_path)
     cfg_path.write_text(cfg, encoding="utf-8")
 
-    captured: dict[str, object] = {}
+    captured: dict[str, str] = {}
 
     async def _fake_run_autodev_enterprise(*_args, **kwargs):
-        captured["run_id"] = kwargs.get("run_id")
-        captured["request_id"] = kwargs.get("request_id")
-        captured["profile"] = kwargs.get("profile")
+        run_id = kwargs.get("run_id")
+        request_id = kwargs.get("request_id")
+        profile = kwargs.get("profile")
+
+        assert isinstance(run_id, str)
+        assert isinstance(request_id, str)
+        assert isinstance(profile, str)
+
+        captured["run_id"] = run_id
+        captured["request_id"] = request_id
+        captured["profile"] = profile
         return True, {"project": {}}, {"project": {}}, []
 
     monkeypatch.setattr(main, "run_autodev_enterprise", _fake_run_autodev_enterprise)
