@@ -27,7 +27,7 @@ It takes a Markdown PRD, plans implementation tasks, generates code, runs local 
 ## Requirements
 - Python 3.10+
 - Optional Docker (only needed for `docker_build` validation)
-- OpenAI-compatible chat endpoint (LM Studio or OpenAI-compatible API)
+- OpenAI-compatible chat endpoint (LM Studio, Ollama, or any OpenAI-compatible API)
 
 ## Install
 ```bash
@@ -50,13 +50,109 @@ llm:
   api_key: ${AUTODEV_LLM_API_KEY}
   model: "qwen3-coder-30b-a3b-instruct-mlx"
   timeout_sec: 240
+```
 
+## Switching LLM providers
+
+AutoDev is OpenAI-compatible transport only. To switch providers, only the `llm` block needs to change.
+
+- LM Studio (local):
+
+  ```yaml
+  llm:
+    base_url: "http://127.0.0.1:1234/v1"
+    api_key: ${AUTODEV_LLM_API_KEY}
+    model: "qwen3-coder-30b-a3b-instruct-mlx"
+  ```
+
+- Ollama:
+
+  ```yaml
+  llm:
+    base_url: "http://127.0.0.1:11434/v1"
+    api_key: "ollama"  # Ollama does not require a real key
+    model: "llama3.1:8b"
+  ```
+
+  - For Ollama, set `AUTODEV_LLM_API_KEY="ollama"` (or any non-empty string)
+  - Confirm the model name exists locally: `ollama list`
+  - Restart the server with `ollama serve`
+  - If you prefer hard-coded YAML, place the dummy key directly in `config.yaml`
+
+- Other OpenAI-compatible providers (ex: OpenRouter, Azure OpenAI, local gateways):
+  - Update `base_url` to provider endpoint
+  - Use a provider-compatible auth token in `api_key`
+  - Use a model name the provider exposes
+
+- OpenRouter example:
+
+  ```yaml
+  llm:
+    base_url: "https://openrouter.ai/api/v1"
+    api_key: "<openrouter-api-key>"
+    model: "qwen/qwen-2.5-coder-32b-instruct"
+  ```
+
+- Azure OpenAI (through an OpenAI-compatible gateway or endpoint):
+
+  ```yaml
+  llm:
+    base_url: "https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions"
+    api_key: "<azure-api-key>"
+    model: "<azure-deployment-name>"
+  ```
+
+  Azure 배포가 프록시를 거치지 않는 경우 `base_url`이 환경마다 다릅니다. 실제로는 아래와 같은 형태로
+  게이트웨이/프로바이더 문서를 확인해 주세요.
+
+- LiteLLM / Local proxy example:
+
+  ```yaml
+  llm:
+    base_url: "http://localhost:4000/v1"
+    api_key: "<proxy-key>"
+    model: "gpt-4o-mini"
+  ```
+
+- Claude (via OpenAI-compatible gateway)
+
+  Example with an OpenAI-compatible proxy/gateway that exposes Claude:
+
+  ```yaml
+  llm:
+    base_url: "https://openrouter.ai/api/v1"  # or your proxy URL
+    api_key: "<proxy-or-service-key>"
+    model: "anthropic/claude-3.5-sonnet"
+  ```
+
+- Codex-style models (via compatible gateway)
+
+  If your provider exposes a `chat/completions`-compatible model name, set it here:
+
+  ```yaml
+  llm:
+    base_url: "https://<your-gateway>/v1"
+    api_key: "<gateway-key>"
+    model: "<codex-compatible-model-name>"
+  ```
+
+  If using GitHub Copilot/Codex tooling directly, run it through a translator/proxy that provides OpenAI API-compatible endpoints first.
+
+```yaml
 run:
   max_json_repair: 2
   max_fix_loops_total: 10
   max_fix_loops_per_task: 4
   verbose: true
+```
 
+### Quick provider swap checklist
+- Set `AUTODEV_LLM_API_KEY` (or provider-specific token)
+- Update only `llm.base_url`, `llm.api_key`, and `llm.model`
+- Ensure backend is running (`ollama serve` / gateway health endpoint)
+- Run a dry-check (e.g. `autodev --help` or a small sample PRD run)
+
+```yaml
 profiles:
   enterprise:
     template_candidates: ["python_fastapi", "python_cli"]
