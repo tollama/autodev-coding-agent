@@ -216,7 +216,11 @@ def _write_generation_cache(
     )
 
 
-def _build_task_payload(plan: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+def _build_task_payload(
+    plan: Dict[str, Any],
+    task: Dict[str, Any],
+    performance_context: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     return {
         "plan": {
             "project": {
@@ -224,7 +228,8 @@ def _build_task_payload(plan: Dict[str, Any], task: Dict[str, Any]) -> Dict[str,
                 "name": plan["project"].get("name"),
                 "quality_gate_profile": plan["project"].get("quality_gate_profile"),
                 "default_artifacts": plan["project"].get("default_artifacts", []),
-            }
+            },
+            "performance_hints": performance_context or {},
         },
         "task": {
             "id": task["id"],
@@ -238,6 +243,69 @@ def _build_task_payload(plan: Dict[str, Any], task: Dict[str, Any]) -> Dict[str,
         },
     }
 
+
+def _extract_performance_hints(prd_struct: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
+    hints: Dict[str, Any] = {}
+
+    for key in ("performance_targets", "expected_load", "latency_sensitive_paths", "cost_priority"):
+        if key in plan and isinstance(plan[key], (dict, list, str)):
+            hints[key] = plan[key]
+
+    fallback = {
+        "performance_targets": prd_struct.get("performance_targets"),
+        "expected_load": prd_struct.get("expected_load"),
+        "latency_sensitive_paths": prd_struct.get("latency_sensitive_paths"),
+        "cost_priority": prd_struct.get("cost_priority"),
+    }
+    for key, value in fallback.items():
+        if key not in hints and value not in (None, {}, [], ""):
+            hints[key] = value
+
+    return hints
+
+
+def _is_perf_gate_failure(row: Dict[str, Any]) -> bool:
+    if row.get("ok"):
+        return False
+    name = str(row.get("name", "")).lower()
+    error_class = str(row.get("error_classification") or "").lower()
+    tokens = ("perf", "performance", "latency", "throughput")
+    return any(token in name for token in tokens) or any(token in error_class for token in tokens)
+
+
+def _perf_failure_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [row for row in rows if _is_perf_gate_failure(row)]
+
+
+def _perf_repair_task_files(plan: Dict[str, Any], hotspots: List[str]) -> List[str]:
+    if not hotspots:
+        return []
+
+    candidate_files = []
+    for t in plan.get("tasks", []):
+        for fp in t.get("files", []):
+            if any(path in fp for path in hotspots):
+                candidate_files.append(fp)
+
+    if candidate_files:
+        return list(dict.fromkeys(candidate_files))
+
+    return [fp for task in plan.get("tasks", []) for fp in task.get("files", [])][:12]
+
+
+def _targeted_perf_validator_set(
+    failed_perf_rows: List[Dict[str, Any]],
+    available: List[str],
+) -> List[str]:
+    perf_names = [row["name"] for row in failed_perf_rows if isinstance(row.get("name"), str)]
+    if not perf_names:
+        return available
+
+    available_set = {name for name in available}
+    targeted = [name for name in perf_names if name in available_set]
+    if targeted:
+        return targeted
+    return available
 
 
 def _build_validator_counts(validation_rows: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -811,6 +879,7 @@ async def run_autodev_enterprise(
     task_failures = 0
     last_validation = None
     unresolved: List[str] = []
+    performance_context = _extract_performance_hints(prd_struct=prd_struct, plan=plan)
 
     for iteration, t in enumerate(tasks, start=1):
         if verbose:
@@ -836,7 +905,7 @@ async def run_autodev_enterprise(
         repair_used = False
         previous_validation_rows: List[Dict[str, Any]] = []
 
-        impl_payload = _build_task_payload(plan, t)
+        impl_payload = _build_task_payload(plan, t, performance_context=performance_context)
         impl_payload["files_context"] = files_ctx
         impl_payload["guidance"] = p["implementer"]["task"]
         changeset = await _llm_json(
@@ -1023,7 +1092,7 @@ async def run_autodev_enterprise(
             repair_mode = "normal"
             if signature == last_failure_signature and not repair_used:
                 repair_mode = "targeted"
-                repair_payload = _build_task_payload(plan, t)
+                repair_payload = _build_task_payload(plan, t, performance_context=performance_context)
                 repair_payload["files_context"] = files_ctx
                 repair_payload["validation"] = last_validation
                 repair_payload["guidance"] = (
@@ -1031,7 +1100,7 @@ async def run_autodev_enterprise(
                 )
                 repair_used = True
             else:
-                repair_payload = _build_task_payload(plan, t)
+                repair_payload = _build_task_payload(plan, t, performance_context=performance_context)
                 repair_payload["validation"] = last_validation
                 repair_payload["files_context"] = files_ctx
                 repair_payload["guidance"] = p["fixer"]["task"]
@@ -1111,6 +1180,9 @@ async def run_autodev_enterprise(
         phase="final",
         validator_count=len(effective_validators_enabled),
     )
+    final_perf_attempts = 0
+    final_perf_repair_passed = False
+
     final_res = validators.run_all(
         effective_validators_enabled,
         audit_required=audit_required,
@@ -1124,7 +1196,100 @@ async def run_autodev_enterprise(
     )
     last_validation = Validators.serialize(final_res)
     final_ok = _validations_ok(last_validation, final_soft)
+
+    failed_perf_rows = _perf_failure_rows(last_validation)
+    while (
+        not final_ok
+        and failed_perf_rows
+        and final_perf_attempts < 1
+        and total_fix_loops < max_fix_loops_total
+    ):
+        final_perf_attempts += 1
+        total_fix_loops += 1
+        perf_targets = performance_context
+        perf_hotspots = []
+        if isinstance(perf_targets.get("latency_sensitive_paths"), list):
+            perf_hotspots = perf_targets["latency_sensitive_paths"]
+
+        perf_retry_set = _targeted_perf_validator_set(
+            failed_perf_rows=failed_perf_rows,
+            available=effective_validators_enabled,
+        )
+
+        perf_task = {
+            "id": "performance-hotspots",
+            "title": "Performance-focused repair",
+            "goal": "Fix performance gate regressions without broad changes.",
+            "files": _perf_repair_task_files(plan, [str(p) for p in perf_hotspots]),
+            "acceptance": ["Reduce or remove observed perf regressions on targeted paths"],
+            "depends_on": [],
+            "quality_expectations": {
+                "requires_tests": False,
+                "requires_error_contract": False,
+                "touches_contract": False,
+            },
+            "validator_focus": perf_retry_set,
+        }
+        perf_payload = _build_task_payload(plan, perf_task, performance_context=performance_context)
+        perf_payload["validation"] = last_validation
+        perf_payload["performance_failures"] = failed_perf_rows
+        perf_payload["files_context"] = _build_files_context(ws, perf_task["files"])
+        perf_payload["guidance"] = "Target only performance-flagged hotspots. Keep edits minimal and path-specific."
+
+        _log_event(
+            "validation.perf_fix_requested",
+            run_id=run_id,
+            request_id=request_id,
+            profile=profile,
+            phase="final",
+            failure_count=len(failed_perf_rows),
+            attempt=final_perf_attempts,
+            perf_validator_set=perf_retry_set,
+            perf_hotspot_count=len(perf_hotspots),
+            targeted_file_count=len(perf_task["files"]),
+        )
+
+        perf_fix = await _llm_json(
+            client,
+            p["fixer"]["system"],
+            json_dumps(perf_payload),
+            CHANGESET_SCHEMA,
+            max_repair=max_json_repair,
+            run_id=run_id,
+            request_id=request_id,
+            profile=profile,
+            component="perf_fixer",
+        )
+        for c in perf_fix["changes"]:
+            ws.apply_changes([Change(op=c["op"], path=c["path"], content=c.get("content"))])
+
+        final_res = validators.run_all(
+            perf_retry_set,
+            audit_required=audit_required,
+            soft_validators=final_soft,
+            phase="final",
+            run_id=run_id,
+            request_id=request_id,
+            profile=profile,
+            task_id="final",
+            iteration=final_perf_attempts,
+        )
+        last_validation = Validators.serialize(final_res)
+        final_ok = _validations_ok(last_validation, final_soft)
+        failed_perf_rows = _perf_failure_rows(last_validation)
+        final_perf_repair_passed = final_ok
+
     unresolved.extend([t["id"] for t in quality_summary["tasks"] if t["status"] != "passed"])
+    if not final_perf_repair_passed and failed_perf_rows and not final_ok:
+        _log_event(
+            "validation.perf_fix_exhausted",
+            run_id=run_id,
+            request_id=request_id,
+            profile=profile,
+            phase="final",
+            failed_perf_count=len(failed_perf_rows),
+            attempts=final_perf_attempts,
+        )
 
     hard_counts = sum(task.get("hard_failures", 0) for task in quality_summary["tasks"])
     soft_counts = sum(task.get("soft_failures", 0) for task in quality_summary["tasks"])

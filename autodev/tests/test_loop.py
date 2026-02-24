@@ -716,6 +716,55 @@ class _FakeSelectiveValidators:
         return _FakeValidation(name, True, "passed", 0)
 
 
+class _FakePerfGateValidators:
+    calls: list[tuple[str, str]] = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    @staticmethod
+    def serialize(results):
+        out = []
+        for r in results:
+            out.append(
+                {
+                    "name": r.name,
+                    "ok": r.ok,
+                    "status": r.status,
+                    "returncode": r.result.returncode,
+                    "duration_ms": r.duration_ms,
+                    "tool_version": r.tool_version,
+                    "error_classification": r.error_classification,
+                    "stdout": "",
+                    "stderr": "",
+                    "note": r.note,
+                }
+            )
+        return out
+
+    @staticmethod
+    def reset() -> None:
+        _FakePerfGateValidators.calls = []
+
+    def run_all(self, enabled, audit_required=False, soft_validators=None, phase="task", **kwargs):
+        _FakePerfGateValidators.calls.append((phase, ",".join(enabled)))
+        if phase == "per_task":
+            return [_FakePassingValidation(name) for name in enabled]
+
+        if len([c for c in _FakePerfGateValidators.calls if c[0] == "final"]) == 1:
+            if "ruff" in enabled:
+                failure = _FakeValidation("ruff", False, "failed", 1)
+                failure.error_classification = "perf_target_regression"
+                return [failure, _FakeValidation("pytest", True, "passed", 0)]
+            return [_FakePassingValidation(name) for name in enabled]
+
+        return [_FakePassingValidation(name) for name in enabled]
+
+    def run_one(self, name, audit_required=False, phase="task", **kwargs):
+        _FakePerfGateValidators.calls.append((phase + ":one", name))
+        return _FakeValidation(name, True, "passed", 0)
+
+
 def test_run_loop_only_reruns_failed_validators(tmp_path, monkeypatch):
     import autodev.loop as loop
 
@@ -796,6 +845,90 @@ def test_run_loop_only_reruns_failed_validators(tmp_path, monkeypatch):
     assert ok is True
     run_one_calls = [c for c in _FakeSelectiveValidators.calls if c[0] == "per_task:one"]
     assert run_one_calls == [("per_task:one", "ruff")]
+
+
+def test_run_loop_performance_gate_triggers_targeted_fixes_only_for_perf_validators(tmp_path, monkeypatch):
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "perf-gate-fixes"))
+    _FakePerfGateValidators.reset()
+
+    responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+            "latency_sensitive_paths": ["/forecast"],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-fake",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "latency_sensitive_paths": ["/forecast"],
+            "tasks": [
+                {
+                    "id": "core",
+                    "title": "Create core endpoint",
+                    "goal": "Build core endpoint",
+                    "acceptance": [
+                        "Add tests for core route",
+                        "Validate success and error handling",
+                    ],
+                    "files": ["src/app/main.py", "src/app/slow.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff", "pytest"],
+                }
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "repair", "changes": [], "notes": []},
+    ]
+
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakePerfGateValidators)
+
+    ok, _, _, _ = asyncio.run(
+        run_autodev_enterprise(
+            client=cast(LLMClient, _FakeLLM(responses)),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff", "pytest"],
+            audit_required=False,
+            max_fix_loops_total=2,
+            max_fix_loops_per_task=2,
+            max_json_repair=0,
+            task_soft_validators=["semgrep"],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": ["semgrep"]}, "final": {"soft_fail": []}},
+            },
+            verbose=False,
+        )
+    )
+
+    assert ok is True
+    final_calls = [call for call in _FakePerfGateValidators.calls if call[0] == "final"]
+    assert final_calls == [("final", "ruff,pytest"), ("final", "ruff")]
 
 
 def test_run_loop_reuses_cached_plan_between_runs(tmp_path, monkeypatch):

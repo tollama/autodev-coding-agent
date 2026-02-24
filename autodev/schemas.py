@@ -42,7 +42,11 @@ PRD_SCHEMA = {
     }},
     "acceptance_criteria": {"type":"array","items":{"type":"string"}},
     "nfr": {"type":"object"},
-    "constraints": {"type":"array","items":{"type":"string"}}
+    "constraints": {"type":"array","items":{"type":"string"}},
+    "performance_targets": {"type": "object"},
+    "expected_load": {"type": "object"},
+    "latency_sensitive_paths": {"type": "array", "items": {"type": "string"}},
+    "cost_priority": {"type": "string"},
   },
   "additionalProperties": False
 }
@@ -147,7 +151,12 @@ PLAN_SCHEMA = {
       "required":["enabled"],
       "properties":{"enabled":{"type":"boolean"}},
       "additionalProperties": False
-    }
+    },
+    "performance_targets": {"type": "object"},
+    "expected_load": {"type": "object"},
+    "latency_sensitive_paths": {"type": "array", "items": {"type": "string"}},
+    "cost_priority": {"type": "string"},
+    
   },
   "additionalProperties": False
 }

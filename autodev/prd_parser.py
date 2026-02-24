@@ -12,6 +12,10 @@ class PRDStruct:
     features: list[dict[str, object]]
     nfr: dict[str, str]
     acceptance_criteria: list[str]
+    performance_targets: dict[str, str]
+    expected_load: dict[str, str]
+    latency_sensitive_paths: list[str]
+    cost_priority: str
 
 
 def parse_prd_markdown(md: str) -> PRDStruct:
@@ -60,6 +64,45 @@ def parse_prd_markdown(md: str) -> PRDStruct:
             key, value = stripped.split(":", 1)
             nfr[key.strip()] = value.strip()
 
+    performance_targets: dict[str, str] = {}
+    for line in extract_section("Performance Targets").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if ":" in stripped:
+            key, value = stripped.split(":", 1)
+            performance_targets[key.strip()] = value.strip()
+        elif stripped.startswith(("-", "*")):
+            bullet = stripped[1:].strip()
+            if ":" in bullet:
+                key, value = bullet.split(":", 1)
+                performance_targets[key.strip()] = value.strip()
+            else:
+                performance_targets[bullet] = ""
+
+    expected_load: dict[str, str] = {}
+    for line in extract_section("Expected Load").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if ":" in stripped:
+            key, value = stripped.split(":", 1)
+            expected_load[key.strip()] = value.strip()
+        elif stripped.startswith(("-", "*")):
+            bullet = stripped[1:].strip()
+            if ":" in bullet:
+                key, value = bullet.split(":", 1)
+                expected_load[key.strip()] = value.strip()
+            else:
+                expected_load[bullet] = ""
+
+    latency_sensitive_paths = bullets(extract_section("Latency Sensitive Paths"))
+
+    cost_priority = ""
+    cost_blob = extract_section("Cost Priority").strip()
+    if cost_blob:
+        cost_priority = cost_blob.splitlines()[0].strip().strip("- *")
+
     return PRDStruct(
         title=title,
         goals=goals,
@@ -67,5 +110,9 @@ def parse_prd_markdown(md: str) -> PRDStruct:
         features=features,
         nfr=nfr,
         acceptance_criteria=acceptance_criteria,
+        performance_targets=performance_targets,
+        expected_load=expected_load,
+        latency_sensitive_paths=latency_sensitive_paths,
+        cost_priority=cost_priority,
     )
 

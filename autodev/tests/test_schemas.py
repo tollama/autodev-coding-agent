@@ -1,5 +1,5 @@
 from jsonschema import validate  # type: ignore[import-untyped]
-from autodev.schemas import PLAN_SCHEMA, CHANGESET_SCHEMA
+from autodev.schemas import CHANGESET_SCHEMA, PLAN_SCHEMA, PRD_SCHEMA
 
 
 def test_plan_schema_rejects_task_without_quality_expectations():
@@ -184,3 +184,41 @@ def test_changeset_schema_rejects_unknown_validator_link():
         pass
     else:
         assert False, "Expected CHANGESET_SCHEMA validation error"
+
+
+def test_prd_schema_accepts_performance_fields_when_present():
+    payload = {
+        "title": "Perf-aware",
+        "goals": ["Build low-latency API"],
+        "non_goals": ["No migration"],
+        "features": [
+            {
+                "name": "Forecast",
+                "description": "P95 < 150ms",
+                "requirements": ["Handle load"],
+            }
+        ],
+        "acceptance_criteria": ["Handle 200 req/s"],
+        "nfr": {"availability": "99.9%"},
+        "constraints": ["Keep runtime low"],
+        "performance_targets": {"p95_latency_ms": 150, "p99_latency_ms": 250},
+        "expected_load": {"requests_per_second": 200, "concurrency": 64},
+        "latency_sensitive_paths": ["/api/forecast"],
+        "cost_priority": "cost_efficiency",
+    }
+
+    validate(instance=payload, schema=PRD_SCHEMA)
+
+
+def test_prd_schema_remains_backward_compatible_without_performance_fields():
+    payload = {
+        "title": "Legacy PRD",
+        "goals": [],
+        "non_goals": [],
+        "features": [],
+        "acceptance_criteria": [],
+        "nfr": {},
+        "constraints": [],
+    }
+
+    validate(instance=payload, schema=PRD_SCHEMA)
