@@ -21,6 +21,9 @@ autodev --help
 ```
 
 ## 3) Configure credentials
+
+⚡ **요약:** LLM 백엔드는 `config.yaml`의 `llm.base_url / api_key / model`만 바꿔서 전환할 수 있습니다. 전환 직후에는 아래 체크리스트(30초)로 동작 검증.
+
 AutoDev requires an OpenAI-compatible backend for the LLM client.
 
 You can keep LM Studio defaults, or switch to another provider like Ollama.
