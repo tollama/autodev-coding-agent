@@ -1,0 +1,18 @@
+{
+  "title": "AutoDev Library Contract",
+  "endpoints": [],
+  "schemas": {
+    "normalize_identifier": {
+      "type": "string",
+      "minLength": 1
+    },
+    "split_csv_items": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "notes": [
+    "normalize_identifier raises ValidationError for non-string input and invalid characters.",
+    "split_csv_items returns an empty list for empty values and filters blanks."
+  ]
+}

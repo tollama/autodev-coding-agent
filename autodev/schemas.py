@@ -1,4 +1,21 @@
 VALIDATORS = ["ruff", "mypy", "pytest", "pip_audit", "bandit", "semgrep", "sbom", "docker_build"]
+QUALITY_LEVELS = ["minimal", "balanced", "strict"]
+
+NONEMPTY_STRING = {"type": "string", "minLength": 1}
+QUALITY_PATTERN = {"type": "string", "enum": QUALITY_LEVELS}
+QUALITY_EXPECTATION_SCHEMA = {
+    "type": "object",
+    "required": ["requires_tests", "requires_error_contract"],
+    "properties": {
+        "requires_tests": {"type": "boolean"},
+        "requires_error_contract": {"type": "boolean"},
+        "touches_contract": {"type": "boolean"},
+    },
+    "additionalProperties": False,
+}
+SEMVER = r"^\d+\.\d+(\.\d+)?$"
+
+TASK_VALIDATION_FOCUS = {"type": "array", "items": {"type": "string", "enum": VALIDATORS}}
 
 PRD_SCHEMA = {
   "type": "object",
@@ -34,9 +51,12 @@ PLAN_SCHEMA = {
       "type":"object",
       "required":["type","name","python_version"],
       "properties":{
-        "type":{"type":"string","enum":["python_fastapi","python_cli"]},
-        "name":{"type":"string"},
-        "python_version":{"type":"string"}
+        "type":{"type":"string","enum":["python_fastapi","python_cli","python_library"]},
+        "name":{"type":"string", "minLength": 1},
+        "python_version":{"type":"string", "pattern": SEMVER},
+        "quality_level":{"type":"string","enum": QUALITY_LEVELS},
+        "default_artifacts":{"type":"array","items":{"type":"string","minLength":1}},
+        "quality_gate_profile":{"type":"string","enum": QUALITY_LEVELS},
       },
       "additionalProperties": False
     },
@@ -46,16 +66,51 @@ PLAN_SCHEMA = {
       "type":"array",
       "items":{
         "type":"object",
-        "required":["id","title","goal","acceptance","files","depends_on"],
+            "required":["id","title","goal","acceptance","files","depends_on","quality_expectations"],
         "properties":{
-          "id":{"type":"string"},
-          "title":{"type":"string"},
-          "goal":{"type":"string"},
-          "acceptance":{"type":"array","items":{"type":"string"}},
-          "files":{"type":"array","items":{"type":"string"}},
-          "depends_on":{"type":"array","items":{"type":"string"}},
+          "id":{"type":"string","minLength": 1},
+          "title":{"type":"string","minLength": 5},
+          "goal":{"type":"string","minLength": 8},
+          "acceptance":{"type":"array","minItems": 1,"uniqueItems": True,"items":{"type":"string","minLength": 5}},
+          "files":{"type":"array","minItems": 1,"uniqueItems": True,"items":{"type":"string","minLength": 1}},
+          "depends_on":{"type":"array","items":{"type":"string","minLength": 1}},
+            "quality_expectations": QUALITY_EXPECTATION_SCHEMA,
           "validator_focus":{"type":"array","items":{"type":"string", "enum": VALIDATORS}},
         },
+        "anyOf": [
+          {
+            "if": {
+              "properties": {
+                "quality_expectations": {
+                  "properties": {"requires_error_contract": {"const": True}}
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "acceptance": {
+                  "contains": {"type": "string", "pattern": "(?i)(error|validation|exception|fallback)"}
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "quality_expectations": {
+                  "properties": {"requires_tests": {"const": True}}
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "acceptance": {
+                  "contains": {"type": "string", "pattern": "(?i)(test|coverage|assert)"}
+                }
+              }
+            }
+          },
+        ],
         "additionalProperties": False
       }
     },
@@ -99,6 +154,17 @@ CHANGESET_SCHEMA = {
   "properties":{
     "role":{"type":"string"},
     "summary":{"type":"string"},
+    "quality_notes":{"type":"array","items":{"type":"string"}},
+    "validation_links":{
+      "type":"object",
+      "required":["acceptance","tasks"],
+      "properties":{
+        "acceptance":{"type":"array","minItems": 1,"uniqueItems": True,"items":{"type":"string","minLength": 1}},
+        "tasks":{"type":"array","minItems": 1,"uniqueItems": True,"items":{"type":"string","minLength": 1}},
+        "validators":{"type":"array","items":{"type":"string","enum": VALIDATORS}}
+      },
+      "additionalProperties": False
+    },
     "changes":{
       "type":"array",
       "items":{

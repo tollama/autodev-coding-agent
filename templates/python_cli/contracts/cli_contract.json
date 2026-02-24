@@ -2,10 +2,14 @@
   "title": "AutoDev CLI Contract",
   "prog": "autodev-cli",
   "args": [
-    {"flag": "--hello", "required": false, "type": "string", "default": "world"}
+    {"flag": "--hello", "required": false, "type": "string", "default": "world"},
+    {"flag": "--repeat", "required": false, "type": "int", "default": 1, "min": 1, "max": 3},
+    {"flag": "--json", "required": false, "type": "boolean", "default": false}
   ],
   "examples": [
-    {"argv": ["--hello", "agent"], "exit_code": 0, "stdout": "hello agent\n"},
-    {"argv": [], "exit_code": 0, "stdout": "hello world\n"}
+    {"argv": ["--hello", "agent", "--repeat", "2"], "exit_code": 0, "stdout": "hello agent\nhello agent\n"},
+    {"argv": ["--repeat", "3", "--json"], "exit_code": 0, "stdout": "{'hello': 'world', 'repeat': 3, 'outputs': ['hello world', 'hello world', 'hello world']}\n"},
+    {"argv": ["--repeat", "0"], "exit_code": 2, "stderr_contains": "--repeat must be between 1 and 3"},
+    {"argv": ["--does-not-exist"], "exit_code": 2, "stderr_contains": "unrecognized arguments"}
   ]
 }

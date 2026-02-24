@@ -1,0 +1,33 @@
+name: library-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Lint
+        run: python -m ruff check src tests
+      - name: Type check
+        run: python -m mypy src
+      - name: Security scan
+        run: python -m bandit -q -r src
+      - name: Tests
+        run: python -m pytest -q tests
+      - name: Dependency security audit
+        run: python -m pip_audit -r requirements.txt
+      - name: Semgrep scan
+        run: python -m semgrep --config .semgrep.yml --error
+      - name: Generate SBOM
+        run: python -m scripts.generate_sbom

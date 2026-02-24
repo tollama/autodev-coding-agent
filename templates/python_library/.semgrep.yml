@@ -1,0 +1,17 @@
+rules:
+  - id: avoid-assert-false
+    patterns:
+      - pattern: assert False
+    message: "Use explicit exceptions instead of assert False."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+    options:
+      max-pattern-length: 30
+  - id: broad-except
+    patterns:
+      - pattern: except Exception:
+    message: "Avoid bare except Exception; prefer narrower exception types."
+    languages: [python]
+    severity: WARNING

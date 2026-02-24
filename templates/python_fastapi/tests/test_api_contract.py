@@ -177,3 +177,20 @@ def test_api_contract_matches_openapi_and_runtime():
             instance = rr.json()
             schema = _resolve_contract_schema(contract, r200)
             js_validate(instance=instance, schema=schema)
+
+
+def test_echo_rejects_malformed_payload():
+    c = TestClient(app)
+    bad = c.post("/echo", json={"payload": 123, "repeat": "x"})
+    assert bad.status_code == 422
+    err = bad.json()
+    assert err["error"]["code"] == "INVALID_REQUEST"
+
+
+def test_echo_rejects_domain_range_violation_and_surfaces_request_id():
+    c = TestClient(app)
+    bad = c.post("/echo", json={"payload": "x", "repeat": 0}, headers={"x-request-id": "req-test-123"})
+    assert bad.status_code == 422
+    assert bad.headers.get("x-request-id") == "req-test-123"
+    body = bad.json()
+    assert body["error"]["code"] == "INVALID_REQUEST"

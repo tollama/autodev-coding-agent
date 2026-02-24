@@ -31,8 +31,18 @@ Return JSON object only (not wrapped).
             "task": """
 Create a PLAN (JSON) that matches PLAN_SCHEMA.
 
+Planner quality guardrails:
+- Every task MUST have concrete files in tasks[].files (or valid globs that resolve in repo context).
+- All implementation-bearing tasks MUST include at least one test file in tasks[].files.
+- If PRD is behavior-focused (validation, errors, edge cases), require explicit acceptance items under tasks[].acceptance.
+- If PRD implies Python API/SDK package, prefer python_library.
+- If PRD implies HTTP API, prefer python_fastapi; if PRD is local CLI/task utility, prefer python_cli.
+- Every implementation task must include explicit quality expectations for tests and error-contract behavior when applicable.
+- Planner MUST map each task to only the files it changes.
+
 Requirements:
 - Choose project.type: python_fastapi if PRD implies HTTP API; otherwise python_cli.
+- Choose python_library for reusable SDK/package APIs with no explicit CLI/API runtime contract.
 - Create SMALL tasks that cover:
   1) repo scaffold sanity
   2) API/CLI contract file updates + contract tests
@@ -46,8 +56,11 @@ Requirements:
   10) SBOM + license report generation (scripts/generate_sbom.py)
 
 Notes:
-- Include target files per task in tasks[].files
+- Include explicit task-to-file mapping in every task.
+- Include target files per task in tasks[].files.
 - Provide validator_focus where relevant (e.g., ["pytest"] for test-only tasks).
+- Include explicit error behavior expectations for any task touching input parsing/validation/error handling.
+- For implementation-bearing tasks, include requirements for test updates in acceptance criteria.
 """,
         },
         "implementer": {
@@ -57,6 +70,9 @@ Given the PLAN and a specific TASK, generate a CHANGESET that matches CHANGESET_
 - Only modify/create files required for this task.
 - Add/adjust tests where appropriate.
 - Keep changes minimal and patch-based when editing existing files.
+- No placeholders, TODOs, or pseudo-implementations.
+- Do not make broad file rewrites outside the task scope.
+- For control-flow and error-handling changes, include matching test updates in the same changeset.
 """,
         },
         "fixer": {
@@ -65,6 +81,9 @@ Given the PLAN and a specific TASK, generate a CHANGESET that matches CHANGESET_
 Given validation results and current file contents, produce a CHANGESET to fix failures.
 - Fix root causes.
 - Keep changes minimal; prefer patch.
+- For repeated, stable failures, first address root-cause structure before cosmetic changes.
+- For behavior regressions, include regression tests and fix in one patch-oriented changeset.
+- For control-flow and validation path changes, include error-path tests in the same changeset.
 """,
         },
     }

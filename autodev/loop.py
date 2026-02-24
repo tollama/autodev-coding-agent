@@ -1,8 +1,11 @@
 from __future__ import annotations
+
 import fnmatch
 import os
+import time
 from pathlib import PurePosixPath
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Set, Tuple
+
 from jsonschema import validate
 
 from .llm_client import LLMClient
@@ -14,39 +17,156 @@ from .exec_kernel import ExecKernel
 from .env_manager import EnvManager
 from .validators import Validators
 
-DEFAULT_TASK_SOFT_VALIDATORS = {"docker_build", "pip_audit", "sbom"}
+DEFAULT_TASK_SOFT_VALIDATORS = {"docker_build", "pip_audit", "sbom", "semgrep"}
+DEFAULT_VALIDATOR_FALLBACK = [
+    "ruff",
+    "mypy",
+    "pytest",
+    "pip_audit",
+    "bandit",
+    "semgrep",
+    "sbom",
+    "docker_build",
+]
+QUALITY_SUMMARY_FILE = ".autodev/task_quality_index.json"
+QUALITY_TASK_FILE_TMPL = ".autodev/task_{task_id}_quality.json"
+QUALITY_TASK_LAST_FILE_TMPL = ".autodev/task_{task_id}_last_validation.json"
+QUALITY_PROFILE_FILE = ".autodev/quality_profile.json"
+QUALITY_SUMMARY_METADATA_FILE = ".autodev/quality_run_summary.json"
+QUALITY_RESOLUTION_FILE = ".autodev/quality_resolution.json"
+
+
+def _resolve_gate_profile(
+    quality_profile: Dict[str, Any] | None,
+    gate_profile: str | None,
+) -> Dict[str, Any]:
+    if quality_profile is None or not gate_profile:
+        out = dict(quality_profile) if quality_profile else {}
+        out.setdefault("resolved_from", gate_profile or out.get("name", "balanced"))
+        return out
+
+    by_level = quality_profile.get("by_level")
+    if not isinstance(by_level, dict):
+        out = dict(quality_profile)
+        out["name"] = gate_profile
+        out["resolved_from"] = gate_profile
+        return out
+
+    overrides = by_level.get(gate_profile)
+    if not isinstance(overrides, dict):
+        out = dict(quality_profile)
+        out.setdefault("name", out.get("name", gate_profile))
+        out["resolved_from"] = gate_profile
+        return out
+
+    merged = {k: v for k, v in quality_profile.items() if k not in {"by_level", "name", "resolved_from"}}
+    merged.update(overrides)
+    merged["name"] = gate_profile
+    merged["resolved_from"] = gate_profile
+    return merged
+
 
 def _msg(system: str, user: str):
-    return [{"role":"system","content":system},{"role":"user","content":user}]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
-async def _llm_json(client: LLMClient, system: str, user: str, schema: Dict[str, Any], max_repair: int = 2) -> Dict[str, Any]:
-    raw = await client.chat(_msg(system, user), temperature=0.2)
-    for _ in range(max_repair + 1):
-        try:
-            data = strict_json_loads(raw)
-            validate(instance=data, schema=schema)
-            return data
-        except Exception as e:
-            repair_user = f"""Your previous output did not match the required JSON schema.
-Error: {e}
 
-Return ONLY a corrected JSON object that matches the schema.
-Do not include markdown fences or additional text.
-"""
-            raw = await client.chat(_msg(system, repair_user), temperature=0.2)
-    data = strict_json_loads(raw)
-    validate(instance=data, schema=schema)
-    return data
+def _ordered_unique(items: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: Set[str] = set()
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def _resolve_validators(focus: List[str] | None, validators_enabled: List[str]) -> List[str]:
+    enabled = [v for v in validators_enabled if v in DEFAULT_VALIDATOR_FALLBACK]
+    if focus:
+        selected = [v for v in _ordered_unique(focus) if v in validators_enabled]
+        if selected:
+            return selected
+
+    selected = [v for v in DEFAULT_VALIDATOR_FALLBACK if v in enabled]
+    if selected:
+        return selected
+    return _ordered_unique(validators_enabled)
+
+
+def _failure_signature(validation_rows: List[Dict[str, Any]]) -> tuple:
+    failers = [
+        (row["name"], row.get("status", "unknown"), row.get("error_classification") or "")
+        for row in validation_rows
+        if not row["ok"]
+    ]
+    return tuple(failers)
+
+
+def _build_validator_counts(validation_rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    out: Dict[str, int] = {"passed": 0, "failed": 0, "soft_fail": 0}
+    for row in validation_rows:
+        status = row.get("status", "failed")
+        out[status] = out.get(status, 0) + 1
+    return out
+
+
+def _build_pass_map(validation_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    return {
+        row["name"]: {
+            "ok": bool(row["ok"]),
+            "status": row.get("status", "failed"),
+            "returncode": row.get("returncode", 1),
+            "duration_ms": row.get("duration_ms", 0),
+        }
+        for row in validation_rows
+    }
+
+
+def _build_quality_row(
+    task_id: str,
+    attempt: int,
+    run_set: List[str],
+    validation_rows: List[Dict[str, Any]],
+    duration_ms: int,
+    soft_validators: Set[str],
+    all_ok: bool,
+    quality_notes: List[str] | None = None,
+    validation_links: Dict[str, Any] | None = None,
+    repair_pass: bool = False,
+) -> Dict[str, Any]:
+    blocked = [row for row in validation_rows if row["name"] not in soft_validators]
+    hard_failures = sum(1 for row in blocked if not row["ok"])
+    soft_failures = sum(1 for row in validation_rows if row["name"] in soft_validators and not row["ok"])
+
+    return {
+        "task_id": task_id,
+        "attempt": attempt,
+        "validator_focus": run_set,
+        "duration_ms": duration_ms,
+        "status": "passed" if all_ok else "failed",
+        "repair_pass": repair_pass,
+        "quality_notes": quality_notes or [],
+        "validation_links": validation_links or {},
+        "validator_counts": _build_validator_counts(validation_rows),
+        "hard_failures": hard_failures,
+        "soft_failures": soft_failures,
+        "pass_fail_map": _build_pass_map(validation_rows),
+        "validations": validation_rows,
+    }
+
 
 def _toposort(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     by_id = {t["id"]: t for t in tasks}
     indeg = {t["id"]: 0 for t in tasks}
     graph = {t["id"]: [] for t in tasks}
+
     for t in tasks:
         for dep in t["depends_on"]:
             if dep in graph:
                 graph[dep].append(t["id"])
                 indeg[t["id"]] += 1
+
     q = [tid for tid, d in indeg.items() if d == 0]
     out = []
     while q:
@@ -56,10 +176,50 @@ def _toposort(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             indeg[nxt] -= 1
             if indeg[nxt] == 0:
                 q.append(nxt)
-    return out if len(out) == len(tasks) else tasks
+
+    if len(out) == len(tasks):
+        return out
+
+    state: Dict[str, int] = {}
+    stack: List[str] = []
+    cycle: List[str] = []
+
+    def dfs(tid: str) -> bool:
+        nonlocal cycle
+        state[tid] = 1
+        stack.append(tid)
+        for nxt in graph[tid]:
+            if state.get(nxt, 0) == 0:
+                if dfs(nxt):
+                    return True
+            elif state.get(nxt) == 1:
+                cycle_start = stack.index(nxt)
+                cycle = stack[cycle_start:] + [nxt]
+                return True
+        stack.pop()
+        state[tid] = 2
+        return False
+
+    for tid in out:
+        state.setdefault(tid, 2)
+    for tid in indeg:
+        if state.get(tid, 0) == 0:
+            if dfs(tid) and cycle:
+                break
+
+    if not cycle:
+        unresolved = [t["id"] for t in tasks if indeg[t["id"]] > 0]
+        cycle = unresolved
+
+    raise ValueError(
+        "Dependency cycle detected in task graph. Resolve dependency loop before execution. "
+        f"Cycle path: {' -> '.join(cycle)}"
+    )
+
 
 def _is_glob_pattern(path: str) -> bool:
-    return any(ch in path for ch in "*?[]")
+    return any(ch in path for ch in "*?[")
+
 
 def _match_task_file_pattern(pattern: str, repo_files: List[str]) -> List[str]:
     pat = pattern.replace("\\", "/")
@@ -82,6 +242,7 @@ def _match_task_file_pattern(pattern: str, repo_files: List[str]) -> List[str]:
                 break
     return sorted(set(out))
 
+
 def _canonicalize_task_files(plan: Dict[str, Any], repo_files: List[str]) -> Dict[str, Any]:
     for t in plan["tasks"]:
         resolved: List[str] = []
@@ -94,11 +255,16 @@ def _canonicalize_task_files(plan: Dict[str, Any], repo_files: List[str]) -> Dic
                 resolved.extend(matches)
             else:
                 resolved.append(rel)
-        deduped = list(dict.fromkeys(resolved))
-        t["files"] = deduped
+        t["files"] = list(dict.fromkeys(resolved))
     return plan
 
-def _build_files_context(ws: Workspace, files: List[str], max_files: int = 30, max_chars_per_file: int = 20_000) -> Dict[str, str]:
+
+def _build_files_context(
+    ws: Workspace,
+    files: List[str],
+    max_files: int = 30,
+    max_chars_per_file: int = 20_000,
+) -> Dict[str, str]:
     files_ctx: Dict[str, str] = {}
     for fp in files[:max_files]:
         if ws.exists(fp):
@@ -110,9 +276,113 @@ def _build_files_context(ws: Workspace, files: List[str], max_files: int = 30, m
             files_ctx[fp] = "<missing>"
     return files_ctx
 
+
 def _validations_ok(validation_rows: List[Dict[str, Any]], soft_validators: set[str]) -> bool:
     blocking = [row for row in validation_rows if row["name"] not in soft_validators]
     return all(row["ok"] for row in blocking)
+
+
+def _resolve_soft_fail(
+    profile_section: Dict[str, Any] | None,
+    explicit: List[str] | None,
+    compact_key: str | None = None,
+) -> Set[str]:
+    if explicit is not None:
+        return set(explicit)
+    if not profile_section:
+        return set()
+
+    if compact_key and isinstance(profile_section, dict):
+        compact_values = profile_section.get(compact_key)
+        if compact_values is not None:
+            profile_section = {"soft_fail": compact_values}
+
+    values = profile_section.get("soft_fail")
+    if isinstance(values, list):
+        return set(values)
+    return set()
+
+
+def _build_task_summary_rows(
+    attempts: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    trend = []
+    for row in attempts:
+        trend.append(
+            {
+                "attempt": row["attempt"],
+                "status": row["status"],
+                "hard_failures": row["hard_failures"],
+                "soft_failures": row["soft_failures"],
+                "duration_ms": row["duration_ms"],
+            }
+        )
+    return trend
+
+
+def _summarize_run(profile: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "quality_profile": profile,
+        "project_type": plan["project"].get("type"),
+        "quality_gate_profile": plan["project"].get("quality_gate_profile"),
+        "generated_tasks": [t["id"] for t in plan.get("tasks", [])],
+        "default_artifacts": plan["project"].get("default_artifacts", []),
+    }
+
+
+def _write_json(ws: Workspace, rel_path: str, payload: Dict[str, Any]) -> None:
+    ws.write_text(rel_path, json_dumps(payload))
+
+
+def _quality_metadata_from_changeset(
+    changeset: Dict[str, Any],
+    task_id: str,
+    run_set: List[str],
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    notes = changeset.get("quality_notes")
+    links = changeset.get("validation_links")
+    if isinstance(notes, list):
+        out["quality_notes"] = notes
+    if isinstance(links, dict):
+        out["validation_links"] = links
+    if "validation_links" not in out:
+        out["validation_links"] = {
+            "acceptance": [],
+            "tasks": [task_id],
+            "validators": run_set,
+        }
+    if "quality_notes" not in out:
+        out["quality_notes"] = []
+    return out
+
+
+async def _llm_json(
+    client: LLMClient,
+    system: str,
+    user: str,
+    schema: Dict[str, Any],
+    max_repair: int = 2,
+) -> Dict[str, Any]:
+    raw = await client.chat(_msg(system, user), temperature=0.2)
+    for _ in range(max_repair + 1):
+        try:
+            data = strict_json_loads(raw)
+            validate(instance=data, schema=schema)
+            return data
+        except Exception as e:
+            repair_user = f"""Your previous output did not match the required JSON schema.
+Error: {e}
+
+Return ONLY a corrected JSON object that matches the schema.
+Do not include markdown fences or additional text.
+"""
+            raw = await client.chat(_msg(system, repair_user), temperature=0.2)
+
+    data = strict_json_loads(raw)
+    validate(instance=data, schema=schema)
+    return data
+
 
 async def run_autodev_enterprise(
     client: LLMClient,
@@ -127,10 +397,12 @@ async def run_autodev_enterprise(
     max_json_repair: int,
     task_soft_validators: List[str] | None = None,
     final_soft_validators: List[str] | None = None,
+    quality_profile: Dict[str, Any] | None = None,
     verbose: bool = True,
 ) -> Tuple[bool, Dict[str, Any], Dict[str, Any], Any]:
     p = prompts()
 
+    quality_profile = quality_profile or {}
     # 1) Normalize PRD with LLM (strict schema)
     prd_struct = await _llm_json(
         client,
@@ -158,8 +430,6 @@ async def run_autodev_enterprise(
     template_dir = os.path.join(template_root, project_type)
     ws.apply_template(template_dir)
 
-    # Expand task file globs to concrete files once after scaffold.
-    # If planner produces non-matching glob patterns, request one repair pass.
     repo_files_for_plan = ws.list_context_files(max_files=None)
     try:
         plan = _canonicalize_task_files(plan, repo_files_for_plan)
@@ -187,33 +457,74 @@ async def run_autodev_enterprise(
             raise ValueError("Planner repair changed project.type; refusing to continue.")
         plan = _canonicalize_task_files(repaired_plan, repo_files_for_plan)
 
-    # Persist autodev artifacts
-    ws.write_text(".autodev/prd_struct.json", json_dumps(prd_struct))
-    ws.write_text(".autodev/plan.json", json_dumps(plan))
+    quality_profile = _resolve_gate_profile(
+        quality_profile=quality_profile,
+        gate_profile=plan.get("project", {}).get("quality_gate_profile"),
+    )
+    quality_profile.setdefault("resolved_from", plan.get("project", {}).get("quality_gate_profile", "balanced"))
+    _write_json(ws, QUALITY_PROFILE_FILE, quality_profile)
+    _write_json(ws, QUALITY_SUMMARY_METADATA_FILE, _summarize_run(quality_profile, plan))
+
+    profile_policy = quality_profile.get("validator_policy") or {}
+    task_soft = _resolve_soft_fail(
+        profile_policy.get("per_task", {}) if isinstance(profile_policy, dict) else profile_policy,
+        task_soft_validators,
+        compact_key="per_task_soft",
+    )
+    final_soft = _resolve_soft_fail(
+        profile_policy.get("final", {}) if isinstance(profile_policy, dict) else profile_policy,
+        final_soft_validators,
+        compact_key="final_soft",
+    )
+    if not task_soft and isinstance(quality_profile, dict):
+        task_soft = _resolve_soft_fail(quality_profile, task_soft_validators, compact_key="per_task_soft")
+    if not final_soft and isinstance(quality_profile, dict):
+        final_soft = _resolve_soft_fail(quality_profile, final_soft_validators, compact_key="final_soft")
+    if task_soft_validators is None and not task_soft:
+        task_soft = set(task_soft_validators or DEFAULT_TASK_SOFT_VALIDATORS)
+    if final_soft_validators is None and not final_soft:
+        final_soft = set(final_soft_validators or [])
 
     # 4) Prepare env
     kernel = ExecKernel(cwd=ws.root, timeout_sec=1800)
     env = EnvManager(kernel)
     env.ensure_venv(system_python="python")
-    env.install_requirements()
+    include_dev = task_soft_validators is not None or ws.exists("requirements-dev.txt")
+    env.install_requirements(include_dev=include_dev)
     validators = Validators(kernel, env)
-    task_soft = set(task_soft_validators or DEFAULT_TASK_SOFT_VALIDATORS)
-    final_soft = set(final_soft_validators or [])
 
     tasks = _toposort(plan["tasks"])
+    quality_summary: Dict[str, Any] = {
+        "project": plan.get("project", {}),
+        "run_level_soft_fail": {
+            "per_task": sorted(task_soft),
+            "final": sorted(final_soft),
+        },
+        "validator_enabled": validators_enabled,
+        "resolved_quality_profile": quality_profile,
+        "tasks": [],
+    }
+
     total_fix_loops = 0
+    task_failures = 0
     last_validation = None
+    unresolved: List[str] = []
 
     for t in tasks:
         if verbose:
             print(f"\n== TASK {t['id']} == {t['title']}")
-        # Provide rich file context for patching.
+
+        run_set = _resolve_validators(t.get("validator_focus"), validators_enabled)
         files_ctx = _build_files_context(ws, t["files"])
-        repo_files = ws.list_context_files(max_files=500)
+        attempt_records: List[Dict[str, Any]] = []
+        loops = 0
+        last_failure_signature: tuple[Any, ...] = tuple()
+        repair_used = False
+
         impl_payload = {
             "plan": plan,
             "task": t,
-            "repo_files": repo_files,
+            "repo_files": ws.list_context_files(max_files=500),
             "files_context": files_ctx,
             "guidance": p["implementer"]["task"],
         }
@@ -224,59 +535,232 @@ async def run_autodev_enterprise(
             CHANGESET_SCHEMA,
             max_repair=max_json_repair,
         )
+        quality_trace = [_quality_metadata_from_changeset(changeset, t["id"], run_set)]
 
         changes: List[Change] = []
         for c in changeset["changes"]:
             changes.append(Change(op=c["op"], path=c["path"], content=c.get("content")))
         ws.apply_changes(changes)
 
-        # Validate: focus set or default fast checks
-        focus = t.get("validator_focus") or ["ruff", "mypy", "pytest"]
-        run_set = [v for v in focus if v in validators_enabled]
-        if not run_set:
-            run_set = [v for v in ["ruff", "mypy", "pytest"] if v in validators_enabled] or list(
-                validators_enabled
+        while True:
+            start = time.perf_counter()
+            validation_results = validators.run_all(
+                run_set,
+                audit_required=audit_required,
+                soft_validators=task_soft,
+                phase="per_task",
             )
-        res = validators.run_all(run_set, audit_required=audit_required)
-        last_validation = Validators.serialize(res)
-        all_ok = _validations_ok(last_validation, task_soft)
+            last_validation = Validators.serialize(validation_results)
+            signature = _failure_signature(last_validation)
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            row = _build_quality_row(
+                task_id=t["id"],
+                attempt=loops + 1,
+                run_set=run_set,
+                validation_rows=last_validation,
+                duration_ms=duration_ms,
+                soft_validators=task_soft,
+                all_ok=_validations_ok(last_validation, task_soft),
+                quality_notes=quality_trace[-1]["quality_notes"],
+                validation_links=quality_trace[-1]["validation_links"],
+                repair_pass=repair_used,
+            )
+            attempt_records.append(row)
 
-        loops = 0
-        while not all_ok:
+            if row["status"] == "passed":
+                break
+
             loops += 1
             total_fix_loops += 1
             if loops > max_fix_loops_per_task or total_fix_loops > max_fix_loops_total:
-                return (False, prd_struct, plan, last_validation)
+                task_failures += 1
+                unresolved.append(t["id"])
+                task_entry = {
+                    "task_id": t["id"],
+                    "status": "failed",
+                    "attempts": len(attempt_records),
+                    "validator_focus": run_set,
+                    "attempt_trend": _build_task_summary_rows(attempt_records),
+                    "hard_failures": attempt_records[-1]["hard_failures"],
+                    "soft_failures": attempt_records[-1]["soft_failures"],
+                    "last_validation": attempt_records[-1]["validations"],
+                    "quality_trace": quality_trace,
+                }
+                quality_summary["tasks"].append(task_entry)
+
+                _write_json(
+                    ws,
+                    QUALITY_TASK_FILE_TMPL.format(task_id=t["id"]),
+                    {
+                        "task_id": t["id"],
+                        "status": "failed",
+                        "attempts": attempt_records,
+                        "attempts_count": len(attempt_records),
+                        "validator_focus": run_set,
+                        "attempt_trend": _build_task_summary_rows(attempt_records),
+                        "last_validation": attempt_records[-1]["validations"],
+                        "quality_trace": quality_trace,
+                    },
+                )
+                _write_json(ws, QUALITY_TASK_LAST_FILE_TMPL.format(task_id=t["id"]), {
+                    "validator_focus": run_set,
+                    "run_level": "per_task",
+                    "validation": last_validation,
+                    "record_count": len(attempt_records),
+                })
+                _write_json(ws, QUALITY_SUMMARY_FILE, quality_summary)
+                return False, prd_struct, plan, last_validation
 
             files_ctx = _build_files_context(ws, t["files"])
-            fixer_payload = {
-                "plan": plan,
-                "task": t,
-                "validation": last_validation,
-                "repo_files": ws.list_context_files(max_files=500),
-                "files_context": files_ctx,
-                "guidance": p["fixer"]["task"],
-            }
+            if signature == last_failure_signature and not repair_used:
+                repair_payload = {
+                    "mode": "repair",
+                    "plan": plan,
+                    "task": t,
+                    "validation": last_validation,
+                    "repo_files": ws.list_context_files(max_files=500),
+                    "files_context": files_ctx,
+                    "guidance": "Do a task-level repair pass before targeted fix cycles. Address same failure pattern.",
+                }
+                repair_used = True
+            else:
+                repair_payload = {
+                    "plan": plan,
+                    "task": t,
+                    "validation": last_validation,
+                    "repo_files": ws.list_context_files(max_files=500),
+                    "files_context": files_ctx,
+                    "guidance": p["fixer"]["task"],
+                }
+            last_failure_signature = signature
+
             fix = await _llm_json(
                 client,
                 p["fixer"]["system"],
-                json_dumps(fixer_payload),
+                json_dumps(repair_payload),
                 CHANGESET_SCHEMA,
                 max_repair=max_json_repair,
             )
+            quality_trace.append(_quality_metadata_from_changeset(fix, t["id"], run_set))
             fix_changes: List[Change] = []
             for c in fix["changes"]:
                 fix_changes.append(Change(op=c["op"], path=c["path"], content=c.get("content")))
             ws.apply_changes(fix_changes)
 
-            res = validators.run_all(run_set, audit_required=audit_required)
-            last_validation = Validators.serialize(res)
-            all_ok = _validations_ok(last_validation, task_soft)
+        task_entry = {
+            "task_id": t["id"],
+            "status": "passed",
+            "attempts": len(attempt_records),
+            "validator_focus": run_set,
+            "attempt_trend": _build_task_summary_rows(attempt_records),
+            "hard_failures": attempt_records[-1]["hard_failures"],
+            "soft_failures": attempt_records[-1]["soft_failures"],
+            "last_validation": attempt_records[-1]["validations"],
+            "repair_passes": 1 if repair_used else 0,
+            "quality_trace": quality_trace,
+        }
+        quality_summary["tasks"].append(task_entry)
 
-        ws.write_text(f".autodev/task_{t['id']}_last_validation.json", json_dumps(last_validation))
+        _write_json(
+            ws,
+            QUALITY_TASK_FILE_TMPL.format(task_id=t["id"]),
+            {
+                "task_id": t["id"],
+                "status": "passed",
+                "attempts": attempt_records,
+                "attempts_count": len(attempt_records),
+                "validator_focus": run_set,
+                "attempt_trend": task_entry["attempt_trend"],
+                "last_validation": attempt_records[-1]["validations"],
+                "repair_passes": task_entry["repair_passes"],
+                "quality_trace": quality_trace,
+            },
+        )
+        _write_json(ws, QUALITY_TASK_LAST_FILE_TMPL.format(task_id=t["id"]), {
+            "validator_focus": run_set,
+            "run_level": "per_task",
+            "validation": attempt_records[-1]["validations"],
+            "record_count": len(attempt_records),
+        })
 
-    # Final enterprise validation (all enabled)
-    res = validators.run_all(validators_enabled, audit_required=audit_required)
-    last_validation = Validators.serialize(res)
-    ok = _validations_ok(last_validation, final_soft)
-    return (ok, prd_struct, plan, last_validation)
+    # 5) Final enterprise validation (all enabled)
+    final_res = validators.run_all(
+        validators_enabled,
+        audit_required=audit_required,
+        soft_validators=final_soft,
+        phase="final",
+    )
+    last_validation = Validators.serialize(final_res)
+    final_ok = _validations_ok(last_validation, final_soft)
+    unresolved.extend([t["id"] for t in quality_summary["tasks"] if t["status"] != "passed"])
+
+    hard_counts = sum(task.get("hard_failures", 0) for task in quality_summary["tasks"])
+    soft_counts = sum(task.get("soft_failures", 0) for task in quality_summary["tasks"])
+    quality_summary["final"] = {
+        "status": "passed" if final_ok else "failed",
+        "soft_failures": sum(1 for r in last_validation if r["status"] == "soft_fail"),
+        "hard_failures": sum(1 for r in last_validation if r["status"] == "failed"),
+        "validator_focus": validators_enabled,
+        "validations": last_validation,
+        "blocking_failures": sum(
+            1 for r in last_validation if r["name"] not in final_soft and not r["ok"]
+        ),
+    }
+
+    final_phase_passed = final_ok
+    if not final_phase_passed:
+        unresolved.append("final_validation")
+
+    unresolved = sorted(set(unresolved))
+    quality_summary["unresolved_blockers"] = unresolved
+
+    quality_summary["totals"] = {
+        "tasks": len(tasks),
+        "successful_tasks": sum(1 for t in quality_summary["tasks"] if t.get("status") == "passed"),
+        "repair_passes": sum(int(bool(t.get("repair_passes"))) for t in quality_summary["tasks"]),
+        "total_task_attempts": sum(int(t.get("attempts", 0)) for t in quality_summary["tasks"]),
+        "resolved_tasks": len(quality_summary["tasks"]) - task_failures,
+        "hard_failures": hard_counts,
+        "soft_failures": soft_counts,
+        "unresolved_tasks": len(unresolved),
+        "max_fix_loops_reached": total_fix_loops >= max_fix_loops_total,
+    }
+    quality_summary["task_validation_trend"] = [
+        {
+            "task_id": t["task_id"],
+            "status": t["status"],
+            "attempts": t["attempts"],
+            "hard_failures": t.get("hard_failures", 0),
+            "soft_failures": t.get("soft_failures", 0),
+        }
+        for t in quality_summary["tasks"]
+    ]
+
+    quality_summary["quality_payload_files"] = {
+        "task_quality_index": QUALITY_SUMMARY_FILE,
+        "task_profile": QUALITY_PROFILE_FILE,
+        "quality_summary": QUALITY_SUMMARY_METADATA_FILE,
+        "quality_resolution": QUALITY_RESOLUTION_FILE,
+        "final_last_validation": QUALITY_TASK_LAST_FILE_TMPL.format(task_id="final"),
+    }
+
+    _write_json(ws, QUALITY_SUMMARY_FILE, quality_summary)
+    _write_json(ws, QUALITY_RESOLUTION_FILE, {
+        "quality_profile": quality_profile,
+        "task_soft_fail": sorted(task_soft),
+        "final_soft_fail": sorted(final_soft),
+        "task_validator_budget": validators_enabled,
+    })
+
+    _write_json(ws, QUALITY_TASK_LAST_FILE_TMPL.format(task_id="final"), {
+        "validation": last_validation,
+        "validator_focus": validators_enabled,
+        "run_level": "final",
+    })
+
+    return (
+        final_ok and task_failures == 0,
+        prd_struct,
+        plan,
+        last_validation,
+    )

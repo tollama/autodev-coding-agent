@@ -42,12 +42,12 @@ pip install -e .
 ```
 
 ## Configure
-Edit `config.yaml` for your model endpoint and run profile.
+Edit `config.yaml` for your model endpoint and run profile. Set `AUTODEV_LLM_API_KEY` in your environment (or replace the placeholder) to provide the API key securely.
 
 ```yaml
 llm:
   base_url: "http://127.0.0.1:1234/v1"
-  api_key: "lm-studio"
+  api_key: ${AUTODEV_LLM_API_KEY}
   model: "qwen3-coder-30b-a3b-instruct-mlx"
   timeout_sec: 240
 

@@ -1,6 +1,6 @@
 llm:
   base_url: "http://127.0.0.1:1234/v1"
-  api_key: "lm-studio"
+  api_key: ${AUTODEV_LLM_API_KEY}
   model: "qwen3-coder-30b-a3b-instruct-mlx"
   timeout_sec: 240
 
@@ -15,13 +15,16 @@ profiles:
     template_candidates:
       - "python_fastapi"
       - "python_cli"
+      - "python_library"
     validators:
       - ruff
       - mypy
       - pytest
       - pip_audit
       - bandit
+      - semgrep
       - sbom
+      - docker_build
     security:
       audit_required: false
     validator_policy:
@@ -29,6 +32,28 @@ profiles:
         soft_fail:
           - docker_build
           - pip_audit
+          - semgrep
           - sbom
       final:
-        soft_fail: []
+        soft_fail:
+          - pip_audit
+          - sbom
+          - semgrep
+    quality_profile:
+      name: balanced
+      per_task_soft: ["docker_build", "pip_audit", "sbom"]
+      final_soft: ["pip_audit", "sbom", "semgrep"]
+      by_level:
+        minimal:
+          per_task_soft: ["docker_build", "pip_audit", "sbom", "semgrep"]
+          final_soft: ["pip_audit", "sbom", "semgrep"]
+        balanced:
+          per_task_soft: ["docker_build", "pip_audit", "sbom"]
+          final_soft: ["pip_audit", "sbom", "semgrep"]
+        strict:
+          per_task_soft: ["docker_build"]
+          final_soft: []
+      escalation:
+        repeat_failure_guard:
+          enabled: true
+          max_retries_before_targeted_fix: 1

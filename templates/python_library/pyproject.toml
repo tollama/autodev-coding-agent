@@ -1,13 +1,9 @@
 [project]
-name = "autodev-fastapi-template"
+name = "autodev-library-template"
 version = "0.1.0"
-description = "Generated FastAPI service"
+description = "Reusable Python library template"
 requires-python = ">=3.11"
-dependencies = [
-  "fastapi",
-  "uvicorn[standard]",
-  "pydantic",
-]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
@@ -16,7 +12,7 @@ dev = [
   "mypy",
   "pip-audit",
   "bandit",
-  "httpx",
+  "jsonschema",
   "semgrep",
 ]
 
@@ -28,12 +24,7 @@ src = ["src"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "S", "ASYNC", "PT", "RUF"]
 extend-select = ["PLC", "PLE", "PLR"]
-ignore = ["S104", "PLC0415"]
-fixable = ["E", "F", "I"]
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
+ignore = ["S104"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -11,3 +11,9 @@ def test_health():
     r = c.get("/health")
     assert r.status_code == 200
     assert r.json() == {"ok": True}
+
+
+def test_health_rejects_unsupported_method():
+    c = TestClient(app)
+    r = c.post("/health")
+    assert r.status_code == 405

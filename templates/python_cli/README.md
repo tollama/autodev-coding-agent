@@ -3,6 +3,8 @@
 Run:
 ```bash
 python -m app.cli --hello world
+python -m app.cli --hello world --repeat 2
+python -m app.cli --hello world --json
 ```
 
 Test:

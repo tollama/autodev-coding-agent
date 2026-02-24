@@ -1,7 +1,7 @@
-pytest
-httpx
+pytest==8.3.2
 ruff
 mypy
 pip-audit
 bandit
+jsonschema
 semgrep
