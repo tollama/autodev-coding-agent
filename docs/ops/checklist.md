@@ -22,22 +22,34 @@ make check-template
 make check-locks
 ```
 
-## 2) Make targets
+## 2) Lane defaults for faster iteration vs release strictness
+
+- Fast path (local loop): `make fast`  
+  - `compile` + `ruff` + `autodev/tests`
+  - Use when iterating daily and validating syntax + light behavior.
+
+- Strict path (release): `make strict` (alias for `make check-release`)  
+  - `compile + mypy + full tests + template/parity checks + lock checks + release gates`
+  - Use before merge and release prep.
+
+Target matrix:
 
 ```bash
-make compile
-make check
-make tests
-make check-template
-make check-locks
-make ci
-make check-untyped-defs       # optional strict mypy lane (non-blocking by default)
-make release-check           # release-readiness checks
+make fast              # fast local lane
+make strict            # full release lane
+make ci                # same as ci-strict (legacy)
+make ci-fast
+make ci-strict
+make check-release      # same as strict
 ```
 
-Notes:
-- `make ci` = `compile + check + tests + check-template + check-locks`
-- `make release-check` additionally runs `check-untyped-defs` and release-gate checks.
+## 2.1) Benchmark lane
+
+```bash
+make benchmark-generate
+```
+
+Runs `docs/ops/benchmark_generate_cycle.py` with a tiny smoke PRD, then prints baseline vs optimized timing. Outputs are skipped (safe exit) if LLM key is unresolved.
 
 ## 3) Release-readiness (Go/No-Go)
 
@@ -60,27 +72,21 @@ Notes:
 - **Wed/Thu**: run `make tests`
 - **Fri**: run `make ci` + release-readiness review and update backlog
 
-## 4) RICE roadmap snapshot (refresh weekly)
+## 4) Performance tuning knobs to try next
 
-| # | Item | Reach | Impact | Confidence | Effort | Score |
-|---|---|---:|---:|---:|---:|---:|
-| 1 | Release/check pipeline hardening | 10 | 9 | 0.9 | 3 | 27.0 |
-| 2 | Template import stability automation | 9 | 8 | 0.85 | 2 | 36.0 |
-| 3 | E2E regression generation pipeline | 8 | 8 | 0.8 | 4 | 12.8 |
-| 4 | Coverage and quality KPI baseline | 8 | 7 | 0.8 | 4 | 11.2 |
-| 5 | Failure postmortem automation | 8 | 7 | 0.8 | 5 | 8.96 |
-| 6 | Security policy hardening | 7 | 9 | 0.75 | 5 | 9.45 |
-| 7 | Reproducibility hardening | 7 | 8 | 0.75 | 5 | 8.4 |
-| 8 | Release packaging/traceability | 7 | 6 | 0.8 | 4 | 8.4 |
+- Lower strictness in iterative loops:
+  - swap `make ci` → `make ci-fast`
+  - move to strict only before merging
+- Reduce expensive validator load in benchmark lane by adjusting
+  - `--optimized-validators`
+  - `--optimized-max-fix-loops`
+  - `--optimized-max-fix-loops-per-task`
+- If slowdowns persist:
+  - trim generated PRD surface area for smoke checks
+  - pin smaller local models for warm-up runs
+  - add provider health warmup before timing windows
 
-**Formula:** `Reach × Impact × Confidence ÷ Effort`
-
-## 5) Escalation
-- Critical blocker (`P0`) open >24h: immediately page owner + assign mitigation owner.
-- Non-critical backlog risk >72h: re-prioritize into next weekly execution slice.
-- If a check is repeatedly flaky, annotate in commit message and add a follow-up ticket before merge.
-
-## 6) Periodic template governance
+## 5) Periodic template governance
 
 From root:
 

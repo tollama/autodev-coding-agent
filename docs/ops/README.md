@@ -7,5 +7,16 @@ This folder contains SDLC/운영 governance scripts and checks used by `coding-a
 - `check_template_dependency_locks.sh`
 - `run_template_tests.sh`
 - `checklist.md`
+- `benchmark_generate_cycle.py` (baseline vs optimized generate timing smoke)
 
-Run `make ci` for the standard quality gate and `make release-check` for release readiness checks.
+Use `make` for standard lanes:
+
+```bash
+make fast        # fast local loop: compile + ruff + unit tests
+make strict      # release-ready lane: mypy + tests + contract checks + release gates
+
+# explicit targets
+make ci-fast
+make ci
+make benchmark-generate
+```

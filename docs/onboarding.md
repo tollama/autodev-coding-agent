@@ -66,6 +66,18 @@ You can also point to any OpenAI-compatible endpoint by changing only `base_url`
 - 해당 백엔드의 모델/서비스 실행 상태 확인 (`ollama serve`, `ollama list`, 게이트웨이 헬스체크)
 - `autodev --help` 또는 샘플 PRD 실행으로 한 번 동작 테스트
 
+#### 성능 스모크(생성 사이클 벤치)
+
+빠른 생성 루프 점검이 필요하면 기본 제공 샘플 PRD로 벤치마크도 바로 실행할 수 있습니다.
+
+```bash
+make benchmark-generate
+```
+
+- `baseline`: 기본 검사 강도로 1회
+- `optimized`: 벤더/루프 제한을 줄여 가벼운 경로로 1회
+- 실측값은 `Makefile`의 fast/strict 분리와 함께 비교해 루프 최적화를 진행하세요.
+
 #### 최소 검증용 샘플 PRD 템플릿
 
 아래처럼 아주 짧은 PRD 하나를 임시로 만들어, provider 스왑 직후 바로 `autodev` 동작을 확인하세요.

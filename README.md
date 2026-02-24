@@ -154,6 +154,11 @@ run:
 - Ensure backend is running (`ollama serve` / gateway health endpoint)
 - Run a dry-check (e.g. `autodev --help` or a small sample PRD run)
 
+### Performance knobs (generate cycles)
+- `make fast` for quick iteration
+- `make strict` (or `make ci`) before pushing/release
+- `make benchmark-generate` for baseline vs optimized timing smoke
+
 ```yaml
 profiles:
   enterprise:
