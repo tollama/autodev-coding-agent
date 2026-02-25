@@ -583,8 +583,43 @@ def _coerce_prd_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     out.setdefault("acceptance_criteria", [])
     out.setdefault("goals", [])
     out.setdefault("title", "AutoDev PRD")
+
     if not isinstance(out.get("features"), list):
         out["features"] = []
+    else:
+        normalized_features = []
+        for feature in out.get("features", []):
+            if not isinstance(feature, dict):
+                continue
+            name = feature.get("name")
+            if not isinstance(name, str) or not name.strip():
+                fallback_name = feature.get("title")
+                feature["name"] = fallback_name.strip() if isinstance(fallback_name, str) else "Feature"
+            description = feature.get("description")
+            if not isinstance(description, str) or not description.strip():
+                if isinstance(feature.get("goal"), str) and feature["goal"].strip():
+                    description = feature["goal"]
+                elif isinstance(feature.get("summary"), str) and feature["summary"].strip():
+                    description = feature["summary"]
+                feature["description"] = description or "No description provided."
+            requirements = feature.get("requirements")
+            if not isinstance(requirements, list):
+                requirements = []
+            normalized_requirements: list[str] = []
+            for req in requirements:
+                if isinstance(req, str) and req.strip():
+                    normalized_requirements.append(req)
+                elif isinstance(req, dict) and isinstance(req.get("description"), str) and req["description"].strip():
+                    normalized_requirements.append(req["description"])
+            if not normalized_requirements:
+                if isinstance(feature.get("description"), str) and feature["description"].strip():
+                    normalized_requirements = [f"{feature['description']}"]
+                else:
+                    normalized_requirements = ["Implement feature."]
+            feature["requirements"] = normalized_requirements
+            normalized_features.append(feature)
+        out["features"] = normalized_features
+
     return out
 
 
