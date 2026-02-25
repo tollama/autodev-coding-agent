@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from .exec_kernel import CmdResult, ExecKernel
 from .env_manager import EnvManager
@@ -21,6 +21,10 @@ _LOCK_FILES = {
     "uv.lock",
 }
 _PINNED_REQUIREMENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*(\[[^\]]+\])?==\S+$")
+_PYTEST_FAILED_LINE_RE = re.compile(r"^FAILED\s+([^\s]+)\s+-\s+(.+)$", re.MULTILINE)
+_PYTEST_RESULT_COUNTER_RE = re.compile(r"(\d+)\s+(failed|passed|error|errors|skipped)")
+_PYTEST_LOCATION_RE = re.compile(r"([A-Za-z0-9_./\\-]+\.py):(\d+):")
+_PYTEST_ASSERTION_RE = re.compile(r"^E\s+(.+)$", re.MULTILINE)
 
 
 def _log_event(event: str, **fields: object) -> None:
@@ -47,6 +51,7 @@ class Validation:
     tool_version: str = "unknown"
     error_classification: Optional[str] = None
     phase: str = "task"
+    diagnostics: Optional[Dict[str, Any]] = None
 
 
 CommandBuilder = Callable[[str], List[str]]
@@ -135,6 +140,65 @@ def _check_dependency_lock_policy(root: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _parse_pytest_diagnostics(stdout: str, stderr: str) -> Dict[str, Any]:
+    merged = f"{stdout}\n{stderr}".strip()
+    if not merged:
+        return {}
+
+    counts = {"failed": 0, "passed": 0, "errors": 0, "skipped": 0}
+    for match in _PYTEST_RESULT_COUNTER_RE.finditer(merged):
+        value = int(match.group(1))
+        label = match.group(2)
+        if label in {"error", "errors"}:
+            counts["errors"] += value
+        else:
+            counts[label] += value
+
+    failed_tests: List[Dict[str, str]] = []
+    for match in _PYTEST_FAILED_LINE_RE.finditer(merged):
+        failed_tests.append(
+            {
+                "test": match.group(1),
+                "message": match.group(2),
+            }
+        )
+    if len(failed_tests) > 10:
+        failed_tests = failed_tests[:10]
+
+    locations: List[str] = []
+    seen_locations: Set[str] = set()
+    for match in _PYTEST_LOCATION_RE.finditer(merged):
+        location = f"{match.group(1)}:{match.group(2)}"
+        if location in seen_locations:
+            continue
+        seen_locations.add(location)
+        locations.append(location)
+        if len(locations) >= 10:
+            break
+
+    assertions: List[str] = []
+    seen_assertions: Set[str] = set()
+    for match in _PYTEST_ASSERTION_RE.finditer(merged):
+        assertion = match.group(1).strip()
+        if assertion in seen_assertions:
+            continue
+        seen_assertions.add(assertion)
+        assertions.append(assertion)
+        if len(assertions) >= 10:
+            break
+
+    out: Dict[str, Any] = {}
+    if any(v > 0 for v in counts.values()):
+        out["summary"] = counts
+    if failed_tests:
+        out["failed_tests"] = failed_tests
+    if locations:
+        out["locations"] = locations
+    if assertions:
+        out["assertions"] = assertions
+    return out
+
+
 def register_validator(
     name: str,
     command_builder: CommandBuilder,
@@ -198,7 +262,7 @@ def _register_default_validators() -> None:
     )
     register_validator(
         "pytest",
-        lambda py: _module_command(py, "pytest", "-q", "--maxfail", "1", "tests"),
+        lambda py: _module_command(py, "pytest", "-q", "--tb=short", "--maxfail", "3", "tests"),
         version_builder=lambda py: _module_command(py, "pytest", "--version"),
         is_default=True,
     )
@@ -300,11 +364,14 @@ class Validators:
         status, error_class = self._parse_error_class(name, result.returncode, audit_required, result)
         ok = status == "passed"
         note = ""
+        diagnostics: Dict[str, Any] | None = None
         if name == "pip_audit" and (result.returncode != 0) and (not audit_required):
             if error_class == "tool_unavailable":
                 note = "pip-audit could not run in this environment. WARN because audit_required=false."
             else:
                 note = "pip-audit failed (possibly offline). WARN because audit_required=false."
+        if name == "pytest":
+            diagnostics = _parse_pytest_diagnostics(result.stdout, result.stderr)
 
         validation = Validation(
             name=name,
@@ -316,6 +383,7 @@ class Validators:
             tool_version=self._version(name, python_executable=python_executable),
             error_classification=error_class,
             phase=phase,
+            diagnostics=diagnostics,
         )
 
         _log_event(
@@ -592,6 +660,7 @@ class Validators:
                 "stdout": result.result.stdout[-6000:],
                 "stderr": result.result.stderr[-6000:],
                 "note": result.note,
+                "diagnostics": result.diagnostics or {},
             }
             for result in results
         ]

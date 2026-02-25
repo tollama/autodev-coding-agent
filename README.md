@@ -50,6 +50,11 @@ llm:
   api_key: ${AUTODEV_LLM_API_KEY}
   model: "qwen3-coder-30b-a3b-instruct-mlx"
   timeout_sec: 240
+  role_temperatures:
+    prd_normalizer: 0.2
+    planner: 0.4
+    implementer: 0.1
+    fixer: 0.15
 ```
 
 ## Switching LLM providers
@@ -146,6 +151,8 @@ run:
   max_fix_loops_total: 10
   max_fix_loops_per_task: 4
   verbose: true
+  budget:
+    max_tokens: 500000
 ```
 
 ### Quick provider swap checklist
@@ -210,6 +217,16 @@ Or installed script form:
 autodev --prd examples/PRD.md --out ./generated_runs --profile enterprise
 ```
 
+Resume a partial run from checkpoint:
+```bash
+autodev --prd examples/PRD.md --out ./generated_runs --profile enterprise --resume
+```
+
+Require manual confirmation before implementation:
+```bash
+autodev --prd examples/PRD.md --out ./generated_runs --profile enterprise --interactive
+```
+
 ## Output Directory Naming
 `--out` is treated as a parent directory.
 Each run creates a unique child directory:
@@ -231,6 +248,7 @@ Inside each run folder:
 - Generated project files and tests.
 - `.autodev/prd_struct.json`: normalized PRD.
 - `.autodev/plan.json`: generated task plan.
+- `.autodev/checkpoint.json`: task completion checkpoint for `--resume`.
 - `.autodev/task_<id>_last_validation.json`: per-task validation snapshots.
 - `.autodev/REPORT.md`: final summary with pass/fail status and last validation output.
 - `sbom/` artifacts (from `scripts/generate_sbom.py`), including CycloneDX JSON and license reports.

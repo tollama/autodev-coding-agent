@@ -195,3 +195,137 @@ profiles:
     assert captured.get("profile") == "minimal"
     assert len(captured["run_id"]) == 32
     assert len(captured["request_id"]) == 32
+
+
+def test_cli_passes_resume_flag_to_runner(tmp_path, monkeypatch):
+    cfg = """\
+llm:
+  base_url: "http://127.0.0.1:1234/v1"
+  api_key: test-key
+  model: fake-model
+profiles:
+  minimal:
+    validators:
+      - ruff
+      - pytest
+    template_candidates:
+      - python_fastapi
+"""
+    cfg_path, prd_path = _build_fake_args(tmp_path)
+    cfg_path.write_text(cfg, encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    async def _fake_run_autodev_enterprise(*_args, **kwargs):
+        captured["resume"] = kwargs.get("resume")
+        return True, {"project": {}}, {"project": {}}, []
+
+    monkeypatch.setattr(main, "run_autodev_enterprise", _fake_run_autodev_enterprise)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "autodev",
+            "--prd",
+            str(prd_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--config",
+            str(cfg_path),
+            "--profile",
+            "minimal",
+            "--resume",
+        ],
+    )
+
+    main.cli()
+    assert captured["resume"] is True
+
+
+def test_cli_passes_interactive_flag_to_runner(tmp_path, monkeypatch):
+    cfg = """\
+llm:
+  base_url: "http://127.0.0.1:1234/v1"
+  api_key: test-key
+  model: fake-model
+profiles:
+  minimal:
+    validators:
+      - ruff
+      - pytest
+    template_candidates:
+      - python_fastapi
+"""
+    cfg_path, prd_path = _build_fake_args(tmp_path)
+    cfg_path.write_text(cfg, encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    async def _fake_run_autodev_enterprise(*_args, **kwargs):
+        captured["interactive"] = kwargs.get("interactive")
+        return True, {"project": {}}, {"project": {}}, []
+
+    monkeypatch.setattr(main, "run_autodev_enterprise", _fake_run_autodev_enterprise)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "autodev",
+            "--prd",
+            str(prd_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--config",
+            str(cfg_path),
+            "--profile",
+            "minimal",
+            "--interactive",
+        ],
+    )
+
+    main.cli()
+    assert captured["interactive"] is True
+
+
+def test_cli_passes_role_temperatures_to_runner(tmp_path, monkeypatch):
+    cfg = """\
+llm:
+  base_url: "http://127.0.0.1:1234/v1"
+  api_key: test-key
+  model: fake-model
+  role_temperatures:
+    planner: 0.4
+    implementer: 0.1
+profiles:
+  minimal:
+    validators:
+      - ruff
+      - pytest
+    template_candidates:
+      - python_fastapi
+"""
+    cfg_path, prd_path = _build_fake_args(tmp_path)
+    cfg_path.write_text(cfg, encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    async def _fake_run_autodev_enterprise(*_args, **kwargs):
+        captured["role_temperatures"] = kwargs.get("role_temperatures")
+        return True, {"project": {}}, {"project": {}}, []
+
+    monkeypatch.setattr(main, "run_autodev_enterprise", _fake_run_autodev_enterprise)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "autodev",
+            "--prd",
+            str(prd_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--config",
+            str(cfg_path),
+            "--profile",
+            "minimal",
+        ],
+    )
+
+    main.cli()
+    assert captured["role_temperatures"] == {"planner": 0.4, "implementer": 0.1}

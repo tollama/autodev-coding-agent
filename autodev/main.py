@@ -8,7 +8,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict
 
 from .config import load_config
 from .llm_client import LLMClient
@@ -89,6 +89,39 @@ def _coerce_int(value: Any, key: str, default: int) -> int:
         raise SystemExit(f"config.run.{key} must be an integer, got {value!r}.")
 
 
+def _coerce_optional_int(value: Any, key: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise SystemExit(f"config.run.{key} must be an integer, got {type(value).__name__}.")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise SystemExit(f"config.run.{key} must be an integer, got {value!r}.")
+
+
+def _coerce_role_temperatures(value: Any) -> Dict[str, float]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise SystemExit("llm.role_temperatures must be an object map of role->temperature.")
+
+    out: Dict[str, float] = {}
+    for role_name, raw_temp in value.items():
+        if isinstance(raw_temp, bool):
+            raise SystemExit(f"llm.role_temperatures.{role_name} must be a number.")
+        if isinstance(raw_temp, str):
+            raw_temp = raw_temp.strip()
+        try:
+            temp = float(raw_temp)
+        except (TypeError, ValueError) as e:
+            raise SystemExit(f"llm.role_temperatures.{role_name} must be a number.") from e
+        if temp < 0 or temp > 2:
+            raise SystemExit(f"llm.role_temperatures.{role_name} must be between 0 and 2.")
+        out[str(role_name)] = temp
+    return out
+
+
 def _resolve_profile_name(requested: str | None, profiles: dict[str, Any]) -> str:
     if requested:
         if requested not in profiles:
@@ -122,6 +155,16 @@ def cli():
         default=None,
         help="Profile name from config.yaml. If omitted, a single available profile is used automatically.",
     )
+    ap.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from .autodev/checkpoint.json and skip already completed tasks.",
+    )
+    ap.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Pause after plan generation and ask for confirmation before implementation starts.",
+    )
     ap.add_argument("--config", default="config.yaml")
     args = ap.parse_args()
 
@@ -136,6 +179,19 @@ def cli():
 
     profile_name = _resolve_profile_name(args.profile, profiles)
     prof = profiles[profile_name]
+    run_cfg = cfg.get("run", {})
+    if not isinstance(run_cfg, dict):
+        raise SystemExit("Invalid config: 'run' must be an object.")
+
+    budget_cfg = run_cfg.get("budget")
+    if budget_cfg is not None and not isinstance(budget_cfg, dict):
+        raise SystemExit("Invalid config: run.budget must be an object.")
+    max_token_budget = None
+    if isinstance(budget_cfg, dict):
+        max_token_budget = _coerce_optional_int(budget_cfg.get("max_tokens"), "budget.max_tokens")
+        if max_token_budget is not None and max_token_budget <= 0:
+            raise SystemExit("config.run.budget.max_tokens must be a positive integer.")
+
     template_candidates = prof["template_candidates"]
     validators_enabled = prof["validators"]
     quality_profile = dict(prof.get("quality_profile", {}))
@@ -146,6 +202,7 @@ def cli():
     prd_md = _read_text_file(args.prd, "PRD file")
 
     llm_cfg = cfg["llm"]
+    role_temperatures = _coerce_role_temperatures(llm_cfg.get("role_temperatures"))
     llm_api_key = (llm_cfg.get("api_key") or "").strip()
     if not llm_api_key:
         raise SystemExit(
@@ -158,6 +215,7 @@ def cli():
             api_key=llm_api_key,
             model=llm_cfg["model"],
             timeout_sec=int(llm_cfg.get("timeout_sec", 240)),
+            max_total_tokens=max_token_budget,
         )
     except (TypeError, ValueError) as e:
         raise SystemExit(f"Invalid llm config: {e}") from e
@@ -171,6 +229,8 @@ def cli():
         "run_id": run_id,
         "request_id": request_id,
         "requested_profile": profile_name,
+        "resume_requested": bool(args.resume),
+        "interactive_requested": bool(args.interactive),
         "quality_profile": quality_profile,
         "template_candidates": template_candidates,
         "per_task_soft_validators": per_task_soft,
@@ -178,6 +238,10 @@ def cli():
         "disable_docker_build": disable_docker_build,
         "validators_enabled": validators_enabled,
         "resolved_from": quality_profile.get("name", "balanced"),
+        "llm_budget": {
+            "max_total_tokens": max_token_budget,
+        },
+        "role_temperatures": role_temperatures,
         "quality_payload_files": {
             "task_quality_index": ".autodev/task_quality_index.json",
             "quality_profile": ".autodev/quality_profile.json",
@@ -194,11 +258,18 @@ def cli():
         prd=args.prd,
         out_root=args.out,
         run_out=run_out,
+        llm_max_total_tokens=max_token_budget,
+        role_temperatures=role_temperatures,
     )
     ws.write_text(".autodev/run_metadata.json", json_dumps(run_metadata))
 
     import asyncio
 
+    workflow_error: ValueError | None = None
+    ok = False
+    prd_struct: Dict[str, Any] = {}
+    plan: Dict[str, Any] = {}
+    last_validation: Any = []
     try:
         ok, prd_struct, plan, last_validation = asyncio.run(
             run_autodev_enterprise(
@@ -209,28 +280,51 @@ def cli():
                 template_candidates=template_candidates,
                 validators_enabled=validators_enabled,
                 audit_required=bool(prof.get("security", {}).get("audit_required", False)),
-                max_fix_loops_total=_coerce_int(cfg["run"].get("max_fix_loops_total"), "max_fix_loops_total", 10),
-                max_fix_loops_per_task=_coerce_int(cfg["run"].get("max_fix_loops_per_task"), "max_fix_loops_per_task", 4),
-                max_json_repair=_coerce_int(cfg["run"].get("max_json_repair"), "max_json_repair", 2),
+                max_fix_loops_total=_coerce_int(run_cfg.get("max_fix_loops_total"), "max_fix_loops_total", 10),
+                max_fix_loops_per_task=_coerce_int(run_cfg.get("max_fix_loops_per_task"), "max_fix_loops_per_task", 4),
+                max_json_repair=_coerce_int(run_cfg.get("max_json_repair"), "max_json_repair", 2),
                 task_soft_validators=per_task_soft,
                 final_soft_validators=final_soft,
                 quality_profile=quality_profile,
                 disable_docker_build=disable_docker_build,
-                verbose=bool(cfg["run"].get("verbose", True)),
+                verbose=bool(run_cfg.get("verbose", True)),
                 run_id=run_id,
                 request_id=request_id,
                 profile=profile_name,
+                resume=bool(args.resume),
+                interactive=bool(args.interactive),
+                role_temperatures=role_temperatures,
             )
         )
     except ValueError as e:
+        workflow_error = e
+
+    llm_usage = client.usage_summary()
+    run_metadata["llm_usage"] = llm_usage
+    ws.write_text(".autodev/run_metadata.json", json_dumps(run_metadata))
+    _log_event(
+        "autodev.run_cli_llm_usage",
+        run_id=run_id,
+        request_id=request_id,
+        profile=profile_name,
+        llm_usage=llm_usage,
+    )
+
+    if workflow_error is not None:
+        run_metadata["result_ok"] = False
+        run_metadata["run_completed_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        ws.write_text(".autodev/run_metadata.json", json_dumps(run_metadata))
         _log_event(
             "autodev.run_cli_error",
             run_id=run_id,
             request_id=request_id,
             profile=profile_name,
-            error=str(e),
+            error=str(workflow_error),
         )
-        raise SystemExit(f"Workflow failed during structured generation or runtime validation: {e}") from e
+        raise SystemExit(
+            "Workflow failed during structured generation or runtime validation: "
+            f"{workflow_error}"
+        ) from workflow_error
 
     quality_profile_path = os.path.join(run_out, ".autodev", "quality_profile.json")
     if os.path.exists(quality_profile_path):
@@ -257,10 +351,11 @@ def cli():
         ok=ok,
         output_dir=os.path.abspath(run_out),
         validators_enabled=validators_enabled,
+        llm_usage=llm_usage,
     )
 
     write_report(ws.root, prd_struct, plan, last_validation, ok)
-    print({"ok": ok, "out": os.path.abspath(run_out)})
+    print({"ok": ok, "out": os.path.abspath(run_out), "llm_usage": llm_usage})
     if not ok:
         raise SystemExit(1)
 

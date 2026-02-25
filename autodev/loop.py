@@ -64,6 +64,7 @@ QUALITY_PROFILE_FILE = ".autodev/quality_profile.json"
 QUALITY_SUMMARY_METADATA_FILE = ".autodev/quality_run_summary.json"
 QUALITY_RESOLUTION_FILE = ".autodev/quality_resolution.json"
 PLAN_CACHE_FILE = ".autodev/generate_cache.json"
+CHECKPOINT_FILE = ".autodev/checkpoint.json"
 PLAN_CACHE_VERSION = 1
 
 
@@ -214,6 +215,40 @@ def _write_generation_cache(
             }
         ),
     )
+
+
+def _read_checkpoint(ws: Workspace) -> Dict[str, Any] | None:
+    if not ws.exists(CHECKPOINT_FILE):
+        return None
+    try:
+        payload = strict_json_loads(ws.read_text(CHECKPOINT_FILE))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _write_checkpoint(
+    ws: Workspace,
+    completed_task_ids: List[str],
+    *,
+    status: str,
+    run_id: str,
+    request_id: str,
+    profile: str | None = None,
+    failed_task_id: str | None = None,
+) -> None:
+    payload: Dict[str, Any] = {
+        "status": status,
+        "completed_task_ids": sorted(set(completed_task_ids)),
+        "failed_task_id": failed_task_id,
+        "updated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "run_id": run_id,
+        "request_id": request_id,
+        "profile": profile,
+    }
+    _write_json(ws, CHECKPOINT_FILE, payload)
 
 
 def _build_task_payload(
@@ -508,6 +543,36 @@ def _resolve_soft_fail(
     return set()
 
 
+def _resolve_repeat_failure_guard(quality_profile: Dict[str, Any] | None) -> Dict[str, Any]:
+    defaults = {"enabled": True, "max_retries_before_targeted_fix": 1}
+    if not isinstance(quality_profile, dict):
+        return defaults
+
+    escalation = quality_profile.get("escalation")
+    if not isinstance(escalation, dict):
+        return defaults
+
+    guard = escalation.get("repeat_failure_guard")
+    if not isinstance(guard, dict):
+        return defaults
+
+    enabled = guard.get("enabled", defaults["enabled"])
+    max_retries = guard.get(
+        "max_retries_before_targeted_fix",
+        defaults["max_retries_before_targeted_fix"],
+    )
+
+    if not isinstance(enabled, bool):
+        enabled = defaults["enabled"]
+    if not isinstance(max_retries, int) or max_retries < 0:
+        max_retries = defaults["max_retries_before_targeted_fix"]
+
+    return {
+        "enabled": enabled,
+        "max_retries_before_targeted_fix": max_retries,
+    }
+
+
 def _build_task_summary_rows(
     attempts: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
@@ -758,6 +823,7 @@ async def _llm_json(
     profile: str | None = None,
     component: str = "llm",
     post_process: Callable[[Dict[str, Any]], Dict[str, Any]] | None = None,
+    temperature: float = 0.2,
 ) -> Dict[str, Any]:
     run_id = run_id or uuid4().hex
     request_id = request_id or uuid4().hex
@@ -776,10 +842,11 @@ async def _llm_json(
             attempt=retry_count,
             max_attempts=max_repair + 1,
             safe_payload=_safe_short_text(prompt_user, limit=220),
+            temperature=temperature,
         )
 
         try:
-            raw = await client.chat(_msg(system, prompt_user), temperature=0.2)
+            raw = await client.chat(_msg(system, prompt_user), temperature=temperature)
             last_raw = raw
         except Exception as e:
             raise ValueError(
@@ -863,6 +930,9 @@ async def run_autodev_enterprise(
     quality_profile: Dict[str, Any] | None = None,
     disable_docker_build: bool = False,
     verbose: bool = True,
+    resume: bool = False,
+    interactive: bool = False,
+    role_temperatures: Dict[str, float] | None = None,
     *,
     run_id: str | None = None,
     request_id: str | None = None,
@@ -883,9 +953,22 @@ async def run_autodev_enterprise(
         max_fix_loops_total=max_fix_loops_total,
         max_fix_loops_per_task=max_fix_loops_per_task,
         max_json_repair=max_json_repair,
+        resume=resume,
+        interactive=interactive,
     )
 
     p = prompts()
+    role_temperatures = role_temperatures or {}
+
+    def _role_temperature(component: str, default: float = 0.2) -> float:
+        value = role_temperatures.get(component)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        if component == "perf_fixer":
+            fixer_value = role_temperatures.get("fixer")
+            if isinstance(fixer_value, (int, float)) and not isinstance(fixer_value, bool):
+                return float(fixer_value)
+        return default
 
     quality_profile = quality_profile or {}
     cache_key = _generation_cache_key(
@@ -926,6 +1009,7 @@ async def run_autodev_enterprise(
             profile=profile,
             component="prd_normalizer",
             post_process=_coerce_prd_payload,
+            temperature=_role_temperature("prd_normalizer"),
         )
 
         # 2) Plan
@@ -944,6 +1028,7 @@ async def run_autodev_enterprise(
             profile=profile,
             component="planner",
             post_process=lambda payload: _coerce_plan_payload(payload, template_candidates),
+            temperature=_role_temperature("planner"),
         )
         _write_generation_cache(ws, cache_key, prd_struct, plan)
 
@@ -997,6 +1082,7 @@ async def run_autodev_enterprise(
             profile=profile,
             component="planner_repair",
             post_process=lambda payload: _coerce_plan_payload(payload, template_candidates),
+            temperature=_role_temperature("planner_repair", _role_temperature("planner")),
         )
         if repaired_plan["project"]["type"] != project_type:
             raise ValueError("Planner repair changed project.type; refusing to continue.")
@@ -1008,6 +1094,22 @@ async def run_autodev_enterprise(
             profile=profile,
             project_type=project_type,
         )
+
+    _write_json(ws, ".autodev/prd_struct.json", prd_struct)
+    _write_json(ws, ".autodev/plan.json", plan)
+    if interactive:
+        plan_path = os.path.join(ws.root, ".autodev", "plan.json")
+        print(f"[interactive] Plan generated: {plan_path}")
+        decision = input("Proceed with implementation? [Y/n] ").strip().lower()
+        if decision in {"n", "no"}:
+            _log_event(
+                "run.interactive_aborted",
+                run_id=run_id,
+                request_id=request_id,
+                profile=profile,
+                plan_path=plan_path,
+            )
+            return False, prd_struct, plan, []
 
     quality_profile = _resolve_gate_profile(
         quality_profile=quality_profile,
@@ -1036,6 +1138,9 @@ async def run_autodev_enterprise(
         task_soft = set(task_soft_validators or DEFAULT_TASK_SOFT_VALIDATORS)
     if final_soft_validators is None and not final_soft:
         final_soft = set(final_soft_validators or [])
+    repeat_guard = _resolve_repeat_failure_guard(quality_profile)
+    repeat_guard_enabled = bool(repeat_guard["enabled"])
+    repeat_guard_max_retries = int(repeat_guard["max_retries_before_targeted_fix"])
 
     _log_event(
         "run.quality_profile_resolved",
@@ -1045,6 +1150,8 @@ async def run_autodev_enterprise(
         resolved_from=quality_profile.get("resolved_from"),
         task_soft_fail=sorted(task_soft),
         final_soft_fail=sorted(final_soft),
+        repeat_failure_guard_enabled=repeat_guard_enabled,
+        repeat_failure_guard_retries=repeat_guard_max_retries,
     )
 
     effective_validators_enabled = list(dict.fromkeys(validators_enabled))
@@ -1063,11 +1170,39 @@ async def run_autodev_enterprise(
     validators = Validators(kernel, env)
 
     tasks = _toposort(plan["tasks"])
+    checkpoint_payload = _read_checkpoint(ws) if resume else None
+    completed_task_ids: Set[str] = set()
+    if isinstance(checkpoint_payload, dict):
+        completed_raw = checkpoint_payload.get("completed_task_ids")
+        if isinstance(completed_raw, list):
+            completed_task_ids = {str(task_id) for task_id in completed_raw if str(task_id).strip()}
+    _write_checkpoint(
+        ws,
+        sorted(completed_task_ids),
+        status="running",
+        run_id=run_id,
+        request_id=request_id,
+        profile=profile,
+    )
+    if resume:
+        _log_event(
+            "run.checkpoint_loaded",
+            run_id=run_id,
+            request_id=request_id,
+            profile=profile,
+            checkpoint_found=checkpoint_payload is not None,
+            completed_tasks=sorted(completed_task_ids),
+        )
+
     quality_summary: Dict[str, Any] = {
         "project": plan.get("project", {}),
         "run_level_soft_fail": {
             "per_task": sorted(task_soft),
             "final": sorted(final_soft),
+        },
+        "repeat_failure_guard": {
+            "enabled": repeat_guard_enabled,
+            "max_retries_before_targeted_fix": repeat_guard_max_retries,
         },
         "validator_enabled": effective_validators_enabled,
         "resolved_quality_profile": quality_profile,
@@ -1085,6 +1220,60 @@ async def run_autodev_enterprise(
             print(f"\n== TASK {t['id']} == {t['title']}")
 
         run_set = _resolve_validators(t.get("validator_focus"), effective_validators_enabled)
+        if resume and t["id"] in completed_task_ids:
+            _log_event(
+                "task.resume_skipped",
+                run_id=run_id,
+                request_id=request_id,
+                profile=profile,
+                iteration=iteration,
+                task_id=t["id"],
+                task_title=t["title"],
+                validator_focus=run_set,
+            )
+            quality_summary["tasks"].append(
+                {
+                    "task_id": t["id"],
+                    "status": "passed",
+                    "attempts": 0,
+                    "validator_focus": run_set,
+                    "attempt_trend": [],
+                    "hard_failures": 0,
+                    "soft_failures": 0,
+                    "last_validation": [],
+                    "repair_passes": 0,
+                    "quality_trace": [],
+                    "resumed_from_checkpoint": True,
+                }
+            )
+            _write_json(
+                ws,
+                QUALITY_TASK_FILE_TMPL.format(task_id=t["id"]),
+                {
+                    "task_id": t["id"],
+                    "status": "passed",
+                    "attempts": [],
+                    "attempts_count": 0,
+                    "validator_focus": run_set,
+                    "attempt_trend": [],
+                    "last_validation": [],
+                    "repair_passes": 0,
+                    "quality_trace": [],
+                    "resumed_from_checkpoint": True,
+                },
+            )
+            _write_json(
+                ws,
+                QUALITY_TASK_LAST_FILE_TMPL.format(task_id=t["id"]),
+                {
+                    "validator_focus": run_set,
+                    "run_level": "per_task",
+                    "validation": [],
+                    "record_count": 0,
+                    "resumed_from_checkpoint": True,
+                },
+            )
+            continue
         _log_event(
             "task.start",
             run_id=run_id,
@@ -1101,6 +1290,7 @@ async def run_autodev_enterprise(
         attempt_records: List[Dict[str, Any]] = []
         loops = 0
         last_failure_signature: tuple[Any, ...] = tuple()
+        repeat_failure_count = 0
         repair_used = False
         previous_validation_rows: List[Dict[str, Any]] = []
 
@@ -1117,6 +1307,7 @@ async def run_autodev_enterprise(
             request_id=request_id,
             profile=profile,
             component="implementer",
+            temperature=_role_temperature("implementer"),
         )
         quality_trace = [_quality_metadata_from_changeset(changeset, t["id"], run_set)]
 
@@ -1285,11 +1476,32 @@ async def run_autodev_enterprise(
                     unresolved_count=len(unresolved),
                     total_fix_loops=total_fix_loops,
                 )
+                _write_checkpoint(
+                    ws,
+                    sorted(completed_task_ids),
+                    status="failed",
+                    run_id=run_id,
+                    request_id=request_id,
+                    profile=profile,
+                    failed_task_id=t["id"],
+                )
                 return False, prd_struct, plan, last_validation
 
             files_ctx = _build_files_context(ws, t["files"])
+            same_failure_signature = bool(signature) and signature == last_failure_signature
+            if same_failure_signature:
+                repeat_failure_count += 1
+            else:
+                repeat_failure_count = 0
             repair_mode = "normal"
-            if signature == last_failure_signature and not repair_used:
+            targeted_fix_requested = False
+            if not repair_used and repeat_guard_enabled:
+                if repeat_guard_max_retries == 0:
+                    targeted_fix_requested = True
+                elif same_failure_signature and repeat_failure_count >= repeat_guard_max_retries:
+                    targeted_fix_requested = True
+
+            if targeted_fix_requested:
                 repair_mode = "targeted"
                 repair_payload = _build_task_payload(plan, t, performance_context=performance_context)
                 repair_payload["files_context"] = files_ctx
@@ -1315,6 +1527,9 @@ async def run_autodev_enterprise(
                 attempt=loops + 1,
                 repair_mode=repair_mode,
                 failure_signature=str(signature)[:200],
+                repeat_failure_count=repeat_failure_count,
+                repeat_failure_guard_enabled=repeat_guard_enabled,
+                repeat_failure_guard_retries=repeat_guard_max_retries,
             )
 
             fix = await _llm_json(
@@ -1327,6 +1542,7 @@ async def run_autodev_enterprise(
                 request_id=request_id,
                 profile=profile,
                 component="fixer",
+                temperature=_role_temperature("fixer"),
             )
             quality_trace.append(_quality_metadata_from_changeset(fix, t["id"], run_set))
             fix_changes: List[Change] = []
@@ -1369,6 +1585,15 @@ async def run_autodev_enterprise(
             "validation": attempt_records[-1]["validations"],
             "record_count": len(attempt_records),
         })
+        completed_task_ids.add(t["id"])
+        _write_checkpoint(
+            ws,
+            sorted(completed_task_ids),
+            status="running",
+            run_id=run_id,
+            request_id=request_id,
+            profile=profile,
+        )
 
     # 5) Final enterprise validation (all enabled)
     _log_event(
@@ -1459,6 +1684,7 @@ async def run_autodev_enterprise(
             request_id=request_id,
             profile=profile,
             component="perf_fixer",
+            temperature=_role_temperature("perf_fixer"),
         )
         for c in perf_fix["changes"]:
             ws.apply_changes([Change(op=c["op"], path=c["path"], content=c.get("content"))])
@@ -1578,6 +1804,15 @@ async def run_autodev_enterprise(
         task_failures=task_failures,
         total_fix_loops=total_fix_loops,
         unresolved_count=len(unresolved),
+    )
+    _write_checkpoint(
+        ws,
+        sorted(completed_task_ids),
+        status="completed" if (final_ok and task_failures == 0) else "failed",
+        run_id=run_id,
+        request_id=request_id,
+        profile=profile,
+        failed_task_id=None if (final_ok and task_failures == 0) else "final_validation",
     )
 
     return (

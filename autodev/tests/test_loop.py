@@ -201,6 +201,23 @@ class _ScriptedLLM(LLMClient):
         return out
 
 
+class _TempRecordingLLM(LLMClient):
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = 0
+        self.temperatures: list[float] = []
+
+    async def chat(self, messages: list[dict[str, str]], temperature: float = 0.2) -> str:
+        self.temperatures.append(float(temperature))
+        if self.calls >= len(self.responses):
+            raise RuntimeError("LLM had no scripted response")
+        out = self.responses[self.calls]
+        self.calls += 1
+        if isinstance(out, Exception):
+            raise out
+        return json.dumps(out)
+
+
 def test_llm_json_repair_eventually_succeeds():
     schema = {
         "type": "object",
@@ -389,6 +406,603 @@ def test_run_loop_repair_escalation_path(tmp_path, monkeypatch):
     assert Path(ws.root, ".autodev/task_core_last_validation.json").exists()
     assert Path(ws.root, ".autodev/task_quality_index.json").exists()
     assert len([c for c in _FakeValidators.calls if c[0] == "per_task"]) >= 1
+
+
+def test_run_loop_applies_role_specific_temperatures(tmp_path, monkeypatch):
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "role-temps"))
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakePassingValidators)
+    _FakePassingValidators.calls = []
+
+    responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-role-temp",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "tasks": [
+                {
+                    "id": "core",
+                    "title": "Core API",
+                    "goal": "Create core endpoint",
+                    "acceptance": ["Add tests for core endpoint", "Validate error responses"],
+                    "files": ["src/app/main.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                }
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+    ]
+    llm = _TempRecordingLLM(responses)
+
+    ok, _, _, _ = asyncio.run(
+        run_autodev_enterprise(
+            client=cast(LLMClient, llm),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff"],
+            audit_required=False,
+            max_fix_loops_total=2,
+            max_fix_loops_per_task=2,
+            max_json_repair=0,
+            task_soft_validators=[],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": []}, "final": {"soft_fail": []}},
+            },
+            verbose=False,
+            role_temperatures={
+                "prd_normalizer": 0.25,
+                "planner": 0.4,
+                "implementer": 0.1,
+            },
+        )
+    )
+
+    assert ok is True
+    assert llm.temperatures[:3] == [0.25, 0.4, 0.1]
+
+
+def test_repeat_failure_guard_disabled_keeps_normal_repairs(tmp_path, monkeypatch):
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "repeat-guard-disabled"))
+    events: list[dict[str, Any]] = []
+
+    def _capture(event: str, **fields: object) -> None:
+        payload = dict(fields)
+        payload["event"] = event
+        events.append(payload)
+
+    monkeypatch.setattr(loop, "_log_event", _capture)
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakeValidators)
+    _FakeValidators.calls = []
+
+    responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-fake",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "tasks": [
+                {
+                    "id": "core",
+                    "title": "Create core task",
+                    "goal": "Build core endpoint",
+                    "acceptance": ["Add tests for core route"],
+                    "files": ["src/app/main.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                }
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "repair", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "repair", "changes": [], "notes": []},
+    ]
+
+    ok, _, _, _ = asyncio.run(
+        run_autodev_enterprise(
+            client=cast(LLMClient, _FakeLLM(responses)),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff"],
+            audit_required=False,
+            max_fix_loops_total=5,
+            max_fix_loops_per_task=5,
+            max_json_repair=0,
+            task_soft_validators=[],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": []}, "final": {"soft_fail": []}},
+                "escalation": {
+                    "repeat_failure_guard": {
+                        "enabled": False,
+                        "max_retries_before_targeted_fix": 1,
+                    }
+                },
+            },
+            verbose=False,
+        )
+    )
+
+    assert ok is True
+    repair_events = [e for e in events if e.get("event") == "task.repair_requested"]
+    assert repair_events
+    assert all(e.get("repair_mode") == "normal" for e in repair_events)
+
+
+def test_repeat_failure_guard_zero_threshold_targets_first_retry(tmp_path, monkeypatch):
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "repeat-guard-zero-threshold"))
+    events: list[dict[str, Any]] = []
+
+    def _capture(event: str, **fields: object) -> None:
+        payload = dict(fields)
+        payload["event"] = event
+        events.append(payload)
+
+    monkeypatch.setattr(loop, "_log_event", _capture)
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakeValidators)
+    _FakeValidators.calls = []
+
+    responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-fake",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "tasks": [
+                {
+                    "id": "core",
+                    "title": "Create core task",
+                    "goal": "Build core endpoint",
+                    "acceptance": ["Add tests for core route"],
+                    "files": ["src/app/main.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                }
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "repair", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "repair", "changes": [], "notes": []},
+    ]
+
+    ok, _, _, _ = asyncio.run(
+        run_autodev_enterprise(
+            client=cast(LLMClient, _FakeLLM(responses)),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff"],
+            audit_required=False,
+            max_fix_loops_total=5,
+            max_fix_loops_per_task=5,
+            max_json_repair=0,
+            task_soft_validators=[],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": []}, "final": {"soft_fail": []}},
+                "escalation": {
+                    "repeat_failure_guard": {
+                        "enabled": True,
+                        "max_retries_before_targeted_fix": 0,
+                    }
+                },
+            },
+            verbose=False,
+        )
+    )
+
+    assert ok is True
+    repair_events = [e for e in events if e.get("event") == "task.repair_requested"]
+    assert repair_events
+    assert repair_events[0].get("repair_mode") == "targeted"
+
+
+class _FakeValidatorsFailThree:
+    calls: list[tuple[str, list[str], list[str], dict[str, Any]]] = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    @staticmethod
+    def serialize(results):
+        out = []
+        for r in results:
+            out.append(
+                {
+                    "name": r.name,
+                    "ok": r.ok,
+                    "status": r.status,
+                    "returncode": r.result.returncode,
+                    "duration_ms": r.duration_ms,
+                    "tool_version": r.tool_version,
+                    "error_classification": r.error_classification,
+                    "stdout": "",
+                    "stderr": "",
+                    "note": r.note,
+                }
+            )
+        return out
+
+    def run_all(self, enabled, audit_required=False, soft_validators=None, phase="task", **kwargs):
+        _FakeValidatorsFailThree.calls.append((phase, list(enabled), sorted(soft_validators or []), kwargs))
+        if phase == "per_task":
+            attempt = len([c for c in _FakeValidatorsFailThree.calls if c[0] == "per_task"])
+            if attempt <= 3:
+                return [_FakeValidation("ruff", False, "failed", 1)]
+            return [_FakeValidation("ruff", True, "passed", 0)]
+        return [_FakeValidation("ruff", True, "passed", 0)]
+
+
+def test_repeat_failure_guard_respects_retry_threshold(tmp_path, monkeypatch):
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "repeat-guard-threshold"))
+    events: list[dict[str, Any]] = []
+
+    def _capture(event: str, **fields: object) -> None:
+        payload = dict(fields)
+        payload["event"] = event
+        events.append(payload)
+
+    monkeypatch.setattr(loop, "_log_event", _capture)
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakeValidatorsFailThree)
+    _FakeValidatorsFailThree.calls = []
+
+    responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-fake",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "tasks": [
+                {
+                    "id": "core",
+                    "title": "Create core task",
+                    "goal": "Build core endpoint",
+                    "acceptance": ["Add tests for core route"],
+                    "files": ["src/app/main.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                }
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "repair", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "repair", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "repair", "changes": [], "notes": []},
+    ]
+
+    ok, _, _, _ = asyncio.run(
+        run_autodev_enterprise(
+            client=cast(LLMClient, _FakeLLM(responses)),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff"],
+            audit_required=False,
+            max_fix_loops_total=6,
+            max_fix_loops_per_task=6,
+            max_json_repair=0,
+            task_soft_validators=[],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": []}, "final": {"soft_fail": []}},
+                "escalation": {
+                    "repeat_failure_guard": {
+                        "enabled": True,
+                        "max_retries_before_targeted_fix": 2,
+                    }
+                },
+            },
+            verbose=False,
+        )
+    )
+
+    assert ok is True
+    repair_modes = [e.get("repair_mode") for e in events if e.get("event") == "task.repair_requested"]
+    assert repair_modes[:3] == ["normal", "normal", "targeted"]
+
+
+def test_run_loop_resume_skips_completed_tasks_from_checkpoint(tmp_path, monkeypatch):
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "resume-checkpoint"))
+    events: list[dict[str, Any]] = []
+
+    def _capture(event: str, **fields: object) -> None:
+        payload = dict(fields)
+        payload["event"] = event
+        events.append(payload)
+
+    ws.write_text(
+        ".autodev/checkpoint.json",
+        json.dumps(
+            {
+                "status": "running",
+                "completed_task_ids": ["core"],
+                "failed_task_id": None,
+            }
+        ),
+    )
+
+    monkeypatch.setattr(loop, "_log_event", _capture)
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakePassingValidators)
+    _FakePassingValidators.calls = []
+
+    responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-resume",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "tasks": [
+                {
+                    "id": "core",
+                    "title": "Core API",
+                    "goal": "Create core endpoint",
+                    "acceptance": ["Add tests for core endpoint", "Validate error responses"],
+                    "files": ["src/app/main.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                },
+                {
+                    "id": "docs",
+                    "title": "Docs updates",
+                    "goal": "Update docs",
+                    "acceptance": ["README updated"],
+                    "files": ["README.md"],
+                    "depends_on": ["core"],
+                    "quality_expectations": {
+                        "requires_tests": False,
+                        "requires_error_contract": False,
+                        "touches_contract": False,
+                    },
+                    "validator_focus": ["ruff"],
+                },
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+    ]
+
+    ok, _, _, _ = asyncio.run(
+        run_autodev_enterprise(
+            client=cast(LLMClient, _FakeLLM(responses)),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff"],
+            audit_required=False,
+            max_fix_loops_total=2,
+            max_fix_loops_per_task=2,
+            max_json_repair=0,
+            task_soft_validators=[],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": []}, "final": {"soft_fail": []}},
+            },
+            verbose=False,
+            resume=True,
+        )
+    )
+
+    assert ok is True
+    assert any(e.get("event") == "task.resume_skipped" and e.get("task_id") == "core" for e in events)
+    quality_path = Path(ws.root) / ".autodev" / "task_core_quality.json"
+    payload = json.loads(quality_path.read_text(encoding="utf-8"))
+    assert payload["resumed_from_checkpoint"] is True
+
+    checkpoint = json.loads((Path(ws.root) / ".autodev" / "checkpoint.json").read_text(encoding="utf-8"))
+    assert checkpoint["status"] == "completed"
+    assert set(checkpoint["completed_task_ids"]) == {"core", "docs"}
+
+
+def test_run_loop_interactive_can_abort_before_implementation(tmp_path, monkeypatch):
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "interactive-abort"))
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakePassingValidators)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-interactive",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "tasks": [
+                {
+                    "id": "core",
+                    "title": "Core API",
+                    "goal": "Create core endpoint",
+                    "acceptance": ["Add tests for core endpoint", "Validate error responses"],
+                    "files": ["src/app/main.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                }
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+    ]
+    llm = _FakeLLM(responses)
+
+    ok, _, plan, last_validation = asyncio.run(
+        run_autodev_enterprise(
+            client=cast(LLMClient, llm),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff"],
+            audit_required=False,
+            max_fix_loops_total=2,
+            max_fix_loops_per_task=2,
+            max_json_repair=0,
+            task_soft_validators=[],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": []}, "final": {"soft_fail": []}},
+            },
+            verbose=False,
+            interactive=True,
+        )
+    )
+
+    assert ok is False
+    assert plan["project"]["name"] == "autodev-interactive"
+    assert last_validation == []
+    assert llm.calls == 2
+    assert (Path(ws.root) / ".autodev" / "plan.json").exists()
 
 
 def test_run_loop_end_to_end_reports_and_quality_payloads(tmp_path, monkeypatch):

@@ -3,12 +3,19 @@ llm:
   api_key: ${AUTODEV_LLM_API_KEY}
   model: "qwen3:latest"
   timeout_sec: 600
+  role_temperatures:
+    prd_normalizer: 0.2
+    planner: 0.4
+    implementer: 0.1
+    fixer: 0.15
 
 run:
   max_json_repair: 2
   max_fix_loops_total: 10
   max_fix_loops_per_task: 4
   verbose: true
+  budget:
+    max_tokens: 500000
 
 profiles:
   enterprise:

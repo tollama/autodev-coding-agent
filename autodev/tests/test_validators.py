@@ -214,3 +214,35 @@ def test_configured_default_validator_names_match_registry():
     from autodev.schemas import VALIDATORS
 
     assert set(VALIDATORS) == set(["ruff", "mypy", "pytest", "pip_audit", "bandit", "semgrep", "sbom", "docker_build", "dependency_lock"])
+
+
+def test_pytest_validator_serializes_structured_failure_diagnostics():
+    class _PytestFailureKernel(_FakeKernel):
+        def run(self, cmd):
+            if "pytest" in cmd:
+                return CmdResult(
+                    cmd=cmd,
+                    returncode=1,
+                    stdout=(
+                        "FAILED tests/test_api.py::test_validation_error - AssertionError: expected 422\n"
+                        "=========================== short test summary info ============================\n"
+                        "FAILED tests/test_api.py::test_validation_error - AssertionError: expected 422\n"
+                        "1 failed, 2 passed in 0.19s\n"
+                    ),
+                    stderr=(
+                        "tests/test_api.py:42: AssertionError\n"
+                        "E   assert 500 == 422\n"
+                    ),
+                )
+            return super().run(cmd)
+
+    kernel = _PytestFailureKernel()
+    validators = Validators(kernel=kernel, env=_FakeEnvManager(kernel))
+    result = validators.run_one("pytest")
+
+    payload = Validators.serialize([result])[0]
+    diagnostics = payload["diagnostics"]
+    assert diagnostics["summary"]["failed"] == 1
+    assert diagnostics["summary"]["passed"] == 2
+    assert diagnostics["failed_tests"][0]["test"] == "tests/test_api.py::test_validation_error"
+    assert "tests/test_api.py:42" in diagnostics["locations"]

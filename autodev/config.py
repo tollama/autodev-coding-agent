@@ -398,6 +398,26 @@ def _validate_llm_section(llm_cfg: Any, errors: List[str]) -> None:
         else:
             llm_cfg["timeout_sec"] = timeout
 
+    role_temps = llm_cfg.get("role_temperatures")
+    if role_temps is None:
+        return
+    if not isinstance(role_temps, dict):
+        errors.append("llm.role_temperatures must be an object map of role->temperature.")
+        return
+    for role_name, raw_temp in role_temps.items():
+        if isinstance(raw_temp, bool):
+            errors.append(f"llm.role_temperatures.{role_name} must be a number between 0 and 2.")
+            continue
+        try:
+            temp = float(raw_temp)
+        except (TypeError, ValueError):
+            errors.append(f"llm.role_temperatures.{role_name} must be a number between 0 and 2.")
+            continue
+        if temp < 0 or temp > 2:
+            errors.append(f"llm.role_temperatures.{role_name} must be between 0 and 2.")
+            continue
+        role_temps[role_name] = temp
+
 
 def _validate_profile_map(profiles: Any, errors: List[str]) -> None:
     if not isinstance(profiles, dict):
@@ -424,6 +444,29 @@ def _validate_profile_map(profiles: Any, errors: List[str]) -> None:
         )
 
 
+def _validate_run_section(run: Any, errors: List[str]) -> None:
+    if run is None:
+        return
+    if not isinstance(run, dict):
+        errors.append("run must be an object.")
+        return
+
+    budget = run.get("budget")
+    if budget is None:
+        return
+    if not isinstance(budget, dict):
+        errors.append("run.budget must be an object.")
+        return
+
+    max_tokens = _coerce_int(budget.get("max_tokens"), "run.budget.max_tokens", errors, default=None)
+    if max_tokens is None:
+        return
+    if max_tokens <= 0:
+        errors.append("run.budget.max_tokens must be a positive integer.")
+        return
+    budget["max_tokens"] = max_tokens
+
+
 def _validate_config(config: Any) -> Dict[str, Any]:
     errors: List[str] = []
     if not isinstance(config, dict):
@@ -444,6 +487,7 @@ def _validate_config(config: Any) -> Dict[str, Any]:
     if not isinstance(config["run"], dict):
         errors.append("run must be an object.")
         config["run"] = {}
+    _validate_run_section(config["run"], errors)
 
     if errors:
         msg = "Invalid config:\n- " + "\n- ".join(errors)

@@ -149,3 +149,103 @@ profiles:
         load_config(str(cfg_path))
 
     assert "profiles.enterprise.disable_docker_build must be a boolean" in str(exc.value)
+
+
+def test_load_config_accepts_run_budget_max_tokens(tmp_path):
+    cfg = """\
+llm:
+  base_url: "http://127.0.0.1:1234/v1"
+  api_key: test-key
+  model: fake-model
+run:
+  budget:
+    max_tokens: 500000
+profiles:
+  enterprise:
+    validators:
+      - ruff
+      - pytest
+    template_candidates:
+      - python_fastapi
+"""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(cfg, encoding="utf-8")
+
+    config = load_config(str(cfg_path))
+    assert config["run"]["budget"]["max_tokens"] == 500000
+
+
+def test_load_config_rejects_non_positive_run_budget_max_tokens(tmp_path):
+    cfg = """\
+llm:
+  base_url: "http://127.0.0.1:1234/v1"
+  api_key: test-key
+  model: fake-model
+run:
+  budget:
+    max_tokens: 0
+profiles:
+  enterprise:
+    validators:
+      - ruff
+      - pytest
+    template_candidates:
+      - python_fastapi
+"""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(cfg, encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc:
+        load_config(str(cfg_path))
+
+    assert "run.budget.max_tokens must be a positive integer" in str(exc.value)
+
+
+def test_load_config_accepts_llm_role_temperatures(tmp_path):
+    cfg = """\
+llm:
+  base_url: "http://127.0.0.1:1234/v1"
+  api_key: test-key
+  model: fake-model
+  role_temperatures:
+    planner: 0.4
+    implementer: 0.1
+profiles:
+  enterprise:
+    validators:
+      - ruff
+      - pytest
+    template_candidates:
+      - python_fastapi
+"""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(cfg, encoding="utf-8")
+
+    config = load_config(str(cfg_path))
+    assert config["llm"]["role_temperatures"]["planner"] == 0.4
+    assert config["llm"]["role_temperatures"]["implementer"] == 0.1
+
+
+def test_load_config_rejects_out_of_range_llm_role_temperature(tmp_path):
+    cfg = """\
+llm:
+  base_url: "http://127.0.0.1:1234/v1"
+  api_key: test-key
+  model: fake-model
+  role_temperatures:
+    planner: 2.5
+profiles:
+  enterprise:
+    validators:
+      - ruff
+      - pytest
+    template_candidates:
+      - python_fastapi
+"""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(cfg, encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc:
+        load_config(str(cfg_path))
+
+    assert "llm.role_temperatures.planner must be between 0 and 2" in str(exc.value)
