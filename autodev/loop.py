@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import hashlib
 import logging
@@ -455,6 +456,45 @@ def _toposort(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "Dependency cycle detected in task graph. Resolve dependency loop before execution. "
         f"Cycle path: {' -> '.join(cycle)}"
     )
+
+
+def _toposort_levels(ordered_tasks: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    levels: Dict[int, List[Dict[str, Any]]] = {}
+    level_by_id: Dict[str, int] = {}
+
+    for task in ordered_tasks:
+        dep_levels = [level_by_id[dep] for dep in task["depends_on"] if dep in level_by_id]
+        level = (max(dep_levels) + 1) if dep_levels else 0
+        level_by_id[task["id"]] = level
+        levels.setdefault(level, []).append(task)
+
+    return [levels[idx] for idx in sorted(levels)]
+
+
+def _task_file_set(task: Dict[str, Any]) -> Set[str]:
+    files = task.get("files", [])
+    if not isinstance(files, list):
+        return set()
+    return {str(fp).replace("\\", "/") for fp in files if isinstance(fp, str)}
+
+
+def _partition_level_for_parallel(level_tasks: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    batches: List[List[Dict[str, Any]]] = []
+    batch_files: List[Set[str]] = []
+
+    for task in level_tasks:
+        files = _task_file_set(task)
+        placed = False
+        for idx, used_files in enumerate(batch_files):
+            if files.isdisjoint(used_files):
+                batches[idx].append(task)
+                used_files.update(files)
+                placed = True
+                break
+        if not placed:
+            batches.append([task])
+            batch_files.append(set(files))
+    return batches
 
 
 def _is_glob_pattern(path: str) -> bool:
@@ -1214,79 +1254,33 @@ async def run_autodev_enterprise(
     last_validation = None
     unresolved: List[str] = []
     performance_context = _extract_performance_hints(prd_struct=prd_struct, plan=plan)
+    task_order = {task["id"]: index for index, task in enumerate(tasks, start=1)}
+    task_levels = _toposort_levels(tasks)
 
-    for iteration, t in enumerate(tasks, start=1):
+    async def _run_task_execution(
+        task: Dict[str, Any],
+        *,
+        iteration: int,
+        run_set: List[str],
+    ) -> Dict[str, Any]:
+        nonlocal total_fix_loops
+
         if verbose:
-            print(f"\n== TASK {t['id']} == {t['title']}")
+            print(f"\n== TASK {task['id']} == {task['title']}")
 
-        run_set = _resolve_validators(t.get("validator_focus"), effective_validators_enabled)
-        if resume and t["id"] in completed_task_ids:
-            _log_event(
-                "task.resume_skipped",
-                run_id=run_id,
-                request_id=request_id,
-                profile=profile,
-                iteration=iteration,
-                task_id=t["id"],
-                task_title=t["title"],
-                validator_focus=run_set,
-            )
-            quality_summary["tasks"].append(
-                {
-                    "task_id": t["id"],
-                    "status": "passed",
-                    "attempts": 0,
-                    "validator_focus": run_set,
-                    "attempt_trend": [],
-                    "hard_failures": 0,
-                    "soft_failures": 0,
-                    "last_validation": [],
-                    "repair_passes": 0,
-                    "quality_trace": [],
-                    "resumed_from_checkpoint": True,
-                }
-            )
-            _write_json(
-                ws,
-                QUALITY_TASK_FILE_TMPL.format(task_id=t["id"]),
-                {
-                    "task_id": t["id"],
-                    "status": "passed",
-                    "attempts": [],
-                    "attempts_count": 0,
-                    "validator_focus": run_set,
-                    "attempt_trend": [],
-                    "last_validation": [],
-                    "repair_passes": 0,
-                    "quality_trace": [],
-                    "resumed_from_checkpoint": True,
-                },
-            )
-            _write_json(
-                ws,
-                QUALITY_TASK_LAST_FILE_TMPL.format(task_id=t["id"]),
-                {
-                    "validator_focus": run_set,
-                    "run_level": "per_task",
-                    "validation": [],
-                    "record_count": 0,
-                    "resumed_from_checkpoint": True,
-                },
-            )
-            continue
         _log_event(
             "task.start",
             run_id=run_id,
             request_id=request_id,
             profile=profile,
             iteration=iteration,
-            task_id=t["id"],
-            task_title=t["title"],
+            task_id=task["id"],
+            task_title=task["title"],
             validator_focus=run_set,
-            file_count=len(t["files"]),
+            file_count=len(task["files"]),
         )
 
-        files_ctx = _build_files_context(ws, t["files"])
+        files_ctx = _build_files_context(ws, task["files"])
         attempt_records: List[Dict[str, Any]] = []
         loops = 0
         last_failure_signature: tuple[Any, ...] = tuple()
@@ -1294,7 +1288,7 @@ async def run_autodev_enterprise(
         repair_used = False
         previous_validation_rows: List[Dict[str, Any]] = []
 
-        impl_payload = _build_task_payload(plan, t, performance_context=performance_context)
+        impl_payload = _build_task_payload(plan, task, performance_context=performance_context)
         impl_payload["files_context"] = files_ctx
         impl_payload["guidance"] = p["implementer"]["task"]
         changeset = await _llm_json(
@@ -1309,12 +1303,14 @@ async def run_autodev_enterprise(
             component="implementer",
             temperature=_role_temperature("implementer"),
         )
-        quality_trace = [_quality_metadata_from_changeset(changeset, t["id"], run_set)]
+        quality_trace = [_quality_metadata_from_changeset(changeset, task["id"], run_set)]
 
         changes: List[Change] = []
         for c in changeset["changes"]:
             changes.append(Change(op=c["op"], path=c["path"], content=c.get("content")))
         ws.apply_changes(changes)
+
+        task_last_validation: List[Dict[str, Any]] = []
 
         while True:
             start = time.perf_counter()
@@ -1335,7 +1331,7 @@ async def run_autodev_enterprise(
                                     run_id=run_id,
                                     request_id=request_id,
                                     profile=profile,
-                                    task_id=t["id"],
+                                    task_id=task["id"],
                                     iteration=loops + 1,
                                 )
                             ])[0]
@@ -1351,7 +1347,7 @@ async def run_autodev_enterprise(
                             run_id=run_id,
                             request_id=request_id,
                             profile=profile,
-                            task_id=t["id"],
+                            task_id=task["id"],
                             iteration=loops + 1,
                         )
                     )
@@ -1365,22 +1361,22 @@ async def run_autodev_enterprise(
                         run_id=run_id,
                         request_id=request_id,
                         profile=profile,
-                        task_id=t["id"],
+                        task_id=task["id"],
                         iteration=loops + 1,
                     )
                 )
-            last_validation = validation_results
-            previous_validation_rows = last_validation
-            signature = _failure_signature(last_validation)
+            task_last_validation = validation_results
+            previous_validation_rows = task_last_validation
+            signature = _failure_signature(task_last_validation)
             duration_ms = int((time.perf_counter() - start) * 1000)
             row = _build_quality_row(
-                task_id=t["id"],
+                task_id=task["id"],
                 attempt=loops + 1,
                 run_set=run_set,
-                validation_rows=last_validation,
+                validation_rows=task_last_validation,
                 duration_ms=duration_ms,
                 soft_validators=task_soft,
-                all_ok=_validations_ok(last_validation, task_soft),
+                all_ok=_validations_ok(task_last_validation, task_soft),
                 quality_notes=quality_trace[-1]["quality_notes"],
                 validation_links=quality_trace[-1]["validation_links"],
                 repair_pass=repair_used,
@@ -1389,7 +1385,7 @@ async def run_autodev_enterprise(
 
             failures = [
                 {"name": v["name"], "status": v["status"], "error": v.get("error_classification")}
-                for v in last_validation
+                for v in task_last_validation
                 if not v["ok"]
             ]
             _log_event(
@@ -1398,13 +1394,13 @@ async def run_autodev_enterprise(
                 request_id=request_id,
                 profile=profile,
                 iteration=iteration,
-                task_id=t["id"],
+                task_id=task["id"],
                 attempt=loops + 1,
                 phase="per_task",
                 duration_ms=duration_ms,
                 validation_status=row["status"],
                 failures=failures,
-                validator_count=len(last_validation),
+                validator_count=len(task_last_validation),
                 hard_failures=row["hard_failures"],
                 soft_failures=row["soft_failures"],
                 repair_used=repair_used,
@@ -1417,7 +1413,7 @@ async def run_autodev_enterprise(
                     request_id=request_id,
                     profile=profile,
                     iteration=iteration,
-                    task_id=t["id"],
+                    task_id=task["id"],
                     attempt=loops + 1,
                     total_task_attempts=len(attempt_records),
                 )
@@ -1426,10 +1422,8 @@ async def run_autodev_enterprise(
             loops += 1
             total_fix_loops += 1
             if loops > max_fix_loops_per_task or total_fix_loops > max_fix_loops_total:
-                task_failures += 1
-                unresolved.append(t["id"])
                 task_entry = {
-                    "task_id": t["id"],
+                    "task_id": task["id"],
                     "status": "failed",
                     "attempts": len(attempt_records),
                     "validator_focus": run_set,
@@ -1439,13 +1433,11 @@ async def run_autodev_enterprise(
                     "last_validation": attempt_records[-1]["validations"],
                     "quality_trace": quality_trace,
                 }
-                quality_summary["tasks"].append(task_entry)
-
                 _write_json(
                     ws,
-                    QUALITY_TASK_FILE_TMPL.format(task_id=t["id"]),
+                    QUALITY_TASK_FILE_TMPL.format(task_id=task["id"]),
                     {
-                        "task_id": t["id"],
+                        "task_id": task["id"],
                         "status": "failed",
                         "attempts": attempt_records,
                         "attempts_count": len(attempt_records),
@@ -1455,39 +1447,38 @@ async def run_autodev_enterprise(
                         "quality_trace": quality_trace,
                     },
                 )
-                _write_json(ws, QUALITY_TASK_LAST_FILE_TMPL.format(task_id=t["id"]), {
-                    "validator_focus": run_set,
-                    "run_level": "per_task",
-                    "validation": last_validation,
-                    "record_count": len(attempt_records),
-                })
-                _write_json(ws, QUALITY_SUMMARY_FILE, quality_summary)
+                _write_json(
+                    ws,
+                    QUALITY_TASK_LAST_FILE_TMPL.format(task_id=task["id"]),
+                    {
+                        "validator_focus": run_set,
+                        "run_level": "per_task",
+                        "validation": task_last_validation,
+                        "record_count": len(attempt_records),
+                    },
+                )
                 _log_event(
                     "task.failed",
                     run_id=run_id,
                     request_id=request_id,
                     profile=profile,
                     iteration=iteration,
-                    task_id=t["id"],
+                    task_id=task["id"],
                     attempts=len(attempt_records),
                     reason="validator_limit_exceeded",
                     hard_failures=attempt_records[-1]["hard_failures"],
                     soft_failures=attempt_records[-1]["soft_failures"],
-                    unresolved_count=len(unresolved),
                     total_fix_loops=total_fix_loops,
                 )
-                _write_checkpoint(
-                    ws,
-                    sorted(completed_task_ids),
-                    status="failed",
-                    run_id=run_id,
-                    request_id=request_id,
-                    profile=profile,
-                    failed_task_id=t["id"],
-                )
-                return False, prd_struct, plan, last_validation
+                return {
+                    "task_id": task["id"],
+                    "iteration": iteration,
+                    "status": "failed",
+                    "task_entry": task_entry,
+                    "last_validation": task_last_validation,
+                }
 
-            files_ctx = _build_files_context(ws, t["files"])
+            files_ctx = _build_files_context(ws, task["files"])
             same_failure_signature = bool(signature) and signature == last_failure_signature
             if same_failure_signature:
                 repeat_failure_count += 1
@@ -1503,16 +1494,16 @@ async def run_autodev_enterprise(
 
             if targeted_fix_requested:
                 repair_mode = "targeted"
-                repair_payload = _build_task_payload(plan, t, performance_context=performance_context)
+                repair_payload = _build_task_payload(plan, task, performance_context=performance_context)
                 repair_payload["files_context"] = files_ctx
-                repair_payload["validation"] = last_validation
+                repair_payload["validation"] = task_last_validation
                 repair_payload["guidance"] = (
                     "Do a task-level repair pass before targeted fix cycles. Address same failure pattern."
                 )
                 repair_used = True
             else:
-                repair_payload = _build_task_payload(plan, t, performance_context=performance_context)
-                repair_payload["validation"] = last_validation
+                repair_payload = _build_task_payload(plan, task, performance_context=performance_context)
+                repair_payload["validation"] = task_last_validation
                 repair_payload["files_context"] = files_ctx
                 repair_payload["guidance"] = p["fixer"]["task"]
             last_failure_signature = signature
@@ -1523,7 +1514,7 @@ async def run_autodev_enterprise(
                 request_id=request_id,
                 profile=profile,
                 iteration=iteration,
-                task_id=t["id"],
+                task_id=task["id"],
                 attempt=loops + 1,
                 repair_mode=repair_mode,
                 failure_signature=str(signature)[:200],
@@ -1544,14 +1535,14 @@ async def run_autodev_enterprise(
                 component="fixer",
                 temperature=_role_temperature("fixer"),
             )
-            quality_trace.append(_quality_metadata_from_changeset(fix, t["id"], run_set))
+            quality_trace.append(_quality_metadata_from_changeset(fix, task["id"], run_set))
             fix_changes: List[Change] = []
             for c in fix["changes"]:
                 fix_changes.append(Change(op=c["op"], path=c["path"], content=c.get("content")))
             ws.apply_changes(fix_changes)
 
         task_entry = {
-            "task_id": t["id"],
+            "task_id": task["id"],
             "status": "passed",
             "attempts": len(attempt_records),
             "validator_focus": run_set,
@@ -1562,13 +1553,11 @@ async def run_autodev_enterprise(
             "repair_passes": 1 if repair_used else 0,
             "quality_trace": quality_trace,
         }
-        quality_summary["tasks"].append(task_entry)
-
         _write_json(
             ws,
-            QUALITY_TASK_FILE_TMPL.format(task_id=t["id"]),
+            QUALITY_TASK_FILE_TMPL.format(task_id=task["id"]),
             {
-                "task_id": t["id"],
+                "task_id": task["id"],
                 "status": "passed",
                 "attempts": attempt_records,
                 "attempts_count": len(attempt_records),
@@ -1579,21 +1568,165 @@ async def run_autodev_enterprise(
                 "quality_trace": quality_trace,
             },
         )
-        _write_json(ws, QUALITY_TASK_LAST_FILE_TMPL.format(task_id=t["id"]), {
-            "validator_focus": run_set,
-            "run_level": "per_task",
-            "validation": attempt_records[-1]["validations"],
-            "record_count": len(attempt_records),
-        })
-        completed_task_ids.add(t["id"])
-        _write_checkpoint(
+        _write_json(
             ws,
-            sorted(completed_task_ids),
-            status="running",
+            QUALITY_TASK_LAST_FILE_TMPL.format(task_id=task["id"]),
+            {
+                "validator_focus": run_set,
+                "run_level": "per_task",
+                "validation": attempt_records[-1]["validations"],
+                "record_count": len(attempt_records),
+            },
+        )
+        return {
+            "task_id": task["id"],
+            "iteration": iteration,
+            "status": "passed",
+            "task_entry": task_entry,
+            "last_validation": attempt_records[-1]["validations"],
+        }
+
+    for level_idx, level_tasks in enumerate(task_levels, start=1):
+        level_batches = _partition_level_for_parallel(level_tasks)
+        _log_event(
+            "task.level_scheduled",
             run_id=run_id,
             request_id=request_id,
             profile=profile,
+            level=level_idx,
+            level_task_ids=[task["id"] for task in level_tasks],
+            batch_count=len(level_batches),
+            max_batch_size=max(len(batch) for batch in level_batches) if level_batches else 0,
         )
+
+        for batch_idx, batch_tasks in enumerate(level_batches, start=1):
+            runnable: List[tuple[Dict[str, Any], int, List[str]]] = []
+
+            for task in batch_tasks:
+                iteration = task_order[task["id"]]
+                run_set = _resolve_validators(task.get("validator_focus"), effective_validators_enabled)
+
+                if resume and task["id"] in completed_task_ids:
+                    _log_event(
+                        "task.resume_skipped",
+                        run_id=run_id,
+                        request_id=request_id,
+                        profile=profile,
+                        iteration=iteration,
+                        task_id=task["id"],
+                        task_title=task["title"],
+                        validator_focus=run_set,
+                    )
+                    quality_summary["tasks"].append(
+                        {
+                            "task_id": task["id"],
+                            "status": "passed",
+                            "attempts": 0,
+                            "validator_focus": run_set,
+                            "attempt_trend": [],
+                            "hard_failures": 0,
+                            "soft_failures": 0,
+                            "last_validation": [],
+                            "repair_passes": 0,
+                            "quality_trace": [],
+                            "resumed_from_checkpoint": True,
+                        }
+                    )
+                    _write_json(
+                        ws,
+                        QUALITY_TASK_FILE_TMPL.format(task_id=task["id"]),
+                        {
+                            "task_id": task["id"],
+                            "status": "passed",
+                            "attempts": [],
+                            "attempts_count": 0,
+                            "validator_focus": run_set,
+                            "attempt_trend": [],
+                            "last_validation": [],
+                            "repair_passes": 0,
+                            "quality_trace": [],
+                            "resumed_from_checkpoint": True,
+                        },
+                    )
+                    _write_json(
+                        ws,
+                        QUALITY_TASK_LAST_FILE_TMPL.format(task_id=task["id"]),
+                        {
+                            "validator_focus": run_set,
+                            "run_level": "per_task",
+                            "validation": [],
+                            "record_count": 0,
+                            "resumed_from_checkpoint": True,
+                        },
+                    )
+                    continue
+
+                runnable.append((task, iteration, run_set))
+
+            if not runnable:
+                continue
+
+            if len(runnable) > 1:
+                _log_event(
+                    "task.batch_parallel_start",
+                    run_id=run_id,
+                    request_id=request_id,
+                    profile=profile,
+                    level=level_idx,
+                    batch=batch_idx,
+                    task_ids=[task["id"] for task, _, _ in runnable],
+                    batch_size=len(runnable),
+                )
+                batch_results = await asyncio.gather(
+                    *[
+                        _run_task_execution(task, iteration=iteration, run_set=run_set)
+                        for task, iteration, run_set in runnable
+                    ]
+                )
+                _log_event(
+                    "task.batch_parallel_complete",
+                    run_id=run_id,
+                    request_id=request_id,
+                    profile=profile,
+                    level=level_idx,
+                    batch=batch_idx,
+                    task_ids=[task["id"] for task, _, _ in runnable],
+                    batch_size=len(runnable),
+                )
+            else:
+                task, iteration, run_set = runnable[0]
+                batch_results = [await _run_task_execution(task, iteration=iteration, run_set=run_set)]
+
+            for result in sorted(batch_results, key=lambda row: int(row["iteration"])):
+                quality_summary["tasks"].append(cast(Dict[str, Any], result["task_entry"]))
+                last_validation = cast(List[Dict[str, Any]], result["last_validation"])
+
+                if result["status"] != "passed":
+                    task_failures += 1
+                    unresolved.append(str(result["task_id"]))
+                    _write_json(ws, QUALITY_SUMMARY_FILE, quality_summary)
+                    _write_checkpoint(
+                        ws,
+                        sorted(completed_task_ids),
+                        status="failed",
+                        run_id=run_id,
+                        request_id=request_id,
+                        profile=profile,
+                        failed_task_id=str(result["task_id"]),
+                    )
+                    return False, prd_struct, plan, last_validation
+
+                completed_task_ids.add(str(result["task_id"]))
+                _write_checkpoint(
+                    ws,
+                    sorted(completed_task_ids),
+                    status="running",
+                    run_id=run_id,
+                    request_id=request_id,
+                    profile=profile,
+                )
+
+            _write_json(ws, QUALITY_SUMMARY_FILE, quality_summary)
 
     # 5) Final enterprise validation (all enabled)
     _log_event(

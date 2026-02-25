@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))  # noqa: E402
 
-from autodev.loop import _toposort, _resolve_validators, _validations_ok, _build_quality_row, _build_pass_map  # noqa: E402
+from autodev.loop import _toposort, _toposort_levels, _partition_level_for_parallel, _resolve_validators, _validations_ok, _build_quality_row, _build_pass_map  # noqa: E402
 from autodev.loop import _llm_json, run_autodev_enterprise  # noqa: E402
 from autodev.workspace import Workspace  # noqa: E402
 from autodev.report import write_report  # noqa: E402
@@ -49,6 +49,30 @@ def test_toposort_detects_cycle_with_actionable_error():
             assert f"{t}" in msg
     else:
         assert False, "Expected cycle detection to fail"
+
+
+def test_partition_level_for_parallel_splits_file_conflicts():
+    level_tasks = [
+        {"id": "a", "files": ["src/a.py"]},
+        {"id": "b", "files": ["src/b.py"]},
+        {"id": "c", "files": ["src/a.py"]},
+    ]
+
+    batches = _partition_level_for_parallel(level_tasks)
+    assert len(batches) == 2
+    assert [task["id"] for task in batches[0]] == ["a", "b"]
+    assert [task["id"] for task in batches[1]] == ["c"]
+
+
+def test_toposort_levels_groups_independent_tasks():
+    ordered = [
+        {"id": "a", "depends_on": []},
+        {"id": "b", "depends_on": []},
+        {"id": "c", "depends_on": ["a"]},
+        {"id": "d", "depends_on": ["a", "b"]},
+    ]
+    levels = _toposort_levels(ordered)
+    assert [[task["id"] for task in level] for level in levels] == [["a", "b"], ["c", "d"]]
 
 
 def test_resolve_validators_is_deterministic_and_intersects_enabled():
@@ -1284,6 +1308,206 @@ def test_run_loop_emits_structured_loop_events(monkeypatch, tmp_path):
     assert any(e.get("event") == "validation.attempt" and e.get("run_id") == "run-log-1" for e in events)
     assert any(e.get("event") == "validation.final_summary" for e in events)
     assert any(e.get("run_id") == "run-log-1" for e in events)
+
+
+def test_run_loop_parallel_batch_event_for_disjoint_tasks(tmp_path, monkeypatch):
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "parallel-batch"))
+    events: list[dict[str, Any]] = []
+
+    def _capture(event: str, **fields: object) -> None:
+        payload = dict(fields)
+        payload["event"] = event
+        events.append(payload)
+
+    monkeypatch.setattr(loop, "_log_event", _capture)
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakePassingValidators)
+    _FakePassingValidators.calls = []
+
+    responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-parallel",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "tasks": [
+                {
+                    "id": "task-a",
+                    "title": "Task A implementation",
+                    "goal": "Implement feature A endpoint",
+                    "acceptance": ["Add tests for feature A endpoint", "Validate error behavior"],
+                    "files": ["src/app/a.py", "tests/test_a.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                },
+                {
+                    "id": "task-b",
+                    "title": "Task B implementation",
+                    "goal": "Implement feature B endpoint",
+                    "acceptance": ["Add tests for feature B endpoint", "Validate error behavior"],
+                    "files": ["src/app/b.py", "tests/test_b.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                },
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+    ]
+
+    ok, _, _, _ = asyncio.run(
+        loop.run_autodev_enterprise(
+            client=cast(LLMClient, _FakeLLM(responses)),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff"],
+            audit_required=False,
+            max_fix_loops_total=4,
+            max_fix_loops_per_task=4,
+            max_json_repair=0,
+            task_soft_validators=[],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": []}, "final": {"soft_fail": []}},
+            },
+            verbose=False,
+        )
+    )
+
+    assert ok is True
+    parallel_events = [e for e in events if e.get("event") == "task.batch_parallel_start"]
+    assert parallel_events
+    assert set(parallel_events[0].get("task_ids", [])) == {"task-a", "task-b"}
+
+
+def test_run_loop_no_parallel_batch_event_when_files_overlap(tmp_path, monkeypatch):
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "parallel-overlap"))
+    events: list[dict[str, Any]] = []
+
+    def _capture(event: str, **fields: object) -> None:
+        payload = dict(fields)
+        payload["event"] = event
+        events.append(payload)
+
+    monkeypatch.setattr(loop, "_log_event", _capture)
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakePassingValidators)
+    _FakePassingValidators.calls = []
+
+    responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-overlap",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "tasks": [
+                {
+                    "id": "task-a",
+                    "title": "Task A implementation",
+                    "goal": "Implement shared endpoint behavior",
+                    "acceptance": ["Add tests for shared endpoint", "Validate error behavior"],
+                    "files": ["src/app/main.py", "tests/test_shared.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                },
+                {
+                    "id": "task-b",
+                    "title": "Task B implementation",
+                    "goal": "Refine shared endpoint behavior",
+                    "acceptance": ["Add tests for shared endpoint", "Validate error behavior"],
+                    "files": ["src/app/main.py", "tests/test_shared.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                },
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+    ]
+
+    ok, _, _, _ = asyncio.run(
+        loop.run_autodev_enterprise(
+            client=cast(LLMClient, _FakeLLM(responses)),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff"],
+            audit_required=False,
+            max_fix_loops_total=4,
+            max_fix_loops_per_task=4,
+            max_json_repair=0,
+            task_soft_validators=[],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": []}, "final": {"soft_fail": []}},
+            },
+            verbose=False,
+        )
+    )
+
+    assert ok is True
+    assert not any(e.get("event") == "task.batch_parallel_start" for e in events)
 
 
 class _FakeSelectiveValidators:
