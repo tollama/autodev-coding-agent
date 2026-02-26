@@ -176,6 +176,18 @@ Precedence: `--model` > `AUTODEV_LLM_MODEL` > `config.yaml` (`llm.model`).
 - `make perf-smoke` for lightweight performance snapshot from a generated run
 - `make perf-strict` for conservative regression gate against previous `generated_dir/.autodev/perf.json`
 
+### Spec-first + Test-first + Docs-as-code workflow
+- Spec-first: PR에서 변경 목적/수용기준/비범위를 먼저 명시
+- Test-first: 실패 재현 테스트를 먼저 추가 후 구현
+- Docs-as-code: 동작/인터페이스 변경 시 README/docs를 코드와 함께 수정
+
+Day-to-day command flow:
+- 빠른 반복: `make ci-fast`
+- 문서 검증: `make check-docs`
+- 머지 전 게이트: `make ci-strict`
+
+참고 체크리스트: `docs/ops/quality-gate-checklist.md`
+
 ```yaml
 profiles:
   enterprise:

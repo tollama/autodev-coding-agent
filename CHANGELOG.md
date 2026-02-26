@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased] quality workflow uplift
+
+### Added
+- Added Spec-first/Test-first/Docs-as-code checklist:
+  - `docs/ops/quality-gate-checklist.md`
+- Added PR template enforcing code+docs evidence:
+  - `.github/pull_request_template.md`
+- Added code+docs quality workflow:
+  - `.github/workflows/quality-gates.yml`
+- Added lightweight markdown local-link checker:
+  - `scripts/check_markdown_links.py`
+  - `make check-docs`
+
+### Changed
+- `Makefile`: `ci-strict` now includes docs gate (`check-docs`)
+- `README.md`: documented day-to-day quality workflow
+- `docs/ops/README.md`: added quality checklist and docs gate usage
+
 ## [Unreleased] coding-agent stabilization pass
 
 ### Added

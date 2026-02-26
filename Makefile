@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: compile check check-fast check-strict tests tests-fast tests-strict ci ci-fast ci-strict fast strict release-check check-release-gates check-template check-locks benchmark-generate perf-smoke perf-strict untyped-check test-backend
+.PHONY: compile check check-fast check-strict tests tests-fast tests-strict ci ci-fast ci-strict fast strict release-check check-release-gates check-template check-locks check-docs benchmark-generate perf-smoke perf-strict untyped-check test-backend
 
 # Reusable Python interpreter for consistency
 PYTHON ?= python3
@@ -57,8 +57,12 @@ test-backend:
 # Fast local CI-equivalent pass for quick iteration.
 ci-fast: compile check-fast tests-fast
 
-# Strict local CI-equivalent pass (existing behavior).
-ci-strict: compile check-strict tests-strict check-template check-locks
+# Docs-as-code sanity checks (local markdown links in docs and GitHub templates).
+check-docs:
+	$(PYTHON) scripts/check_markdown_links.py
+
+# Strict local CI-equivalent pass (existing behavior + docs gate).
+ci-strict: compile check-strict tests-strict check-template check-locks check-docs
 
 # Preserve existing command name for strict lane.
 ci: ci-strict
