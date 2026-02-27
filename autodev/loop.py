@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import fnmatch
-import hashlib
 import logging
-from datetime import datetime
-from pathlib import PurePosixPath
 import os
+import shutil
 import time
 from typing import Any, Callable, Dict, List, Set, Tuple, cast
 from uuid import uuid4
@@ -16,901 +13,113 @@ from jsonschema import validate  # type: ignore[import-untyped]
 from .llm_client import LLMClient
 from .json_utils import strict_json_loads, json_dumps
 from .roles import prompts
-from .schemas import PRD_SCHEMA, PLAN_SCHEMA, CHANGESET_SCHEMA, ARCHITECTURE_SCHEMA, REVIEW_SCHEMA, PRD_ANALYSIS_SCHEMA, OPENAPI_SPEC_SCHEMA, ACCEPTANCE_TEST_SCHEMA
+from .schemas import PRD_SCHEMA, PLAN_SCHEMA, CHANGESET_SCHEMA, ARCHITECTURE_SCHEMA, REVIEW_SCHEMA, PRD_ANALYSIS_SCHEMA, OPENAPI_SPEC_SCHEMA, ACCEPTANCE_TEST_SCHEMA, DB_SCHEMA_SCHEMA
 from .workspace import Workspace, Change
 from .exec_kernel import ExecKernel
 from .env_manager import EnvManager
 from .validators import Validators
+from .context_engine import CodeIndex, ContextSelector
+from .tools import ToolExecutor
+from .failure_analyzer import (
+    analyze_failures,
+    build_escalated_guidance,
+    build_persistent_error_warnings,
+    deduplicate_for_guidance,
+    determine_escalation_level,
+    fingerprint_failures,
+    RepairHistory,
+)
+from .progress import ProgressEmitter
+from .run_trace import RunTrace, EventType
+
+# ---------------------------------------------------------------------------
+# Re-exports from sub-modules for backward compatibility.
+# All existing ``from autodev.loop import <symbol>`` continues to work.
+# ---------------------------------------------------------------------------
+from .loop_utils import (  # noqa: F401
+    _log_event,
+    _safe_short_text,
+    _shorten_text,
+    _hash_payload,
+    _write_json,
+    _ordered_unique,
+    _msg,
+    DEFAULT_TASK_SOFT_VALIDATORS,
+    DEFAULT_VALIDATOR_FALLBACK,
+    QUALITY_SUMMARY_FILE,
+    QUALITY_TASK_FILE_TMPL,
+    QUALITY_TASK_LAST_FILE_TMPL,
+    QUALITY_PROFILE_FILE,
+    QUALITY_SUMMARY_METADATA_FILE,
+    QUALITY_RESOLUTION_FILE,
+    REPAIR_HISTORY_FILE,
+    PLAN_CACHE_FILE,
+    CHECKPOINT_FILE,
+    PLAN_CACHE_VERSION,
+    FULL_REPO_VALIDATORS,
+    HANDOFF_REQUIRED_FIELDS,
+    DEFAULT_MAX_PARALLEL_TASKS,
+    RECOMMENDED_MAX_PARALLEL_TASKS,
+    CONSECUTIVE_FAILURE_FAIL_FAST_THRESHOLD,
+    RUN_TRACE_FILE,
+)
+from .loop_validators import (  # noqa: F401
+    _dynamic_concurrency,
+    _resolve_gate_profile,
+    _resolve_validators,
+    _failure_signature,
+    _failed_validator_names,
+    _merge_validation_rows,
+    _validations_ok,
+    _resolve_soft_fail,
+    _resolve_repeat_failure_guard,
+    _build_validator_counts,
+    _build_pass_map,
+    _build_quality_row,
+    _build_task_summary_rows,
+    _summarize_run,
+    _quality_metadata_from_changeset,
+    _extract_fingerprint_digests,
+)
+from .perf_baseline import record_and_check as _perf_baseline_check
+from .task_scheduler import (
+    TaskTimingStore,
+    collect_task_timings,
+    schedule_batch_chunks,
+    schedule_level_tasks,
+)
+from .loop_checkpoint import (  # noqa: F401
+    _generation_cache_key,
+    _read_generation_cache,
+    _write_generation_cache,
+    _read_checkpoint,
+    _write_checkpoint,
+)
+from .loop_tasks import (  # noqa: F401
+    _toposort,
+    _toposort_levels,
+    _task_file_set,
+    _partition_level_for_parallel,
+    _is_glob_pattern,
+    _match_task_file_pattern,
+    _canonicalize_task_files,
+    _build_files_context,
+    _detect_incremental_mode,
+    _write_change_summary,
+)
+from .loop_payloads import (  # noqa: F401
+    _build_task_payload,
+    _coerce_prd_payload,
+    _coerce_plan_payload,
+    _validate_handoff_fields,
+    _extract_performance_hints,
+    _is_perf_gate_failure,
+    _perf_failure_rows,
+    _perf_repair_task_files,
+    _targeted_perf_validator_set,
+)
 
 logger = logging.getLogger("autodev")
-
-
-def _log_event(event: str, run_id: str, request_id: str, profile: str | None = None, **fields: object) -> None:
-    payload = {
-        "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "event": event,
-        "run_id": run_id,
-        "request_id": request_id,
-        "run_profile": profile,
-        **fields,
-    }
-
-    if logger.handlers:
-        logger.info(json_dumps(payload))
-    else:
-        print(json_dumps(payload))
-
-
-def _safe_short_text(value: str, limit: int = 200) -> str:
-    text = (value or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3] + "..."
-
-DEFAULT_TASK_SOFT_VALIDATORS = {"docker_build", "pip_audit", "sbom", "semgrep"}
-DEFAULT_VALIDATOR_FALLBACK = [
-    "ruff",
-    "mypy",
-    "pytest",
-    "pip_audit",
-    "bandit",
-    "semgrep",
-    "sbom",
-    "docker_build",
-]
-QUALITY_SUMMARY_FILE = ".autodev/task_quality_index.json"
-QUALITY_TASK_FILE_TMPL = ".autodev/task_{task_id}_quality.json"
-QUALITY_TASK_LAST_FILE_TMPL = ".autodev/task_{task_id}_last_validation.json"
-QUALITY_PROFILE_FILE = ".autodev/quality_profile.json"
-QUALITY_SUMMARY_METADATA_FILE = ".autodev/quality_run_summary.json"
-QUALITY_RESOLUTION_FILE = ".autodev/quality_resolution.json"
-PLAN_CACHE_FILE = ".autodev/generate_cache.json"
-CHECKPOINT_FILE = ".autodev/checkpoint.json"
-PLAN_CACHE_VERSION = 1
-FULL_REPO_VALIDATORS = {
-    "mypy",
-    "pytest",
-    "pip_audit",
-    "bandit",
-    "semgrep",
-    "sbom",
-    "docker_build",
-    "dependency_lock",
-}
-
-HANDOFF_REQUIRED_FIELDS = [
-    "Summary",
-    "Changed Files",
-    "Commands",
-    "Evidence",
-    "Risks",
-    "Next Input",
-]
-DEFAULT_MAX_PARALLEL_TASKS = 2
-RECOMMENDED_MAX_PARALLEL_TASKS = 3
-CONSECUTIVE_FAILURE_FAIL_FAST_THRESHOLD = 3
-
-
-def _resolve_gate_profile(
-    quality_profile: Dict[str, Any] | None,
-    gate_profile: str | None,
-) -> Dict[str, Any]:
-    if quality_profile is None or not gate_profile:
-        out = dict(quality_profile) if quality_profile else {}
-        out.setdefault("resolved_from", gate_profile or out.get("name", "balanced"))
-        return out
-
-    by_level = quality_profile.get("by_level")
-    if not isinstance(by_level, dict):
-        out = dict(quality_profile)
-        out["name"] = gate_profile
-        out["resolved_from"] = gate_profile
-        return out
-
-    overrides = by_level.get(gate_profile)
-    if not isinstance(overrides, dict):
-        out = dict(quality_profile)
-        out.setdefault("name", out.get("name", gate_profile))
-        out["resolved_from"] = gate_profile
-        return out
-
-    merged = {k: v for k, v in quality_profile.items() if k not in {"by_level", "name", "resolved_from"}}
-    merged.update(overrides)
-    merged["name"] = gate_profile
-    merged["resolved_from"] = gate_profile
-    return merged
-
-
-def _msg(system: str, user: str):
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-
-def _ordered_unique(items: List[str]) -> List[str]:
-    out: List[str] = []
-    seen: Set[str] = set()
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        out.append(item)
-    return out
-
-
-def _resolve_validators(focus: List[str] | None, validators_enabled: List[str]) -> List[str]:
-    enabled = [v for v in validators_enabled if v in DEFAULT_VALIDATOR_FALLBACK]
-    if focus:
-        selected = [v for v in _ordered_unique(focus) if v in validators_enabled]
-        if selected:
-            return selected
-
-    selected = [v for v in DEFAULT_VALIDATOR_FALLBACK if v in enabled]
-    if selected:
-        return selected
-    return _ordered_unique(validators_enabled)
-
-
-def _failure_signature(validation_rows: List[Dict[str, Any]]) -> tuple:
-    failers = [
-        (row["name"], row.get("status", "unknown"), row.get("error_classification") or "")
-        for row in validation_rows
-        if not row["ok"]
-    ]
-    return tuple(failers)
-
-
-def _failed_validator_names(validation_rows: List[Dict[str, Any]]) -> List[str]:
-    return [row["name"] for row in validation_rows if not row["ok"]]
-
-
-def _merge_validation_rows(
-    previous: List[Dict[str, Any]],
-    fresh: List[Dict[str, Any]],
-    run_set: List[str],
-) -> List[Dict[str, Any]]:
-    by_name = {row["name"]: row for row in previous}
-    fresh_by_name = {row["name"]: row for row in fresh}
-
-    merged: List[Dict[str, Any]] = []
-    for name in run_set:
-        if name in fresh_by_name:
-            merged.append(fresh_by_name[name])
-        elif name in by_name:
-            merged.append(by_name[name])
-
-    existing = {row["name"] for row in merged}
-    for row in fresh_by_name.values():
-        if row["name"] not in existing:
-            merged.append(row)
-
-    return merged
-
-
-def _hash_payload(payload: Any) -> str:
-    return hashlib.sha256(json_dumps(payload).encode("utf-8")).hexdigest()
-
-
-def _generation_cache_key(
-    prd_markdown: str,
-    template_candidates: List[str],
-    validators_enabled: List[str],
-    quality_profile: Dict[str, Any] | None,
-) -> str:
-    key_payload = {
-        "version": PLAN_CACHE_VERSION,
-        "prd_sha256": hashlib.sha256((prd_markdown or "").encode("utf-8")).hexdigest(),
-        "template_candidates": template_candidates,
-        "validators": validators_enabled,
-        "quality_profile": quality_profile or {},
-    }
-    return _hash_payload(key_payload)
-
-
-def _read_generation_cache(ws: Workspace) -> Dict[str, Any] | None:
-    if not ws.exists(PLAN_CACHE_FILE):
-        return None
-    try:
-        payload = strict_json_loads(ws.read_text(PLAN_CACHE_FILE))
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("version") != PLAN_CACHE_VERSION:
-        return None
-    return payload
-
-
-def _write_generation_cache(
-    ws: Workspace,
-    cache_key: str,
-    prd_struct: Dict[str, Any],
-    plan: Dict[str, Any],
-    architecture: Dict[str, Any] | None = None,
-    prd_analysis: Dict[str, Any] | None = None,
-) -> None:
-    payload: Dict[str, Any] = {
-        "version": PLAN_CACHE_VERSION,
-        "cache_key": cache_key,
-        "prd_struct": prd_struct,
-        "plan": plan,
-        "updated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-    }
-    if architecture is not None:
-        payload["architecture"] = architecture
-    if prd_analysis is not None:
-        payload["prd_analysis"] = prd_analysis
-    ws.write_text(PLAN_CACHE_FILE, json_dumps(payload))
-
-
-def _read_checkpoint(ws: Workspace) -> Dict[str, Any] | None:
-    if not ws.exists(CHECKPOINT_FILE):
-        return None
-    try:
-        payload = strict_json_loads(ws.read_text(CHECKPOINT_FILE))
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    return payload
-
-
-def _write_checkpoint(
-    ws: Workspace,
-    completed_task_ids: List[str],
-    *,
-    status: str,
-    run_id: str,
-    request_id: str,
-    profile: str | None = None,
-    failed_task_id: str | None = None,
-) -> None:
-    payload: Dict[str, Any] = {
-        "status": status,
-        "completed_task_ids": sorted(set(completed_task_ids)),
-        "failed_task_id": failed_task_id,
-        "updated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "run_id": run_id,
-        "request_id": request_id,
-        "profile": profile,
-    }
-    _write_json(ws, CHECKPOINT_FILE, payload)
-
-
-def _build_task_payload(
-    plan: Dict[str, Any],
-    task: Dict[str, Any],
-    performance_context: Dict[str, Any] | None = None,
-) -> Dict[str, Any]:
-    constraints: List[str] = []
-    acceptance = task.get("acceptance", [])
-    if isinstance(acceptance, list) and acceptance:
-        constraints.extend([f"acceptance: {item}" for item in acceptance if isinstance(item, str) and item.strip()])
-
-    quality_expectations = task.get("quality_expectations", {})
-    if isinstance(quality_expectations, dict) and quality_expectations:
-        constraints.append("quality_expectations를 만족해야 함")
-
-    output_format = {
-        "type": "CHANGESET_SCHEMA",
-        "required_root_fields": ["role", "summary", "changes", "notes", "handoff"],
-        "handoff_required_fields": HANDOFF_REQUIRED_FIELDS,
-    }
-
-    return {
-        "core": {
-            "goal": task.get("goal", ""),
-            "paths": task.get("files", []),
-            "constraints": constraints,
-            "output_format": output_format,
-        },
-        "optional_context": {
-            "task": {
-                "id": task["id"],
-                "title": task["title"],
-                "acceptance": acceptance,
-                "depends_on": task.get("depends_on", []),
-                "quality_expectations": quality_expectations,
-                "validator_focus": task.get("validator_focus", []),
-            },
-            "plan": {
-                "project": {
-                    "type": plan["project"].get("type"),
-                    "name": plan["project"].get("name"),
-                    "quality_gate_profile": plan["project"].get("quality_gate_profile"),
-                    "default_artifacts": plan["project"].get("default_artifacts", []),
-                },
-                "performance_hints": performance_context or {},
-            },
-        },
-    }
-
-
-def _extract_performance_hints(prd_struct: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
-    hints: Dict[str, Any] = {}
-
-    for key in ("performance_targets", "expected_load", "latency_sensitive_paths", "cost_priority"):
-        if key in plan and isinstance(plan[key], (dict, list, str)):
-            hints[key] = plan[key]
-
-    fallback = {
-        "performance_targets": prd_struct.get("performance_targets"),
-        "expected_load": prd_struct.get("expected_load"),
-        "latency_sensitive_paths": prd_struct.get("latency_sensitive_paths"),
-        "cost_priority": prd_struct.get("cost_priority"),
-    }
-    for key, value in fallback.items():
-        if key not in hints and value not in (None, {}, [], ""):
-            hints[key] = value
-
-    return hints
-
-
-def _is_perf_gate_failure(row: Dict[str, Any]) -> bool:
-    if row.get("ok"):
-        return False
-    name = str(row.get("name", "")).lower()
-    error_class = str(row.get("error_classification") or "").lower()
-    tokens = ("perf", "performance", "latency", "throughput")
-    return any(token in name for token in tokens) or any(token in error_class for token in tokens)
-
-
-def _perf_failure_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [row for row in rows if _is_perf_gate_failure(row)]
-
-
-def _perf_repair_task_files(plan: Dict[str, Any], hotspots: List[str]) -> List[str]:
-    if not hotspots:
-        return []
-
-    candidate_files = []
-    for t in plan.get("tasks", []):
-        for fp in t.get("files", []):
-            if any(path in fp for path in hotspots):
-                candidate_files.append(fp)
-
-    if candidate_files:
-        return list(dict.fromkeys(candidate_files))
-
-    return [fp for task in plan.get("tasks", []) for fp in task.get("files", [])][:12]
-
-
-def _targeted_perf_validator_set(
-    failed_perf_rows: List[Dict[str, Any]],
-    available: List[str],
-) -> List[str]:
-    perf_names = [row["name"] for row in failed_perf_rows if isinstance(row.get("name"), str)]
-    if not perf_names:
-        return available
-
-    available_set = {name for name in available}
-    targeted = [name for name in perf_names if name in available_set]
-    if targeted:
-        return targeted
-    return available
-
-
-def _build_validator_counts(validation_rows: List[Dict[str, Any]]) -> Dict[str, int]:
-    out: Dict[str, int] = {"passed": 0, "failed": 0, "soft_fail": 0}
-    for row in validation_rows:
-        status = row.get("status", "failed")
-        out[status] = out.get(status, 0) + 1
-    return out
-
-
-def _build_pass_map(validation_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    return {
-        row["name"]: {
-            "ok": bool(row["ok"]),
-            "status": row.get("status", "failed"),
-            "returncode": row.get("returncode", 1),
-            "duration_ms": row.get("duration_ms", 0),
-        }
-        for row in validation_rows
-    }
-
-
-def _build_quality_row(
-    task_id: str,
-    attempt: int,
-    run_set: List[str],
-    validation_rows: List[Dict[str, Any]],
-    duration_ms: int,
-    soft_validators: Set[str],
-    all_ok: bool,
-    quality_notes: List[str] | None = None,
-    validation_links: Dict[str, Any] | None = None,
-    repair_pass: bool = False,
-) -> Dict[str, Any]:
-    blocked = [row for row in validation_rows if row["name"] not in soft_validators]
-    hard_failures = sum(1 for row in blocked if not row["ok"])
-    soft_failures = sum(1 for row in validation_rows if row["name"] in soft_validators and not row["ok"])
-
-    return {
-        "task_id": task_id,
-        "attempt": attempt,
-        "validator_focus": run_set,
-        "duration_ms": duration_ms,
-        "status": "passed" if all_ok else "failed",
-        "repair_pass": repair_pass,
-        "quality_notes": quality_notes or [],
-        "validation_links": validation_links or {},
-        "validator_counts": _build_validator_counts(validation_rows),
-        "hard_failures": hard_failures,
-        "soft_failures": soft_failures,
-        "pass_fail_map": _build_pass_map(validation_rows),
-        "validations": validation_rows,
-    }
-
-
-def _toposort(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    by_id = {t["id"]: t for t in tasks}
-    indeg = {t["id"]: 0 for t in tasks}
-    graph: Dict[str, List[str]] = {t["id"]: [] for t in tasks}
-
-    for t in tasks:
-        for dep in t["depends_on"]:
-            if dep in graph:
-                graph[dep].append(t["id"])
-                indeg[t["id"]] += 1
-
-    q = [tid for tid, d in indeg.items() if d == 0]
-    out = []
-    while q:
-        tid = q.pop(0)
-        out.append(by_id[tid])
-        for nxt in graph[tid]:
-            indeg[nxt] -= 1
-            if indeg[nxt] == 0:
-                q.append(nxt)
-
-    if len(out) == len(tasks):
-        return out
-
-    state: Dict[str, int] = {}
-    stack: List[str] = []
-    cycle: List[str] = []
-
-    def dfs(tid: str) -> bool:
-        nonlocal cycle
-        state[tid] = 1
-        stack.append(tid)
-        for nxt in graph[tid]:
-            if state.get(nxt, 0) == 0:
-                if dfs(nxt):
-                    return True
-            elif state.get(nxt) == 1:
-                cycle_start = stack.index(nxt)
-                cycle = stack[cycle_start:] + [nxt]
-                return True
-        stack.pop()
-        state[tid] = 2
-        return False
-
-    for tid in out:
-        state.setdefault(tid, 2)
-    for tid in indeg:
-        if state.get(tid, 0) == 0:
-            if dfs(tid) and cycle:
-                break
-
-    if not cycle:
-        unresolved = [t["id"] for t in tasks if indeg[t["id"]] > 0]
-        cycle = unresolved
-
-    raise ValueError(
-        "Dependency cycle detected in task graph. Resolve dependency loop before execution. "
-        f"Cycle path: {' -> '.join(cycle)}"
-    )
-
-
-def _toposort_levels(ordered_tasks: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
-    levels: Dict[int, List[Dict[str, Any]]] = {}
-    level_by_id: Dict[str, int] = {}
-
-    for task in ordered_tasks:
-        dep_levels = [level_by_id[dep] for dep in task["depends_on"] if dep in level_by_id]
-        level = (max(dep_levels) + 1) if dep_levels else 0
-        level_by_id[task["id"]] = level
-        levels.setdefault(level, []).append(task)
-
-    return [levels[idx] for idx in sorted(levels)]
-
-
-def _task_file_set(task: Dict[str, Any]) -> Set[str]:
-    files = task.get("files", [])
-    if not isinstance(files, list):
-        return set()
-    return {str(fp).replace("\\", "/") for fp in files if isinstance(fp, str)}
-
-
-def _partition_level_for_parallel(level_tasks: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
-    batches: List[List[Dict[str, Any]]] = []
-    batch_files: List[Set[str]] = []
-
-    for task in level_tasks:
-        files = _task_file_set(task)
-        placed = False
-        for idx, used_files in enumerate(batch_files):
-            if files.isdisjoint(used_files):
-                batches[idx].append(task)
-                used_files.update(files)
-                placed = True
-                break
-        if not placed:
-            batches.append([task])
-            batch_files.append(set(files))
-    return batches
-
-
-def _is_glob_pattern(path: str) -> bool:
-    return any(ch in path for ch in "*?[")
-
-
-def _match_task_file_pattern(pattern: str, repo_files: List[str]) -> List[str]:
-    pat = pattern.replace("\\", "/")
-    variants = [pat]
-    if pat.startswith("**/"):
-        variants.append(pat[3:])
-    if "/**/" in pat:
-        variants.append(pat.replace("/**/", "/"))
-
-    out: List[str] = []
-    for rel in repo_files:
-        rel_norm = rel.replace("\\", "/")
-        rel_path = PurePosixPath(rel_norm)
-        for cand in variants:
-            if fnmatch.fnmatch(rel_norm, cand) or rel_path.match(cand):
-                out.append(rel_norm)
-                break
-            if "/" not in cand and fnmatch.fnmatch(os.path.basename(rel_norm), cand):
-                out.append(rel_norm)
-                break
-    return sorted(set(out))
-
-
-def _canonicalize_task_files(plan: Dict[str, Any], repo_files: List[str]) -> Dict[str, Any]:
-    for t in plan["tasks"]:
-        resolved: List[str] = []
-        for fp in t["files"]:
-            rel = fp.replace("\\", "/")
-            if _is_glob_pattern(rel):
-                matches = _match_task_file_pattern(rel, repo_files)
-                if not matches:
-                    raise ValueError(f"Task '{t['id']}' has unmatched file glob: {fp}")
-                resolved.extend(matches)
-            else:
-                resolved.append(rel)
-        t["files"] = list(dict.fromkeys(resolved))
-    return plan
-
-
-def _build_files_context(
-    ws: Workspace,
-    files: List[str],
-    max_files: int = 12,
-    max_chars_per_file: int = 8_000,
-) -> Dict[str, str]:
-    files_ctx: Dict[str, str] = {}
-    for fp in files[:max_files]:
-        if ws.exists(fp):
-            try:
-                files_ctx[fp] = ws.read_text(fp)[:max_chars_per_file]
-            except Exception:
-                files_ctx[fp] = "<unreadable>"
-        else:
-            files_ctx[fp] = "<missing>"
-    return files_ctx
-
-
-def _validations_ok(validation_rows: List[Dict[str, Any]], soft_validators: set[str]) -> bool:
-    blocking = [row for row in validation_rows if row["name"] not in soft_validators]
-    return all(row["ok"] for row in blocking)
-
-
-def _resolve_soft_fail(
-    profile_section: Dict[str, Any] | None,
-    explicit: List[str] | None,
-    compact_key: str | None = None,
-) -> Set[str]:
-    if explicit is not None:
-        return set(explicit)
-    if not profile_section:
-        return set()
-
-    if compact_key and isinstance(profile_section, dict):
-        compact_values = profile_section.get(compact_key)
-        if compact_values is not None:
-            profile_section = {"soft_fail": compact_values}
-
-    values = profile_section.get("soft_fail")
-    if isinstance(values, list):
-        return set(values)
-    return set()
-
-
-def _resolve_repeat_failure_guard(quality_profile: Dict[str, Any] | None) -> Dict[str, Any]:
-    defaults = {"enabled": True, "max_retries_before_targeted_fix": 1}
-    if not isinstance(quality_profile, dict):
-        return defaults
-
-    escalation = quality_profile.get("escalation")
-    if not isinstance(escalation, dict):
-        return defaults
-
-    guard = escalation.get("repeat_failure_guard")
-    if not isinstance(guard, dict):
-        return defaults
-
-    enabled = guard.get("enabled", defaults["enabled"])
-    max_retries = guard.get(
-        "max_retries_before_targeted_fix",
-        defaults["max_retries_before_targeted_fix"],
-    )
-
-    if not isinstance(enabled, bool):
-        enabled = defaults["enabled"]
-    if not isinstance(max_retries, int) or max_retries < 0:
-        max_retries = defaults["max_retries_before_targeted_fix"]
-
-    return {
-        "enabled": enabled,
-        "max_retries_before_targeted_fix": max_retries,
-    }
-
-
-def _build_task_summary_rows(
-    attempts: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    trend = []
-    for row in attempts:
-        trend.append(
-            {
-                "attempt": row["attempt"],
-                "status": row["status"],
-                "hard_failures": row["hard_failures"],
-                "soft_failures": row["soft_failures"],
-                "duration_ms": row["duration_ms"],
-            }
-        )
-    return trend
-
-
-def _summarize_run(profile: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "quality_profile": profile,
-        "project_type": plan["project"].get("type"),
-        "quality_gate_profile": plan["project"].get("quality_gate_profile"),
-        "generated_tasks": [t["id"] for t in plan.get("tasks", [])],
-        "default_artifacts": plan["project"].get("default_artifacts", []),
-    }
-
-
-def _write_json(ws: Workspace, rel_path: str, payload: Dict[str, Any]) -> None:
-    ws.write_text(rel_path, json_dumps(payload))
-
-
-def _validate_handoff_fields(changeset: Dict[str, Any]) -> str | None:
-    handoff = changeset.get("handoff")
-    if not isinstance(handoff, dict):
-        return "MISSING_HANDOFF_FIELDS:" + ",".join(HANDOFF_REQUIRED_FIELDS)
-
-    missing = [field for field in HANDOFF_REQUIRED_FIELDS if not str(handoff.get(field, "")).strip()]
-    if missing:
-        return "MISSING_HANDOFF_FIELDS:" + ",".join(missing)
-    return None
-
-
-def _quality_metadata_from_changeset(
-    changeset: Dict[str, Any],
-    task_id: str,
-    run_set: List[str],
-) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
-    notes = changeset.get("quality_notes")
-    links = changeset.get("validation_links")
-    if isinstance(notes, list):
-        out["quality_notes"] = notes
-    if isinstance(links, dict):
-        out["validation_links"] = links
-    if "validation_links" not in out:
-        out["validation_links"] = {
-            "acceptance": [],
-            "tasks": [task_id],
-            "validators": run_set,
-        }
-    if "quality_notes" not in out:
-        out["quality_notes"] = []
-    handoff = changeset.get("handoff")
-    if isinstance(handoff, dict):
-        out["handoff"] = handoff
-    return out
-
-
-def _shorten_text(value: str, limit: int = 1400) -> str:
-    text = value.strip()
-    if len(text) <= limit:
-        return text
-    return text[: limit - 5] + " ..."
-
-
-def _coerce_prd_payload(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Lightly fill missing optional-but-required-in-schema PRD fields.
-
-    This keeps the schema happy for benchmark-style PRDs while preserving
-    all model-provided details.
-    """
-    out = dict(data)
-    out.setdefault("non_goals", [])
-    out.setdefault("constraints", [])
-    out.setdefault("nfr", {})
-    out.setdefault("features", [])
-    out.setdefault("acceptance_criteria", [])
-    out.setdefault("goals", [])
-    out.setdefault("title", "AutoDev PRD")
-
-    if not isinstance(out.get("features"), list):
-        out["features"] = []
-    else:
-        normalized_features = []
-        for feature in out.get("features", []):
-            if not isinstance(feature, dict):
-                continue
-            name = feature.get("name")
-            if not isinstance(name, str) or not name.strip():
-                fallback_name = feature.get("title")
-                feature["name"] = fallback_name.strip() if isinstance(fallback_name, str) else "Feature"
-            description = feature.get("description")
-            if not isinstance(description, str) or not description.strip():
-                if isinstance(feature.get("goal"), str) and feature["goal"].strip():
-                    description = feature["goal"]
-                elif isinstance(feature.get("summary"), str) and feature["summary"].strip():
-                    description = feature["summary"]
-                feature["description"] = description or "No description provided."
-            requirements = feature.get("requirements")
-            if not isinstance(requirements, list):
-                requirements = []
-            normalized_requirements: list[str] = []
-            for req in requirements:
-                if isinstance(req, str) and req.strip():
-                    normalized_requirements.append(req)
-                elif isinstance(req, dict) and isinstance(req.get("description"), str) and req["description"].strip():
-                    normalized_requirements.append(req["description"])
-            if not normalized_requirements:
-                if isinstance(feature.get("description"), str) and feature["description"].strip():
-                    normalized_requirements = [f"{feature['description']}"]
-                else:
-                    normalized_requirements = ["Implement feature."]
-            feature["requirements"] = normalized_requirements
-            normalized_features.append(feature)
-        out["features"] = normalized_features
-
-    return out
-
-
-def _coerce_plan_payload(data: Dict[str, Any], template_candidates: List[str] | None = None) -> Dict[str, Any]:
-    """Fill/normalize PLAN_SCHEMA required keys when model output is incomplete.
-
-    This is intentionally conservative and keeps execution going for short
-    benchmarking runs by inferring stable defaults.
-    """
-    allowed_top = {
-        "project",
-        "runtime_dependencies",
-        "dev_dependencies",
-        "tasks",
-        "ci",
-        "docker",
-        "security",
-        "observability",
-        "performance_targets",
-        "expected_load",
-        "latency_sensitive_paths",
-        "cost_priority",
-    }
-    out: Dict[str, Any] = {k: v for k, v in data.items() if k in allowed_top}
-
-    out.setdefault("project", {})
-    out.setdefault("tasks", [])
-    out.setdefault("ci", {"enabled": True, "provider": "github_actions"})
-    out.setdefault("docker", {"enabled": False})
-    out.setdefault("security", {"enabled": False, "tools": []})
-    out.setdefault("observability", {"enabled": False})
-
-    project = dict(out.get("project", {}))
-    template_root_default = (template_candidates or ["python_cli"])[0]
-    valid_types = set(template_candidates or []) | {"python_fastapi", "python_cli", "python_library"}
-    if project.get("type") not in valid_types:
-        project["type"] = template_root_default
-    if not isinstance(project.get("name"), str) or not project.get("name"):
-        project["name"] = "autodev-bench"
-    # python_version is optional for non-Python templates; provide default for Python.
-    proj_type = project.get("type", "")
-    if proj_type.startswith("python"):
-        if not isinstance(project.get("python_version"), str) or not project.get("python_version"):
-            project["python_version"] = "3.11"
-    out["project"] = project
-
-    ci = dict(out.get("ci", {}))
-    ci.setdefault("enabled", True)
-    ci.setdefault("provider", "github_actions")
-    out["ci"] = ci
-
-    docker = dict(out.get("docker", {}))
-    docker.setdefault("enabled", False)
-    out["docker"] = docker
-
-    security = dict(out.get("security", {}))
-    security.setdefault("enabled", False)
-    security.setdefault("tools", [])
-    if not isinstance(security.get("tools"), list):
-        security["tools"] = []
-    out["security"] = security
-
-    observability = dict(out.get("observability", {}))
-    observability.setdefault("enabled", False)
-    out["observability"] = observability
-
-    if "runtime_dependencies" not in out or not isinstance(out.get("runtime_dependencies"), list):
-        out["runtime_dependencies"] = []
-    if "dev_dependencies" not in out or not isinstance(out.get("dev_dependencies"), list):
-        out["dev_dependencies"] = []
-
-    normalized_tasks: List[Dict[str, Any]] = []
-    raw_tasks = out.get("tasks", [])
-    if isinstance(raw_tasks, list):
-        for idx, raw_task in enumerate(raw_tasks, start=1):
-            if not isinstance(raw_task, dict):
-                continue
-
-            title = str(raw_task.get("title") or raw_task.get("name") or f"Task {idx}").strip()
-            goal = str(raw_task.get("goal") or raw_task.get("description") or "Implement requested behavior.").strip()
-            if len(title) < 5:
-                title = f"{title} work"
-
-            raw_files = raw_task.get("files", [])
-            files: List[str] = []
-            if isinstance(raw_files, list):
-                for item in raw_files:
-                    if isinstance(item, str):
-                        files.append(item)
-                    elif isinstance(item, dict) and isinstance(item.get("path"), str):
-                        files.append(item.get("path"))
-            if not files:
-                files = ["README.md"]
-
-            raw_acceptance = raw_task.get("acceptance", [])
-            acceptance: List[str] = []
-            if isinstance(raw_acceptance, list):
-                acceptance = [str(x) for x in raw_acceptance if isinstance(x, str) and len(x.strip()) >= 5]
-            if not acceptance:
-                acceptance = ["Task implemented with automated checks and validation."]
-
-            raw_depends_on = raw_task.get("depends_on", [])
-            depends_on: List[str] = []
-            if isinstance(raw_depends_on, list):
-                depends_on = [str(x) for x in raw_depends_on if isinstance(x, str) and x.strip()]
-
-            quality_expectations = raw_task.get("quality_expectations")
-            if not isinstance(quality_expectations, dict):
-                quality_expectations = {"requires_tests": False, "requires_error_contract": False}
-            quality_expectations.setdefault("requires_tests", True)
-            quality_expectations.setdefault("requires_error_contract", False)
-
-            normalized_tasks.append(
-                {
-                    "id": str(raw_task.get("id") or f"task{len(normalized_tasks)+1}"),
-                    "title": title,
-                    "goal": goal,
-                    "acceptance": acceptance,
-                    "files": files,
-                    "depends_on": depends_on,
-                    "quality_expectations": {
-                        "requires_tests": bool(quality_expectations.get("requires_tests")),
-                        "requires_error_contract": bool(quality_expectations.get("requires_error_contract")),
-                    },
-                }
-            )
-    out["tasks"] = normalized_tasks
-    return out
 
 
 async def _llm_json(
@@ -1078,10 +287,13 @@ async def run_autodev_enterprise(
     interactive: bool = False,
     role_temperatures: Dict[str, float] | None = None,
     max_parallel_tasks: int = DEFAULT_MAX_PARALLEL_TASKS,
+    enable_snapshots: bool = True,
+    continue_on_failure: bool = True,
     *,
     run_id: str | None = None,
     request_id: str | None = None,
     profile: str | None = None,
+    progress_callback: Callable[[Dict[str, Any]], None] | None = None,
 ) -> Tuple[bool, Dict[str, Any], Dict[str, Any], Any]:
     run_id = run_id or uuid4().hex
     request_id = request_id or uuid4().hex
@@ -1105,7 +317,20 @@ async def run_autodev_enterprise(
         max_parallel_tasks_recommended=RECOMMENDED_MAX_PARALLEL_TASKS,
         resume=resume,
         interactive=interactive,
+        continue_on_failure=continue_on_failure,
     )
+
+    # -- RunTrace initialisation ------------------------------------------------
+    trace = RunTrace(run_id=run_id, request_id=request_id, profile=profile)
+    trace.record(
+        EventType.RUN_START,
+        validators_enabled=validators_enabled,
+        max_parallel_tasks=max_parallel_tasks,
+    )
+
+    # -- Progress emitter -------------------------------------------------------
+    progress = ProgressEmitter(callback=progress_callback)
+    progress.run_start(run_id)
 
     p = prompts()
     role_temperatures = role_temperatures or {}
@@ -1161,8 +386,14 @@ async def run_autodev_enterprise(
             profile=profile,
             cache_key=cache_key,
         )
+        # Mark generation phases as complete (cached)
+        for _cached_phase in ("prd_analysis", "architecture", "planning"):
+            progress.phase_start(_cached_phase)
+            progress.phase_end(_cached_phase)
     else:
         # 0) Analyze PRD quality (optional — skipped if role not defined)
+        trace.start_phase("prd_analysis")
+        progress.phase_start("prd_analysis")
         if "prd_analyst" in p:
             prd_analysis = await _llm_json(
                 client,
@@ -1207,6 +438,7 @@ async def run_autodev_enterprise(
                         profile=profile,
                         completeness_score=prd_analysis.get("completeness_score"),
                     )
+                    progress.run_end(run_id, ok=False)
                     return False, {}, {}, []
 
         # 1) Normalize PRD with LLM (strict schema)
@@ -1228,7 +460,12 @@ async def run_autodev_enterprise(
             role_hint="prd_normalizer",
         )
 
+        trace.end_phase("prd_analysis")
+        progress.phase_end("prd_analysis")
+
         # 2) Architecture design (optional — skipped if role not defined)
+        trace.start_phase("architecture")
+        progress.phase_start("architecture")
         if "architect" in p:
             architecture = await _llm_json(
                 client,
@@ -1294,7 +531,60 @@ async def run_autodev_enterprise(
                     components=len(_api_spec.get("components_schemas", [])),
                 )
 
+        # 2.55) Generate DB schema from architecture data_models (optional)
+        _db_schema: Dict[str, Any] | None = None
+        if "db_schema_generator" in p and architecture is not None:
+            _db_models = architecture.get("data_models", [])
+            if _db_models:
+                _db_input: Dict[str, Any] = {
+                    "task": p["db_schema_generator"]["task"],
+                    "data_models": _db_models,
+                    "database": architecture.get("database", {}),
+                    "project_name": prd_struct.get("title", ""),
+                }
+                _db_schema = await _llm_json(
+                    client,
+                    p["db_schema_generator"]["system"],
+                    json_dumps(_db_input),
+                    DB_SCHEMA_SCHEMA,
+                    max_repair=max_json_repair,
+                    run_id=run_id,
+                    request_id=request_id,
+                    profile=profile,
+                    component="db_schema_generator",
+                    temperature=_role_temperature("db_schema_generator", 0.1),
+                    role_hint="db_schema_generator",
+                )
+                _db_source = _db_schema.get("source_code", "")
+                if _db_source:
+                    ws.write_text("src/app/db/models.py", _db_source)
+                _db_migration = _db_schema.get("alembic_migration", "")
+                if _db_migration:
+                    ws.write_text("src/app/db/migrations/001_initial.py", _db_migration)
+                _write_json(ws, ".autodev/db_schema.json", _db_schema)
+                _log_event(
+                    "run.db_schema_generated",
+                    run_id=run_id,
+                    request_id=request_id,
+                    profile=profile,
+                    models=len(_db_schema.get("models", [])),
+                    relationships=len(_db_schema.get("relationships", [])),
+                )
+
+        # 2.5) Build code index for existing codebase awareness (pre-scaffold)
+        _pre_code_index = CodeIndex(ws)
+        _pre_code_index.scan()
+        _pre_context_selector = ContextSelector(_pre_code_index, ws)
+
+        # 2.6) Check if incremental mode should influence planner
+        _pre_incremental = _detect_incremental_mode(_pre_code_index)
+
+        trace.end_phase("architecture")
+        progress.phase_end("architecture")
+
         # 3) Plan
+        trace.start_phase("planning")
+        progress.phase_start("planning")
         planner_input: Dict[str, Any] = {
             "template_candidates": template_candidates,
             "prd_struct": prd_struct,
@@ -1307,9 +597,29 @@ async def run_autodev_enterprise(
                 "paths": [{"path": p_item.get("path"), "method": p_item.get("method")} for p_item in _api_spec.get("paths", [])],
                 "has_openapi_yaml": True,
             }
+        # Inject existing codebase context for planner awareness
+        if _pre_code_index.files:
+            planner_input["existing_codebase"] = _pre_context_selector.select_for_planner(
+                prd_keywords=[prd_struct.get("title", "")] + prd_struct.get("goals", []),
+            )
+        if _pre_incremental:
+            planner_input["incremental_mode"] = True
+            planner_input["existing_file_count"] = len(_pre_code_index.files)
+        if _db_schema is not None:
+            planner_input["db_schema_summary"] = {
+                "models": [m["name"] for m in _db_schema.get("models", [])],
+                "has_db_models": True,
+            }
+
+        # Dynamically enhance planner prompt for incremental mode
+        _planner_system = p["planner"]["system"]
+        if _pre_incremental:
+            from .roles import INCREMENTAL_PLANNER_ADDENDUM
+            _planner_system += "\n" + INCREMENTAL_PLANNER_ADDENDUM
+
         plan = await _llm_json(
             client,
-            p["planner"]["system"],
+            _planner_system,
             json_dumps(planner_input),
             PLAN_SCHEMA,
             max_repair=max_json_repair,
@@ -1322,6 +632,22 @@ async def run_autodev_enterprise(
             role_hint="planner",
         )
         _write_generation_cache(ws, cache_key, prd_struct, plan, architecture, prd_analysis)
+
+    # 2.7) Detect incremental mode (works for both cache-hit and fresh plan paths)
+    _incr_code_index = CodeIndex(ws)
+    _incr_code_index.scan()
+    incremental_mode = _detect_incremental_mode(_incr_code_index)
+    _pre_existing_files: set[str] = set(ws.list_context_files(max_files=None)) if incremental_mode else set()
+    if incremental_mode:
+        _log_event(
+            "run.incremental_mode_detected",
+            run_id=run_id,
+            request_id=request_id,
+            profile=profile,
+            indexed_files=len(_incr_code_index.files),
+            total_symbols=sum(len(m.symbols) for m in _incr_code_index.files.values()),
+            pre_existing_file_count=len(_pre_existing_files),
+        )
 
     # 3) Scaffold
     project_type = plan["project"]["type"]
@@ -1364,7 +690,7 @@ async def run_autodev_enterprise(
         }
         repaired_plan = await _llm_json(
             client,
-            p["planner"]["system"],
+            _planner_system,
             json_dumps(repair_payload),
             PLAN_SCHEMA,
             max_repair=max_json_repair,
@@ -1389,6 +715,11 @@ async def run_autodev_enterprise(
 
     _write_json(ws, ".autodev/prd_struct.json", prd_struct)
     _write_json(ws, ".autodev/plan.json", plan)
+
+    # 3.1) Build code index for context-aware operations (post-scaffold)
+    code_index = CodeIndex(ws)
+    code_index.scan()
+    context_selector = ContextSelector(code_index, ws)
 
     # 3.5) Generate acceptance test skeletons (optional — skipped if role not defined)
     if "acceptance_test_generator" in p:
@@ -1464,7 +795,11 @@ async def run_autodev_enterprise(
                 profile=profile,
                 plan_path=plan_path,
             )
+            progress.run_end(run_id, ok=False)
             return False, prd_struct, plan, []
+
+    trace.end_phase("planning")
+    progress.phase_end("planning")
 
     quality_profile = _resolve_gate_profile(
         quality_profile=quality_profile,
@@ -1523,6 +858,7 @@ async def run_autodev_enterprise(
     include_dev = task_soft_validators is not None or ws.exists("requirements-dev.txt")
     env.install_requirements(include_dev=include_dev)
     validators = Validators(kernel, env)
+    tool_executor = ToolExecutor(kernel, env, ws)
 
     tasks = _toposort(plan["tasks"])
     checkpoint_payload = _read_checkpoint(ws) if resume else None
@@ -1572,17 +908,45 @@ async def run_autodev_enterprise(
     task_failures = 0
     last_validation = None
     unresolved: List[str] = []
+    failed_task_ids: Set[str] = set()
+    skipped_task_ids: Set[str] = set()
+    repair_history = RepairHistory()
     performance_context = _extract_performance_hints(prd_struct=prd_struct, plan=plan)
     task_order = {task["id"]: index for index, task in enumerate(tasks, start=1)}
     task_levels = _toposort_levels(tasks)
     task_context_cache: Dict[str, Dict[str, str]] = {}
 
-    def _cached_files_context(task_id: str, files: List[str]) -> Dict[str, str]:
+    # -- Intelligent task scheduling: load historical timings -------------------
+    _timing_store: TaskTimingStore | None = None
+    try:
+        _baseline_path = os.path.join(ws.root, ".autodev", "perf_baseline.json")
+        if os.path.exists(_baseline_path):
+            import json as _json
+
+            with open(_baseline_path, "r", encoding="utf-8") as _f:
+                _baseline_data = _json.load(_f)
+            _timing_store = TaskTimingStore.from_baseline(_baseline_data)
+            if _timing_store.task_count > 0:
+                _log_event(
+                    "task_scheduler.loaded",
+                    run_id=run_id,
+                    request_id=request_id,
+                    profile=profile,
+                    timing_count=_timing_store.task_count,
+                )
+    except Exception:
+        logger.debug("task_scheduler: failed to load timing store", exc_info=True)
+
+    def _cached_files_context(task_id: str, files: List[str], goal: str = "") -> Dict[str, str]:
         cache_key = f"{task_id}:{'|'.join(files)}"
         cached = task_context_cache.get(cache_key)
         if cached is not None:
             return cached
-        ctx = _build_files_context(ws, files)
+        # Use context-aware selection when code index is available
+        if code_index.files:
+            ctx = context_selector.select_for_task(goal=goal, seed_files=files)
+        else:
+            ctx = _build_files_context(ws, files)
         task_context_cache[cache_key] = ctx
         return ctx
 
@@ -1597,6 +961,7 @@ async def run_autodev_enterprise(
         if verbose:
             print(f"\n== TASK {task['id']} == {task['title']}")
 
+        progress.task_start(task["id"], task["title"])
         _log_event(
             "task.start",
             run_id=run_id,
@@ -1609,7 +974,14 @@ async def run_autodev_enterprise(
             file_count=len(task["files"]),
         )
 
-        files_ctx = _cached_files_context(task["id"], task["files"])
+        # Snapshot workspace before task changes
+        snapshot_name = f"pre_task_{task['id']}"
+        if enable_snapshots:
+            ws.snapshot(snapshot_name)
+            progress.emit("snapshot.created", task_id=task["id"], snapshot_name=snapshot_name)
+            trace.record(EventType.SNAPSHOT_CREATED, task_id=task["id"], snapshot_name=snapshot_name)
+
+        files_ctx = _cached_files_context(task["id"], task["files"], goal=task.get("goal", ""))
         attempt_records: List[Dict[str, Any]] = []
         loops = 0
         last_failure_signature: tuple[Any, ...] = tuple()
@@ -1617,6 +989,10 @@ async def run_autodev_enterprise(
         consecutive_failures = 0
         repair_used = False
         previous_validation_rows: List[Dict[str, Any]] = []
+        failure_analyses: List[Any] = []
+        fingerprinted: List[Any] = []
+        fingerprint_iteration_counts: Dict[str, int] = {}
+        escalation_level = 0
 
         impl_payload = _build_task_payload(plan, task, performance_context=performance_context)
         impl_payload["files_context"] = files_ctx
@@ -1645,9 +1021,32 @@ async def run_autodev_enterprise(
                 }
             except Exception:
                 pass
+        # Inject DB schema context if available
+        if ws.exists("src/app/db/models.py"):
+            try:
+                impl_payload["db_schema"] = {
+                    "file": "src/app/db/models.py",
+                    "source": ws.read_text("src/app/db/models.py")[:6000],
+                    "hint": "SQLAlchemy models have been pre-generated. Import and use these models. Do NOT redefine them.",
+                }
+            except Exception:
+                pass
+        # Gather tool context for implementer
+        try:
+            _tool_results = tool_executor.gather_context(task)
+            if _tool_results:
+                impl_payload["tool_context"] = ToolExecutor.serialize(_tool_results)
+        except Exception:
+            pass
+        # Dynamically enhance implementer prompt for incremental mode
+        _impl_system = p["implementer"]["system"]
+        if incremental_mode:
+            from .roles import INCREMENTAL_IMPLEMENTER_ADDENDUM
+            _impl_system += "\n" + INCREMENTAL_IMPLEMENTER_ADDENDUM
+
         changeset = await _llm_json(
             client,
-            p["implementer"]["system"],
+            _impl_system,
             json_dumps(impl_payload),
             CHANGESET_SCHEMA,
             max_repair=max_json_repair,
@@ -1723,6 +1122,7 @@ async def run_autodev_enterprise(
 
         while True:
             start = time.perf_counter()
+            progress.validation_start(task["id"], run_set)
             if previous_validation_rows:
                 failed_names = _failed_validator_names(previous_validation_rows)
                 run_names = [name for name in run_set if name in failed_names]
@@ -1776,6 +1176,7 @@ async def run_autodev_enterprise(
                 )
             task_last_validation = validation_results
             previous_validation_rows = task_last_validation
+            progress.validation_end(task["id"], ok=_validations_ok(task_last_validation, task_soft))
             signature = _failure_signature(task_last_validation)
             duration_ms = int((time.perf_counter() - start) * 1000)
             row = _build_quality_row(
@@ -1881,6 +1282,11 @@ async def run_autodev_enterprise(
                         "fail_fast": True,
                     },
                 )
+                if enable_snapshots:
+                    ws.rollback(snapshot_name)
+                    progress.emit("snapshot.rollback", task_id=task["id"], snapshot_name=snapshot_name)
+                    trace.record(EventType.SNAPSHOT_ROLLBACK, task_id=task["id"], snapshot_name=snapshot_name)
+                progress.task_end(task["id"], task["title"], ok=False)
                 return {
                     "task_id": task["id"],
                     "iteration": iteration,
@@ -1940,6 +1346,11 @@ async def run_autodev_enterprise(
                     soft_failures=attempt_records[-1]["soft_failures"],
                     total_fix_loops=total_fix_loops,
                 )
+                if enable_snapshots:
+                    ws.rollback(snapshot_name)
+                    progress.emit("snapshot.rollback", task_id=task["id"], snapshot_name=snapshot_name)
+                    trace.record(EventType.SNAPSHOT_ROLLBACK, task_id=task["id"], snapshot_name=snapshot_name)
+                progress.task_end(task["id"], task["title"], ok=False)
                 return {
                     "task_id": task["id"],
                     "iteration": iteration,
@@ -1948,12 +1359,32 @@ async def run_autodev_enterprise(
                     "last_validation": task_last_validation,
                 }
 
-            files_ctx = _cached_files_context(task["id"], task["files"])
+            files_ctx = _cached_files_context(task["id"], task["files"], goal=task.get("goal", ""))
             same_failure_signature = bool(signature) and signature == last_failure_signature
             if same_failure_signature:
                 repeat_failure_count += 1
             else:
                 repeat_failure_count = 0
+
+            # Phase 3.2: Fingerprint tracking + failure analysis + escalation
+            current_digests = _extract_fingerprint_digests(task_last_validation)
+            new_counts: Dict[str, int] = {}
+            for _fp_digest in current_digests:
+                new_counts[_fp_digest] = fingerprint_iteration_counts.get(_fp_digest, 0) + 1
+            fingerprint_iteration_counts = new_counts
+            max_fp_strikes = max(fingerprint_iteration_counts.values()) if fingerprint_iteration_counts else 0
+            has_persistent_errors = max_fp_strikes >= 3
+
+            failure_analyses = analyze_failures(task_last_validation)
+            fingerprinted = fingerprint_failures(task_last_validation)
+            escalation_level = determine_escalation_level(
+                repeat_failure_count, repeat_guard_max_retries, repeat_guard_enabled,
+            )
+            # Boost escalation when persistent fingerprints detected
+            if has_persistent_errors and escalation_level < 2:
+                escalation_level = min(escalation_level + 1, 2)
+
+            # Backward compat: derive repair_mode from escalation + existing guard logic
             repair_mode = "normal"
             targeted_fix_requested = False
             if not repair_used and repeat_guard_enabled:
@@ -1961,23 +1392,69 @@ async def run_autodev_enterprise(
                     targeted_fix_requested = True
                 elif same_failure_signature and repeat_failure_count >= repeat_guard_max_retries:
                     targeted_fix_requested = True
-
             if targeted_fix_requested:
+                escalation_level = max(escalation_level, 1)
                 repair_mode = "targeted"
-                repair_payload = _build_task_payload(plan, task, performance_context=performance_context)
-                repair_payload["files_context"] = files_ctx
-                repair_payload["validation"] = task_last_validation
-                repair_payload["guidance"] = (
-                    "Do a task-level repair pass before targeted fix cycles. Address same failure pattern."
-                )
                 repair_used = True
-            else:
-                repair_payload = _build_task_payload(plan, task, performance_context=performance_context)
-                repair_payload["validation"] = task_last_validation
-                repair_payload["files_context"] = files_ctx
-                repair_payload["guidance"] = p["fixer"]["task"]
-            last_failure_signature = signature
+            elif escalation_level >= 2:
+                repair_mode = "surgical"
+                repair_used = True
+            elif escalation_level == 1:
+                repair_mode = "targeted"
+                repair_used = True
 
+            repair_payload = _build_task_payload(plan, task, performance_context=performance_context)
+            repair_payload["files_context"] = files_ctx
+            repair_payload["validation"] = task_last_validation
+
+            # Build escalated guidance with failure analysis
+            base_guidance = p["fixer"]["task"]
+            repair_payload["guidance"] = build_escalated_guidance(
+                level=escalation_level,
+                analyses=failure_analyses,
+                base_guidance=base_guidance,
+                validation_rows=task_last_validation,
+            )
+
+            # Deduplicated error summary for fixer
+            _dedup_summary = deduplicate_for_guidance(fingerprinted)
+            if _dedup_summary:
+                repair_payload["guidance"] += "\n\n" + _dedup_summary
+
+            # Persistent error warnings (3-strike)
+            _persistent_warning = build_persistent_error_warnings(fingerprint_iteration_counts)
+            if _persistent_warning:
+                repair_payload["guidance"] += "\n\n" + _persistent_warning
+
+            # Cross-task hints from repair history (category + fingerprint level)
+            cross_hints: List[str] = []
+            for fa in failure_analyses:
+                cross_hints.extend(repair_history.get_hints_for_category(fa.category))
+            for ff in fingerprinted:
+                for _fp in ff.fingerprints:
+                    cross_hints.extend(repair_history.get_hints_for_fingerprint(_fp.digest))
+            # Deduplicate hints
+            _seen_hints: set[str] = set()
+            _unique_hints: List[str] = []
+            for _h in cross_hints:
+                if _h not in _seen_hints:
+                    _seen_hints.add(_h)
+                    _unique_hints.append(_h)
+            if _unique_hints:
+                repair_payload["guidance"] += (
+                    "\n\nCross-task hints:\n" + "\n".join(f"- {h}" for h in _unique_hints[:5])
+                )
+
+            last_failure_signature = signature
+            # Gather tool context for fixer
+            try:
+                _fixer_tool_results = tool_executor.gather_context(task)
+                if _fixer_tool_results:
+                    repair_payload["tool_context"] = ToolExecutor.serialize(_fixer_tool_results)
+            except Exception:
+                pass
+
+            progress.repair_start(task["id"], attempt=loops + 1)
             _log_event(
                 "task.repair_requested",
                 run_id=run_id,
@@ -1987,15 +1464,23 @@ async def run_autodev_enterprise(
                 task_id=task["id"],
                 attempt=loops + 1,
                 repair_mode=repair_mode,
+                escalation_level=escalation_level,
+                failure_categories=[fa.category.value for fa in failure_analyses],
                 failure_signature=str(signature)[:200],
                 repeat_failure_count=repeat_failure_count,
                 repeat_failure_guard_enabled=repeat_guard_enabled,
                 repeat_failure_guard_retries=repeat_guard_max_retries,
             )
 
+            # Dynamically enhance fixer prompt for incremental mode
+            _fixer_system = p["fixer"]["system"]
+            if incremental_mode:
+                from .roles import INCREMENTAL_FIXER_ADDENDUM
+                _fixer_system += "\n" + INCREMENTAL_FIXER_ADDENDUM
+
             fix = await _llm_json(
                 client,
-                p["fixer"]["system"],
+                _fixer_system,
                 json_dumps(repair_payload),
                 CHANGESET_SCHEMA,
                 max_repair=max_json_repair,
@@ -2013,6 +1498,26 @@ async def run_autodev_enterprise(
                 fix_changes.append(Change(op=c["op"], path=c["path"], content=c.get("content")))
             ws.apply_changes(fix_changes)
             task_context_cache.pop(f"{task['id']}:{'|'.join(task['files'])}", None)
+
+        # Record repair outcomes for cross-task learning (with fingerprints)
+        _task_resolved = attempt_records[-1]["status"] == "passed" if attempt_records else False
+        if fingerprinted:
+            for ff in fingerprinted:
+                repair_history.record(
+                    task_id=task["id"],
+                    category=ff.analysis.category,
+                    level=escalation_level,
+                    resolved=_task_resolved,
+                    fingerprints=[fp.digest for fp in ff.fingerprints],
+                )
+        else:
+            for fa in failure_analyses:
+                repair_history.record(
+                    task_id=task["id"],
+                    category=fa.category,
+                    level=escalation_level,
+                    resolved=_task_resolved,
+                )
 
         task_entry = {
             "task_id": task["id"],
@@ -2051,6 +1556,12 @@ async def run_autodev_enterprise(
                 "record_count": len(attempt_records),
             },
         )
+        # Clean up snapshot on success — no longer needed
+        if enable_snapshots:
+            _snap_dir = os.path.join(ws.root, ws.SNAPSHOT_DIR, snapshot_name)
+            if os.path.isdir(_snap_dir):
+                shutil.rmtree(_snap_dir)
+        progress.task_end(task["id"], task["title"], ok=True)
         return {
             "task_id": task["id"],
             "iteration": iteration,
@@ -2059,8 +1570,33 @@ async def run_autodev_enterprise(
             "last_validation": attempt_records[-1]["validations"],
         }
 
+    trace.start_phase("implementation")
+    progress.set_total_tasks(len(tasks))
+    progress.phase_start("implementation")
+
     for level_idx, level_tasks in enumerate(task_levels, start=1):
+        # LPT scheduling: sort tasks by estimated duration (longest first)
+        level_tasks = schedule_level_tasks(level_tasks, _timing_store)
         level_batches = _partition_level_for_parallel(level_tasks)
+
+        # Dynamic concurrency: adjust based on remaining token budget
+        try:
+            _usage = client.usage_summary()
+        except (AttributeError, Exception):
+            _usage = {}
+        effective_parallel = _dynamic_concurrency(
+            max_parallel_tasks,
+            _usage,
+            sum(len(lev) for lev in task_levels[level_idx:]),
+        )
+        if effective_parallel != max_parallel_tasks:
+            trace.record(
+                EventType.CONCURRENCY_ADJUSTED,
+                level=level_idx,
+                old=max_parallel_tasks,
+                new=effective_parallel,
+                remaining_tokens=_usage.get("remaining_tokens"),
+            )
         _log_event(
             "task.level_scheduled",
             run_id=run_id,
@@ -2134,6 +1670,65 @@ async def run_autodev_enterprise(
                     )
                     continue
 
+                # Skip tasks whose dependencies failed or were skipped
+                if continue_on_failure and (failed_task_ids or skipped_task_ids):
+                    unmet_deps = [
+                        dep for dep in task.get("depends_on", [])
+                        if dep in failed_task_ids or dep in skipped_task_ids
+                    ]
+                    if unmet_deps:
+                        skipped_task_ids.add(str(task["id"]))
+                        _log_event(
+                            "task.dependency_skipped",
+                            run_id=run_id,
+                            request_id=request_id,
+                            profile=profile,
+                            iteration=iteration,
+                            task_id=task["id"],
+                            task_title=task["title"],
+                            unmet_dependencies=unmet_deps,
+                            reason="dependency_task_failed_or_skipped",
+                        )
+                        trace.record(
+                            EventType.TASK_SKIPPED,
+                            task_id=task["id"],
+                            unmet_deps=unmet_deps,
+                        )
+                        quality_summary["tasks"].append(
+                            {
+                                "task_id": task["id"],
+                                "status": "skipped",
+                                "attempts": 0,
+                                "validator_focus": run_set,
+                                "attempt_trend": [],
+                                "hard_failures": 0,
+                                "soft_failures": 0,
+                                "last_validation": [],
+                                "repair_passes": 0,
+                                "quality_trace": [],
+                                "skipped_reason": "dependency_failed",
+                                "unmet_dependencies": unmet_deps,
+                            }
+                        )
+                        _write_json(
+                            ws,
+                            QUALITY_TASK_FILE_TMPL.format(task_id=task["id"]),
+                            {
+                                "task_id": task["id"],
+                                "status": "skipped",
+                                "attempts": [],
+                                "attempts_count": 0,
+                                "validator_focus": run_set,
+                                "attempt_trend": [],
+                                "last_validation": [],
+                                "repair_passes": 0,
+                                "quality_trace": [],
+                                "skipped_reason": "dependency_failed",
+                                "unmet_dependencies": unmet_deps,
+                            },
+                        )
+                        continue
+
                 runnable.append((task, iteration, run_set))
 
             if not runnable:
@@ -2154,11 +1749,11 @@ async def run_autodev_enterprise(
                     batch=batch_idx,
                     task_ids=[task["id"] for task, _, _ in runnable],
                     batch_size=len(runnable),
-                    concurrency_limit=max_parallel_tasks,
+                    concurrency_limit=effective_parallel,
                 )
                 batch_results = []
-                for chunk_start in range(0, len(runnable), max_parallel_tasks):
-                    chunk = runnable[chunk_start : chunk_start + max_parallel_tasks]
+                _chunks = schedule_batch_chunks(runnable, effective_parallel, _timing_store)
+                for chunk in _chunks:
                     chunk_results = await asyncio.gather(
                         *[
                             _run_task_execution(task, iteration=iteration, run_set=run_set)
@@ -2175,7 +1770,7 @@ async def run_autodev_enterprise(
                     batch=batch_idx,
                     task_ids=[task["id"] for task, _, _ in runnable],
                     batch_size=len(runnable),
-                    concurrency_limit=max_parallel_tasks,
+                    concurrency_limit=effective_parallel,
                 )
             else:
                 if len(runnable) > 1 and contains_global_validator:
@@ -2200,31 +1795,80 @@ async def run_autodev_enterprise(
                 if result["status"] != "passed":
                     task_failures += 1
                     unresolved.append(str(result["task_id"]))
-                    _write_json(ws, QUALITY_SUMMARY_FILE, quality_summary)
-                    _write_checkpoint(
-                        ws,
-                        sorted(completed_task_ids),
-                        status="failed",
+                    failed_task_ids.add(str(result["task_id"]))
+
+                    if not continue_on_failure:
+                        # Legacy behaviour: stop immediately on first failure
+                        _write_json(ws, QUALITY_SUMMARY_FILE, quality_summary)
+                        _write_checkpoint(
+                            ws,
+                            sorted(completed_task_ids),
+                            status="failed",
+                            run_id=run_id,
+                            request_id=request_id,
+                            profile=profile,
+                            failed_task_id=str(result["task_id"]),
+                        )
+                        progress.run_end(run_id, ok=False)
+                        return False, prd_struct, plan, last_validation
+
+                    # Resilient mode: record failure and continue
+                    _log_event(
+                        "task.failed_continuing",
                         run_id=run_id,
                         request_id=request_id,
                         profile=profile,
-                        failed_task_id=str(result["task_id"]),
+                        task_id=str(result["task_id"]),
+                        task_failures_so_far=task_failures,
+                        remaining_levels=len(task_levels) - level_idx,
                     )
-                    return False, prd_struct, plan, last_validation
-
-                completed_task_ids.add(str(result["task_id"]))
-                _write_checkpoint(
-                    ws,
-                    sorted(completed_task_ids),
-                    status="running",
-                    run_id=run_id,
-                    request_id=request_id,
-                    profile=profile,
-                )
+                    trace.record(
+                        EventType.TASK_FAILED_CONTINUING,
+                        task_id=str(result["task_id"]),
+                        task_failures_so_far=task_failures,
+                    )
+                    _write_checkpoint(
+                        ws,
+                        sorted(completed_task_ids),
+                        status="running_with_failures",
+                        run_id=run_id,
+                        request_id=request_id,
+                        profile=profile,
+                        failed_task_ids=sorted(failed_task_ids),
+                        skipped_task_ids=sorted(skipped_task_ids),
+                    )
+                else:
+                    completed_task_ids.add(str(result["task_id"]))
+                    _write_checkpoint(
+                        ws,
+                        sorted(completed_task_ids),
+                        status="running",
+                        run_id=run_id,
+                        request_id=request_id,
+                        profile=profile,
+                    )
 
             _write_json(ws, QUALITY_SUMMARY_FILE, quality_summary)
 
+    # 4.5) Write change summary
+    _change_summary = _write_change_summary(ws, _pre_existing_files, incremental_mode)
+    _log_event(
+        "run.change_summary",
+        run_id=run_id,
+        request_id=request_id,
+        profile=profile,
+        incremental_mode=incremental_mode,
+        files_added=_change_summary["files_added_count"],
+        files_modified=_change_summary["files_possibly_modified_count"],
+        files_deleted=_change_summary["files_deleted_count"],
+    )
+
+    trace.end_phase("implementation")
+    progress.phase_end("implementation")
+
     # 5) Final enterprise validation (all enabled)
+    trace.start_phase("final_validation")
+    progress.phase_start("final_validation")
     _log_event(
         "validation.phase_start",
         run_id=run_id,
@@ -2236,6 +1880,7 @@ async def run_autodev_enterprise(
     final_perf_attempts = 0
     final_perf_repair_passed = False
 
+    progress.validation_start("final", effective_validators_enabled)
     final_res = validators.run_all(
         effective_validators_enabled,
         audit_required=audit_required,
@@ -2249,6 +1894,7 @@ async def run_autodev_enterprise(
     )
     last_validation = Validators.serialize(final_res)
     final_ok = _validations_ok(last_validation, final_soft)
+    progress.validation_end("final", ok=final_ok)
 
     failed_perf_rows = _perf_failure_rows(last_validation)
     while (
@@ -2287,7 +1933,13 @@ async def run_autodev_enterprise(
         perf_payload = _build_task_payload(plan, perf_task, performance_context=performance_context)
         perf_payload["validation"] = last_validation
         perf_payload["performance_failures"] = failed_perf_rows
-        perf_payload["files_context"] = _build_files_context(ws, cast(List[str], perf_task["files"]))
+        if code_index.files:
+            perf_payload["files_context"] = context_selector.select_for_task(
+                goal="Fix performance failures",
+                seed_files=cast(List[str], perf_task["files"]),
+            )
+        else:
+            perf_payload["files_context"] = _build_files_context(ws, cast(List[str], perf_task["files"]))
         perf_payload["guidance"] = "Target only performance-flagged hotspots. Keep edits minimal and path-specific."
 
         _log_event(
@@ -2303,9 +1955,14 @@ async def run_autodev_enterprise(
             targeted_file_count=len(perf_task["files"]),
         )
 
+        _perf_fixer_system = p["fixer"]["system"]
+        if incremental_mode:
+            from .roles import INCREMENTAL_FIXER_ADDENDUM as _PERF_FIXER_ADD
+            _perf_fixer_system += "\n" + _PERF_FIXER_ADD
+
         perf_fix = await _llm_json(
             client,
-            p["fixer"]["system"],
+            _perf_fixer_system,
             json_dumps(perf_payload),
             CHANGESET_SCHEMA,
             max_repair=max_json_repair,
@@ -2336,7 +1993,7 @@ async def run_autodev_enterprise(
         failed_perf_rows = _perf_failure_rows(last_validation)
         final_perf_repair_passed = final_ok
 
-    unresolved.extend([t["id"] for t in quality_summary["tasks"] if t["status"] != "passed"])
+    unresolved.extend([t["task_id"] for t in quality_summary["tasks"] if t["status"] != "passed"])
     if not final_perf_repair_passed and failed_perf_rows and not final_ok:
         _log_event(
             "validation.perf_fix_exhausted",
@@ -2386,11 +2043,14 @@ async def run_autodev_enterprise(
         "successful_tasks": sum(1 for t in quality_summary["tasks"] if t.get("status") == "passed"),
         "repair_passes": sum(int(bool(t.get("repair_passes"))) for t in quality_summary["tasks"]),
         "total_task_attempts": sum(int(t.get("attempts", 0)) for t in quality_summary["tasks"]),
-        "resolved_tasks": len(quality_summary["tasks"]) - task_failures,
+        "resolved_tasks": len(quality_summary["tasks"]) - task_failures - len(skipped_task_ids),
         "hard_failures": hard_counts,
         "soft_failures": soft_counts,
         "unresolved_tasks": len(unresolved),
         "max_fix_loops_reached": total_fix_loops >= max_fix_loops_total,
+        "skipped_tasks": len(skipped_task_ids),
+        "failed_task_ids": sorted(failed_task_ids),
+        "skipped_task_ids": sorted(skipped_task_ids),
     }
     quality_summary["task_validation_trend"] = [
         {
@@ -2425,6 +2085,44 @@ async def run_autodev_enterprise(
         "run_level": "final",
     })
 
+    _write_json(ws, REPAIR_HISTORY_FILE, repair_history.to_dict())
+
+    trace.end_phase("final_validation")
+    progress.phase_end("final_validation")
+    trace.record(
+        EventType.RUN_COMPLETED,
+        ok=final_ok and task_failures == 0,
+        total_fix_loops=total_fix_loops,
+        unresolved_count=len(unresolved),
+    )
+    trace_data = trace.to_dict()
+    _write_json(ws, RUN_TRACE_FILE, trace_data)
+
+    # -- Performance baseline tracking ----------------------------------------
+    _task_timings = collect_task_timings(quality_summary)
+    try:
+        _perf_result = _perf_baseline_check(
+            ws_root=ws.root,
+            run_id=run_id,
+            profile=profile,
+            trace_dict=trace_data,
+            quality_summary=quality_summary,
+            quality_profile=quality_profile,
+            task_timings=_task_timings,
+        )
+        _log_event(
+            "perf_baseline.checked",
+            run_id=run_id,
+            request_id=request_id,
+            profile=profile,
+            has_baseline=_perf_result.has_baseline,
+            regression_detected=not _perf_result.ok,
+        )
+    except Exception:
+        logger.debug("perf_baseline: failed to record/check", exc_info=True)
+
+    progress.run_end(run_id, ok=final_ok and task_failures == 0)
+
     _log_event(
         "run.completed",
         run_id=run_id,
@@ -2444,6 +2142,8 @@ async def run_autodev_enterprise(
         request_id=request_id,
         profile=profile,
         failed_task_id=None if (final_ok and task_failures == 0) else "final_validation",
+        failed_task_ids=sorted(failed_task_ids),
+        skipped_task_ids=sorted(skipped_task_ids),
     )
 
     return (

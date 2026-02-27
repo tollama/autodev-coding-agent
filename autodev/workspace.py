@@ -1,8 +1,11 @@
 from __future__ import annotations
+import hashlib
+import json
 import os
 import shutil
 from dataclasses import dataclass
-from typing import Any, List
+from datetime import datetime
+from typing import Any, Dict, List
 from os import PathLike
 from .patch_utils import apply_unified_diff, validate_unified_diff
 
@@ -28,6 +31,7 @@ class Workspace:
         "build",
     }
     CONTEXT_EXCLUDED_SUFFIXES = {".pyc"}
+    SNAPSHOT_DIR = ".autodev/snapshots"
 
     def __init__(self, root: str | PathLike[str]):
         self.root = os.path.abspath(root)
@@ -225,3 +229,100 @@ class Workspace:
                     if p["backup_exists"]:
                         self.write_text(p["path"], p["backup"])
             raise
+
+    # ------------------------------------------------------------------
+    # Snapshot / Rollback
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _backup_filename(rel_path: str) -> str:
+        """Encode a relative path as a flat filename for snapshot storage."""
+        return rel_path.replace("/", "__").replace("\\", "__")
+
+    def snapshot(self, name: str) -> Dict[str, Any]:
+        """Capture workspace source files to ``.autodev/snapshots/{name}/``.
+
+        Uses :meth:`list_context_files` so ``.autodev/``, ``.git/``,
+        ``.venv/`` and other metadata directories are excluded automatically.
+        Overwrites any existing snapshot with the same *name* (idempotent).
+
+        Returns the manifest dict.
+        """
+        snapshot_base = os.path.join(self.SNAPSHOT_DIR, name)
+        abs_snapshot = os.path.join(self.root, snapshot_base)
+        if os.path.isdir(abs_snapshot):
+            shutil.rmtree(abs_snapshot)
+
+        context_files = self.list_context_files(max_files=None)
+        manifest_files: Dict[str, Dict[str, str]] = {}
+
+        for rel_path in context_files:
+            content = self.read_text(rel_path)
+            sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            backup_name = self._backup_filename(rel_path)
+            backup_rel = os.path.join(snapshot_base, "files", backup_name)
+            self.write_text(backup_rel, content)
+            manifest_files[rel_path] = {
+                "sha256": sha256,
+                "backup_path": f"files/{backup_name}",
+            }
+
+        manifest: Dict[str, Any] = {
+            "name": name,
+            "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "file_count": len(manifest_files),
+            "files": manifest_files,
+        }
+        self.write_text(
+            os.path.join(snapshot_base, "manifest.json"),
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+        )
+        return manifest
+
+    def rollback(self, name: str) -> Dict[str, Any]:
+        """Restore workspace to a previously captured snapshot.
+
+        * Files added after the snapshot are deleted.
+        * Files modified after the snapshot are restored.
+        * ``.autodev/`` metadata is never touched (excluded by
+          :meth:`list_context_files`).
+
+        Raises :class:`FileNotFoundError` if the snapshot does not exist.
+        Returns the manifest dict.
+        """
+        snapshot_base = os.path.join(self.SNAPSHOT_DIR, name)
+        manifest_path = os.path.join(snapshot_base, "manifest.json")
+        abs_manifest = os.path.join(self.root, manifest_path)
+        if not os.path.isfile(abs_manifest):
+            raise FileNotFoundError(f"Snapshot not found: {name}")
+
+        manifest: Dict[str, Any] = json.loads(self.read_text(manifest_path))
+        snapshot_files = set(manifest.get("files", {}).keys())
+
+        # Delete files added after the snapshot
+        current_files = self.list_context_files(max_files=None)
+        for rel_path in current_files:
+            if rel_path not in snapshot_files:
+                self.delete(rel_path)
+
+        # Restore files to snapshot state
+        for rel_path, info in manifest.get("files", {}).items():
+            backup_rel = os.path.join(snapshot_base, info["backup_path"])
+            content = self.read_text(backup_rel)
+            self.write_text(rel_path, content)
+
+        return manifest
+
+    def list_snapshots(self) -> List[str]:
+        """Return sorted list of available snapshot names."""
+        snapshots_dir = os.path.join(self.root, self.SNAPSHOT_DIR)
+        if not os.path.isdir(snapshots_dir):
+            return []
+        names: List[str] = []
+        for entry in os.listdir(snapshots_dir):
+            entry_path = os.path.join(snapshots_dir, entry)
+            if os.path.isdir(entry_path):
+                manifest = os.path.join(entry_path, "manifest.json")
+                if os.path.isfile(manifest):
+                    names.append(entry)
+        return sorted(names)

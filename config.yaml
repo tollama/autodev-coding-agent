@@ -13,6 +13,7 @@ llm:
     fixer: 0.15
     architect: 0.3
     api_spec_generator: 0.15
+    db_schema_generator: 0.1
     reviewer: 0.15
 
   # -- Multi-model routing (optional) --

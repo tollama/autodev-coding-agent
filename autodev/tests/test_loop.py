@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 from autodev.loop import _toposort, _toposort_levels, _partition_level_for_parallel, _resolve_validators, _validations_ok, _build_quality_row, _build_pass_map  # noqa: E402
 from autodev.loop import _llm_json, run_autodev_enterprise  # noqa: E402
+from autodev.loop import _failure_signature, _extract_fingerprint_digests  # noqa: E402
 from autodev.workspace import Workspace  # noqa: E402
 from autodev.report import write_report  # noqa: E402
 from autodev.exec_kernel import ExecKernel, CmdResult  # noqa: E402
@@ -241,6 +242,13 @@ MINIMAL_API_SPEC = {
     "spec_yaml": "openapi: '3.1.0'\ninfo:\n  title: AutoDev API\n  version: '1.0.0'\npaths: {}\n",
 }
 
+MINIMAL_DB_SCHEMA = {
+    "models": [],
+    "relationships": [],
+    "source_code": "from sqlalchemy.orm import declarative_base\n\nBase = declarative_base()\n",
+    "alembic_migration": "",
+}
+
 
 def _with_handoff_if_changeset(payload: Any) -> Any:
     if not isinstance(payload, dict):
@@ -266,6 +274,7 @@ _AUTO_ROLE_RESPONSES: dict[str, dict[str, Any]] = {
     "prd_analyst": MINIMAL_PRD_ANALYSIS,
     "acceptance_test_generator": MINIMAL_ACCEPTANCE_TESTS,
     "api_spec_generator": MINIMAL_API_SPEC,
+    "db_schema_generator": MINIMAL_DB_SCHEMA,
     "architect": MINIMAL_ARCHITECTURE,
     "reviewer": MINIMAL_REVIEW_APPROVE,
 }
@@ -2027,3 +2036,557 @@ def test_run_loop_reuses_cached_plan_between_runs(tmp_path, monkeypatch):
     )
     assert ok2 is True
     assert second_llm.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Resilient parallel execution (continue_on_failure)
+# ---------------------------------------------------------------------------
+
+
+class _FakeTaskSpecificValidators:
+    """Fails validation for task-id 'task-fail', passes everything else."""
+
+    calls: list[tuple[str, str | None]] = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    @staticmethod
+    def serialize(results):
+        return _FakePassingValidators.serialize(results)
+
+    @staticmethod
+    def reset() -> None:
+        _FakeTaskSpecificValidators.calls = []
+
+    def run_all(self, enabled, audit_required=False, soft_validators=None, phase="task", **kwargs):
+        task_id = kwargs.get("task_id")
+        _FakeTaskSpecificValidators.calls.append((phase, task_id))
+        if phase == "per_task" and task_id == "task-fail":
+            return [_FakeValidation("ruff", False, "failed", 1)]
+        return [_FakePassingValidation(name) for name in enabled]
+
+    def run_one(self, name, audit_required=False, phase="task", **kwargs):
+        task_id = kwargs.get("task_id")
+        if phase == "per_task" and task_id == "task-fail":
+            return _FakeValidation(name, False, "failed", 1)
+        return _FakeValidation(name, True, "passed", 0)
+
+
+def test_run_loop_continues_after_task_failure(tmp_path, monkeypatch):
+    """With continue_on_failure=True (default), a failed task should not prevent
+    independent tasks from executing.  ok should be False."""
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "continue-fail"))
+    events: list[dict[str, Any]] = []
+
+    def _capture(event: str, **fields: object) -> None:
+        payload = dict(fields)
+        payload["event"] = event
+        events.append(payload)
+
+    monkeypatch.setattr(loop, "_log_event", _capture)
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakeTaskSpecificValidators)
+    _FakeTaskSpecificValidators.reset()
+
+    responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-continue",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "tasks": [
+                {
+                    "id": "task-fail",
+                    "title": "Failing task",
+                    "goal": "This task will fail validation",
+                    "acceptance": ["Add test for fail module", "Validate error handling"],
+                    "files": ["src/fail.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                },
+                {
+                    "id": "task-pass",
+                    "title": "Passing task",
+                    "goal": "This task will pass validation",
+                    "acceptance": ["Add test for pass module", "Validate error handling"],
+                    "files": ["src/pass.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                },
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+        # Implementer responses (one per task)
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        # Fixer responses for the failing task (retry loop)
+        {"role": "fixer", "summary": "fix", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "fix", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "fix", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "fix", "changes": [], "notes": []},
+    ]
+
+    ok, _, _, _ = asyncio.run(
+        loop.run_autodev_enterprise(
+            client=cast(LLMClient, _FakeLLM(responses)),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff"],
+            audit_required=False,
+            max_fix_loops_total=4,
+            max_fix_loops_per_task=4,
+            max_json_repair=0,
+            task_soft_validators=[],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": []}, "final": {"soft_fail": []}},
+            },
+            verbose=False,
+            continue_on_failure=True,
+        )
+    )
+
+    assert ok is False
+
+    # Verify task-fail recorded as failed
+    failed_continuing_events = [e for e in events if e.get("event") == "task.failed_continuing"]
+    assert len(failed_continuing_events) >= 1
+    assert failed_continuing_events[0]["task_id"] == "task-fail"
+
+    # Read quality summary to confirm both tasks are recorded
+    quality_path = tmp_path / "continue-fail" / ".autodev" / "task_quality_index.json"
+    quality = json.loads(quality_path.read_text())
+    task_statuses = {t["task_id"]: t["status"] for t in quality["tasks"]}
+    assert task_statuses.get("task-fail") == "failed"
+    assert task_statuses.get("task-pass") == "passed"
+
+
+def test_run_loop_skips_dependent_on_failed_task(tmp_path, monkeypatch):
+    """When a task fails and continue_on_failure=True, tasks depending on the
+    failed task should be skipped, but independent tasks should still run."""
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "dep-skip"))
+    events: list[dict[str, Any]] = []
+
+    def _capture(event: str, **fields: object) -> None:
+        payload = dict(fields)
+        payload["event"] = event
+        events.append(payload)
+
+    monkeypatch.setattr(loop, "_log_event", _capture)
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakeTaskSpecificValidators)
+    _FakeTaskSpecificValidators.reset()
+
+    responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-dep-skip",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "tasks": [
+                {
+                    "id": "task-fail",
+                    "title": "Base failing task",
+                    "goal": "This base task will fail",
+                    "acceptance": ["Add test for base module", "Validate error handling"],
+                    "files": ["src/base.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                },
+                {
+                    "id": "task-independent",
+                    "title": "Independent task",
+                    "goal": "This independent task will pass",
+                    "acceptance": ["Add test for indie module", "Validate error handling"],
+                    "files": ["src/indie.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                },
+                {
+                    "id": "task-child",
+                    "title": "Dependent child task",
+                    "goal": "This task depends on failing base",
+                    "acceptance": ["Add test for child module", "Validate error handling"],
+                    "files": ["src/child.py"],
+                    "depends_on": ["task-fail"],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                },
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+        # Implementer responses
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        # Fixer responses for retry
+        {"role": "fixer", "summary": "fix", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "fix", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "fix", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "fix", "changes": [], "notes": []},
+    ]
+
+    ok, _, _, _ = asyncio.run(
+        loop.run_autodev_enterprise(
+            client=cast(LLMClient, _FakeLLM(responses)),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff"],
+            audit_required=False,
+            max_fix_loops_total=4,
+            max_fix_loops_per_task=4,
+            max_json_repair=0,
+            task_soft_validators=[],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": []}, "final": {"soft_fail": []}},
+            },
+            verbose=False,
+            continue_on_failure=True,
+        )
+    )
+
+    assert ok is False
+
+    # Verify dependency skip event was logged
+    skip_events = [e for e in events if e.get("event") == "task.dependency_skipped"]
+    assert len(skip_events) >= 1
+    assert skip_events[0]["task_id"] == "task-child"
+    assert "task-fail" in skip_events[0]["unmet_dependencies"]
+
+    # Read quality summary
+    quality_path = tmp_path / "dep-skip" / ".autodev" / "task_quality_index.json"
+    quality = json.loads(quality_path.read_text())
+    task_statuses = {t["task_id"]: t["status"] for t in quality["tasks"]}
+    assert task_statuses.get("task-fail") == "failed"
+    assert task_statuses.get("task-child") == "skipped"
+    assert task_statuses.get("task-independent") == "passed"
+
+    # Verify totals include skipped info
+    assert quality["totals"]["skipped_tasks"] == 1
+    assert "task-child" in quality["totals"]["skipped_task_ids"]
+
+
+def test_run_loop_continue_on_failure_false_stops_early(tmp_path, monkeypatch):
+    """With continue_on_failure=False, the first failing task should immediately
+    terminate the run (legacy behaviour)."""
+    import autodev.loop as loop
+
+    ws = Workspace(str(tmp_path / "stop-early"))
+    events: list[dict[str, Any]] = []
+
+    def _capture(event: str, **fields: object) -> None:
+        payload = dict(fields)
+        payload["event"] = event
+        events.append(payload)
+
+    monkeypatch.setattr(loop, "_log_event", _capture)
+    monkeypatch.setattr(loop, "ExecKernel", _FakeKernel)
+    monkeypatch.setattr(loop, "EnvManager", _FakeEnvManager)
+    monkeypatch.setattr(loop, "Validators", _FakeTaskSpecificValidators)
+    _FakeTaskSpecificValidators.reset()
+
+    responses = [
+        {
+            "title": "PRD",
+            "goals": [],
+            "non_goals": [],
+            "features": [],
+            "acceptance_criteria": [],
+            "nfr": {},
+            "constraints": [],
+        },
+        {
+            "project": {
+                "type": "python_fastapi",
+                "name": "autodev-stop-early",
+                "python_version": "3.11",
+                "quality_gate_profile": "balanced",
+            },
+            "tasks": [
+                {
+                    "id": "task-fail",
+                    "title": "Failing task",
+                    "goal": "This task will fail validation",
+                    "acceptance": ["Add test for fail module", "Validate error handling"],
+                    "files": ["src/fail.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                },
+                {
+                    "id": "task-pass",
+                    "title": "Passing task",
+                    "goal": "This task will pass validation",
+                    "acceptance": ["Add test for pass module", "Validate error handling"],
+                    "files": ["src/pass.py"],
+                    "depends_on": [],
+                    "quality_expectations": {
+                        "requires_tests": True,
+                        "requires_error_contract": True,
+                        "touches_contract": True,
+                    },
+                    "validator_focus": ["ruff"],
+                },
+            ],
+            "ci": {"enabled": True, "provider": "github_actions"},
+            "docker": {"enabled": True},
+            "security": {"enabled": True, "tools": ["pip_audit", "bandit", "semgrep"]},
+            "observability": {"enabled": True},
+        },
+        # Implementer responses
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        {"role": "implementer", "summary": "ok", "changes": [], "notes": []},
+        # Fixer responses
+        {"role": "fixer", "summary": "fix", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "fix", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "fix", "changes": [], "notes": []},
+        {"role": "fixer", "summary": "fix", "changes": [], "notes": []},
+    ]
+
+    ok, _, _, _ = asyncio.run(
+        loop.run_autodev_enterprise(
+            client=cast(LLMClient, _FakeLLM(responses)),
+            ws=ws,
+            prd_markdown="",
+            template_root=str(ROOT / "templates"),
+            template_candidates=["python_fastapi"],
+            validators_enabled=["ruff"],
+            audit_required=False,
+            max_fix_loops_total=4,
+            max_fix_loops_per_task=4,
+            max_json_repair=0,
+            task_soft_validators=[],
+            final_soft_validators=[],
+            quality_profile={
+                "name": "balanced",
+                "validator_policy": {"per_task": {"soft_fail": []}, "final": {"soft_fail": []}},
+            },
+            verbose=False,
+            continue_on_failure=False,
+        )
+    )
+
+    assert ok is False
+
+    # Should NOT have the "failed_continuing" event (legacy stops immediately)
+    failed_continuing_events = [e for e in events if e.get("event") == "task.failed_continuing"]
+    assert len(failed_continuing_events) == 0
+
+    # Only the failing task should appear in quality summary (run terminated early)
+    quality_path = tmp_path / "stop-early" / ".autodev" / "task_quality_index.json"
+    quality = json.loads(quality_path.read_text())
+    task_ids = [t["task_id"] for t in quality["tasks"]]
+    assert "task-fail" in task_ids
+    # task-pass should NOT have completed because execution stopped
+    # (It may or may not be present depending on execution order, but if present
+    # it confirms the old behavior pattern. The key assertion is no "failed_continuing".)
+
+
+# ---------------------------------------------------------------------------
+# _failure_signature with fingerprints
+# ---------------------------------------------------------------------------
+
+
+def test_failure_signature_with_fingerprints():
+    """Enhanced signature should include fingerprint digests."""
+    rows = [
+        {
+            "name": "ruff",
+            "ok": False,
+            "status": "failed",
+            "error_classification": "tool_error",
+            "stdout": "src/main.py:5:1: F401 'os' imported but unused",
+            "stderr": "",
+            "diagnostics": {"locations": ["src/main.py:5"]},
+            "duration_ms": 100,
+        }
+    ]
+    sig = _failure_signature(rows)
+    assert len(sig) == 1
+    name, status, digests = sig[0]
+    assert name == "ruff"
+    assert status == "failed"
+    assert isinstance(digests, tuple)
+    assert len(digests) >= 1
+
+
+def test_failure_signature_same_error_same_sig():
+    """Same error in two calls should produce identical signatures."""
+    rows = [
+        {
+            "name": "ruff",
+            "ok": False,
+            "status": "failed",
+            "error_classification": "tool_error",
+            "stdout": "src/main.py:5:1: F401 'os' imported but unused",
+            "stderr": "",
+            "diagnostics": {"locations": ["src/main.py:5"]},
+            "duration_ms": 100,
+        }
+    ]
+    sig1 = _failure_signature(rows)
+    sig2 = _failure_signature(rows)
+    assert sig1 == sig2
+
+
+def test_failure_signature_different_error_different_sig():
+    """Different errors should produce different signatures."""
+    rows1 = [
+        {
+            "name": "ruff",
+            "ok": False,
+            "status": "failed",
+            "error_classification": "tool_error",
+            "stdout": "src/main.py:5:1: F401 'os' imported but unused",
+            "stderr": "",
+            "diagnostics": {"locations": ["src/main.py:5"]},
+            "duration_ms": 100,
+        }
+    ]
+    rows2 = [
+        {
+            "name": "ruff",
+            "ok": False,
+            "status": "failed",
+            "error_classification": "tool_error",
+            "stdout": "src/main.py:10:1: E501 line too long",
+            "stderr": "",
+            "diagnostics": {"locations": ["src/main.py:10"]},
+            "duration_ms": 100,
+        }
+    ]
+    assert _failure_signature(rows1) != _failure_signature(rows2)
+
+
+def test_failure_signature_legacy_mode():
+    """Legacy mode (include_fingerprints=False) should match old behavior."""
+    rows = [
+        {
+            "name": "ruff",
+            "ok": False,
+            "status": "failed",
+            "error_classification": "tool_error",
+            "stdout": "some error",
+            "stderr": "",
+            "diagnostics": {},
+            "duration_ms": 100,
+        }
+    ]
+    sig = _failure_signature(rows, include_fingerprints=False)
+    assert sig == (("ruff", "failed", "tool_error"),)
+
+
+def test_extract_fingerprint_digests():
+    """_extract_fingerprint_digests should return unique digest set."""
+    rows = [
+        {
+            "name": "ruff",
+            "ok": False,
+            "status": "failed",
+            "error_classification": "tool_error",
+            "stdout": "src/a.py:5:1: F401 'os' unused\nsrc/b.py:10:1: F401 'sys' unused",
+            "stderr": "",
+            "diagnostics": {"locations": ["src/a.py:5", "src/b.py:10"]},
+            "duration_ms": 100,
+        },
+        {
+            "name": "pytest",
+            "ok": True,
+            "status": "passed",
+            "error_classification": None,
+            "stdout": "1 passed",
+            "stderr": "",
+            "diagnostics": {},
+            "duration_ms": 200,
+        },
+    ]
+    digests = _extract_fingerprint_digests(rows)
+    assert isinstance(digests, set)
+    assert len(digests) == 2  # Only ruff has 2 unique errors; pytest passes
+
+
+def test_extract_fingerprint_digests_empty_on_all_passing():
+    """All passing rows should return empty set."""
+    rows = [
+        {
+            "name": "ruff",
+            "ok": True,
+            "status": "passed",
+            "error_classification": None,
+            "stdout": "",
+            "stderr": "",
+            "diagnostics": {},
+            "duration_ms": 100,
+        },
+    ]
+    assert _extract_fingerprint_digests(rows) == set()

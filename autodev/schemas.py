@@ -66,6 +66,7 @@ PLAN_SCHEMA = {
         "quality_level":{"type":"string","enum": QUALITY_LEVELS},
         "default_artifacts":{"type":"array","items":{"type":"string","minLength":1}},
         "quality_gate_profile":{"type":"string","enum": QUALITY_LEVELS},
+        "incremental_mode":{"type":"boolean"},
       },
       "additionalProperties": False
     },
@@ -409,6 +410,64 @@ OPENAPI_SPEC_SCHEMA = {
     "additionalProperties": False,
 }
 
+DB_SCHEMA_SCHEMA = {
+    "type": "object",
+    "required": ["models", "relationships", "source_code"],
+    "properties": {
+        "models": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["name", "table_name", "fields"],
+                "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                    "table_name": {"type": "string", "minLength": 1},
+                    "fields": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["name", "column_type"],
+                            "properties": {
+                                "name": {"type": "string", "minLength": 1},
+                                "column_type": {"type": "string", "minLength": 1},
+                                "primary_key": {"type": "boolean"},
+                                "nullable": {"type": "boolean"},
+                                "unique": {"type": "boolean"},
+                                "default": {"type": "string"},
+                                "description": {"type": "string"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                    "indexes": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        "relationships": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["from_model", "to_model", "rel_type"],
+                "properties": {
+                    "from_model": {"type": "string", "minLength": 1},
+                    "to_model": {"type": "string", "minLength": 1},
+                    "rel_type": {"type": "string", "enum": ["one_to_one", "one_to_many", "many_to_many"]},
+                    "foreign_key": {"type": "string"},
+                    "back_populates": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+        },
+        "source_code": {"type": "string", "minLength": 1},
+        "alembic_migration": {"type": "string"},
+    },
+    "additionalProperties": False,
+}
+
 ACCEPTANCE_TEST_SCHEMA = {
     "type": "object",
     "required": ["test_file", "test_cases", "source_code"],
@@ -446,6 +505,30 @@ ACCEPTANCE_TEST_SCHEMA = {
         "source_code": {"type": "string", "minLength": 10},
     },
     "additionalProperties": False,
+}
+
+TOOL_RESULT_SCHEMA = {
+    "type": "object",
+    "required": ["tools"],
+    "properties": {
+        "tools": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["tool_name", "ok", "output"],
+                "properties": {
+                    "tool_name": {"type": "string"},
+                    "ok": {"type": "boolean"},
+                    "output": {"type": "string"},
+                    "error": {"type": "string"},
+                    "truncated": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+            },
+        },
+        "total_tools": {"type": "integer", "minimum": 0},
+    },
+    "additionalProperties": True,
 }
 
 CHANGESET_SCHEMA = {

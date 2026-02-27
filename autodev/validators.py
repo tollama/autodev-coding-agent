@@ -228,6 +228,22 @@ def registered_validator_names() -> Tuple[str, ...]:
     return tuple(_DEFAULT_VALIDATOR_ORDER)
 
 
+def list_all_validators() -> List[str]:
+    """Return all unique canonical validator names (excluding aliases).
+
+    Unlike :func:`registered_validator_names` which returns only default-ordered
+    names, this returns every uniquely-named validator including non-default ones
+    added by plugins.
+    """
+    seen: set[str] = set()
+    names: List[str] = []
+    for _key, spec in _VALIDATOR_REGISTRY.items():
+        if spec.name not in seen:
+            seen.add(spec.name)
+            names.append(spec.name)
+    return names
+
+
 def _register_default_validators() -> None:
     register_validator(
         "ruff",

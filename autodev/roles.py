@@ -1,3 +1,20 @@
+"""LLM role definitions with registry-based extensibility.
+
+Built-in roles are registered on first access via :func:`prompts`.
+External code (plugins, tests) can call :func:`register_role` /
+:func:`get_role` to add or query roles at runtime.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, Optional
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
 COMMON_RULES = """
 You MUST output ONLY valid JSON. No markdown fences, no extra prose.
 
@@ -14,12 +31,86 @@ Patch requirements:
 - You may omit diff --git headers; @@ hunks are required.
 """
 
-def prompts():
-    return {
-        "prd_analyst": {
-            "system": "You are a Principal Requirements Engineer and Domain Analyst. "
-                      "Analyze PRD documents for quality, completeness, and feasibility.\n" + COMMON_RULES,
-            "task": """
+INCREMENTAL_PLANNER_ADDENDUM = """
+INCREMENTAL MODE — Existing codebase detected.
+- PREFER modifying existing files over creating new ones.
+- Minimize blast radius: only touch files that MUST change for this feature/fix.
+- If adding new modules, follow existing naming and structure conventions.
+- Keep existing tests intact; add new tests alongside them.
+- Do NOT re-scaffold or restructure unless PRD explicitly demands it.
+- Use patch-friendly task decomposition: small, focused changes per task.
+"""
+
+INCREMENTAL_IMPLEMENTER_ADDENDUM = """
+INCREMENTAL MODE — Modifying existing codebase.
+- Prefer op="patch" for existing files (smaller, reviewable diffs).
+- Use op="write" only for NEW files or complete rewrites explicitly requested.
+- PRESERVE all existing behavior unless the task goal explicitly requires changing it.
+- Do NOT remove existing imports, functions, or classes unless the goal says to.
+- When adding to existing files, respect current code style (naming, formatting, patterns).
+- Include ONLY the changes needed for this task — no refactoring.
+"""
+
+INCREMENTAL_FIXER_ADDENDUM = """
+INCREMENTAL MODE — Fixing in existing codebase.
+- Regression failures (tests that passed before your changes broke them) are TOP PRIORITY.
+- When fixing, prefer minimal patches that restore previous behavior while keeping new functionality.
+- Do NOT restructure existing code to fix issues — apply surgical fixes.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Role registry
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RoleSpec:
+    """Specification for a single LLM role."""
+
+    name: str
+    system: str
+    task: str
+
+
+_ROLE_REGISTRY: Dict[str, RoleSpec] = {}
+
+
+def register_role(name: str, system: str, task: str) -> RoleSpec:
+    """Register or replace a role definition in the global registry."""
+    spec = RoleSpec(name=name, system=system, task=task)
+    _ROLE_REGISTRY[name] = spec
+    return spec
+
+
+def get_role(name: str) -> Optional[RoleSpec]:
+    """Look up a registered role by name.  Returns ``None`` if not found."""
+    return _ROLE_REGISTRY.get(name)
+
+
+def registered_role_names() -> list[str]:
+    """Return sorted list of all registered role names."""
+    return sorted(_ROLE_REGISTRY.keys())
+
+
+# ---------------------------------------------------------------------------
+# Built-in role definitions
+# ---------------------------------------------------------------------------
+
+_defaults_registered = False
+
+
+def _register_default_roles() -> None:
+    global _defaults_registered
+    if _defaults_registered:
+        return
+    _defaults_registered = True
+
+    register_role(
+        "prd_analyst",
+        system="You are a Principal Requirements Engineer and Domain Analyst. "
+               "Analyze PRD documents for quality, completeness, and feasibility.\n" + COMMON_RULES,
+        task="""
 Analyze the provided PRD markdown for quality issues.
 
 Detect:
@@ -43,20 +134,24 @@ If completeness < 50, include clarification_questions that MUST be answered befo
 
 Return JSON matching PRD_ANALYSIS_SCHEMA.
 """,
-        },
-        "prd_normalizer": {
-            "system": "You are a senior requirements engineer. Convert Markdown PRD into a strict JSON structure.\n" + COMMON_RULES,
-            "task": """
+    )
+
+    register_role(
+        "prd_normalizer",
+        system="You are a senior requirements engineer. Convert Markdown PRD into a strict JSON structure.\n" + COMMON_RULES,
+        task="""
 Convert the provided PRD markdown into a JSON object that matches PRD_SCHEMA.
 - Preserve as much detail as possible.
 - Put feature-level requirements under features[].requirements
 - If PRD includes API details, add them to features[].api_surface like "POST /forecast".
 Return JSON object only (not wrapped).
 """,
-        },
-        "planner": {
-            "system": "You are a Staff Engineer and Tech Lead. Produce an enterprise-ready implementation plan.\n" + COMMON_RULES,
-            "task": """
+    )
+
+    register_role(
+        "planner",
+        system="You are a Staff Engineer and Tech Lead. Produce an enterprise-ready implementation plan.\n" + COMMON_RULES,
+        task="""
 Create a PLAN (JSON) that matches PLAN_SCHEMA.
 
 Planner quality guardrails:
@@ -90,11 +185,13 @@ Notes:
 - Include explicit error behavior expectations for any task touching input parsing/validation/error handling.
 - For implementation-bearing tasks, include requirements for test updates in acceptance criteria.
 """,
-        },
-        "acceptance_test_generator": {
-            "system": "You are a Senior QA Engineer and Test Architect. "
-                      "Generate acceptance test skeletons from requirements.\n" + COMMON_RULES,
-            "task": """
+    )
+
+    register_role(
+        "acceptance_test_generator",
+        system="You are a Senior QA Engineer and Test Architect. "
+               "Generate acceptance test skeletons from requirements.\n" + COMMON_RULES,
+        task="""
 Given the task acceptance criteria and project context, generate a test file that will verify each acceptance criterion.
 
 Rules:
@@ -110,10 +207,12 @@ Rules:
 
 Return JSON matching ACCEPTANCE_TEST_SCHEMA.
 """,
-        },
-        "implementer": {
-            "system": "You are a Senior Software Engineer. Implement ONE task at a time.\n" + COMMON_RULES,
-            "task": """
+    )
+
+    register_role(
+        "implementer",
+        system="You are a Senior Software Engineer. Implement ONE task at a time.\n" + COMMON_RULES,
+        task="""
 Follow the task payload structure strictly.
 
 CORE INPUT (minimum slots):
@@ -124,6 +223,8 @@ CORE INPUT (minimum slots):
 
 OPTIONAL CONTEXT:
 - optional_context.task, optional_context.plan, optional_context.files_context
+- tool_context: Pre-gathered tool results (file searches, lint output, test discovery, dependency info).
+  Use tool_context to understand existing patterns and project state. Results are informational only.
 - Use only when needed to complete core.goal safely.
 
 Execution rules:
@@ -133,10 +234,12 @@ Execution rules:
 - For control-flow/validation changes, include matching tests.
 - Return a CHANGESET JSON that satisfies core.output_format.
 """,
-        },
-        "fixer": {
-            "system": "You are a debugging expert. Fix failures from lint/typecheck/test/security/semgrep/sbom.\n" + COMMON_RULES,
-            "task": """
+    )
+
+    register_role(
+        "fixer",
+        system="You are a debugging expert. Fix failures from lint/typecheck/test/security/semgrep/sbom.\n" + COMMON_RULES,
+        task="""
 Follow the task payload structure strictly.
 
 CORE INPUT (minimum slots):
@@ -147,6 +250,8 @@ CORE INPUT (minimum slots):
 
 OPTIONAL CONTEXT:
 - optional_context.validation, optional_context.task, optional_context.plan, optional_context.files_context
+- tool_context: Pre-gathered tool results (current lint errors, test lists, file searches).
+  Use tool_context to precisely identify root causes.
 - Use only details needed to clear current failures.
 
 Execution rules:
@@ -155,10 +260,12 @@ Execution rules:
 - Include regression/error-path tests when behavior changes.
 - Return a CHANGESET JSON that satisfies core.output_format.
 """,
-        },
-        "architect": {
-            "system": "You are a Staff Software Architect. Design the high-level architecture for the project.\n" + COMMON_RULES,
-            "task": """
+    )
+
+    register_role(
+        "architect",
+        system="You are a Staff Software Architect. Design the high-level architecture for the project.\n" + COMMON_RULES,
+        task="""
 Given the normalized PRD (prd_struct), produce an ARCHITECTURE design as JSON matching ARCHITECTURE_SCHEMA.
 
 Your architecture must include:
@@ -179,10 +286,12 @@ Design principles:
 - Include error handling boundaries between components.
 - If PRD mentions persistence, include a database section with tables and relationships.
 """,
-        },
-        "api_spec_generator": {
-            "system": "You are an API Design Specialist. Generate OpenAPI 3.1 specifications from architecture contracts.\n" + COMMON_RULES,
-            "task": """
+    )
+
+    register_role(
+        "api_spec_generator",
+        system="You are an API Design Specialist. Generate OpenAPI 3.1 specifications from architecture contracts.\n" + COMMON_RULES,
+        task="""
 Given the architecture's api_contracts and data_models, generate a complete OpenAPI 3.1 specification.
 
 Rules:
@@ -197,10 +306,12 @@ Rules:
 
 Return JSON matching OPENAPI_SPEC_SCHEMA.
 """,
-        },
-        "reviewer": {
-            "system": "You are a Senior Code Reviewer. Review the implementation changeset for quality, correctness, and security.\n" + COMMON_RULES,
-            "task": """
+    )
+
+    register_role(
+        "reviewer",
+        system="You are a Senior Code Reviewer. Review the implementation changeset for quality, correctness, and security.\n" + COMMON_RULES,
+        task="""
 Review the provided changeset (files changed, their content) against the task goal, acceptance criteria, and architecture.
 
 Produce a REVIEW as JSON matching REVIEW_SCHEMA.
@@ -224,5 +335,43 @@ Overall verdict:
 blocking_issues: List of critical/major finding descriptions (empty if verdict is "approve").
 summary: Brief overall assessment of the changeset quality.
 """,
-        },
+    )
+
+    register_role(
+        "db_schema_generator",
+        system="You are a Database Architect specializing in SQLAlchemy ORM and relational database design.\n" + COMMON_RULES,
+        task="""
+Given the architecture's data_models and relationships, generate SQLAlchemy ORM models.
+
+Rules:
+1. Use SQLAlchemy 2.0+ declarative style with `mapped_column()` and `Mapped[]` type hints.
+2. Each data_model → one SQLAlchemy model class inheriting from `Base`.
+3. Infer relationships from data_models: detect foreign key references, add `relationship()` with `back_populates`.
+4. Add `id` primary key (Integer, autoincrement) if not present in fields.
+5. Add `created_at` and `updated_at` timestamp columns to all models.
+6. Map architecture field types to SQLAlchemy types: string→String, integer→Integer, boolean→Boolean, float→Float, datetime→DateTime, text→Text, json/dict→JSON.
+7. Generate `Base = declarative_base()` at top of source_code.
+8. Include engine creation and session factory boilerplate.
+9. The source_code field must contain the COMPLETE, runnable models.py file.
+10. Generate an initial Alembic migration script in alembic_migration if models exist.
+
+Return JSON matching DB_SCHEMA_SCHEMA.
+""",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible accessor
+# ---------------------------------------------------------------------------
+
+
+def prompts() -> dict:
+    """Return ``{role_name: {"system": ..., "task": ...}}`` for all roles.
+
+    This is the backward-compatible API consumed by :func:`loop.run_autodev_enterprise`.
+    """
+    _register_default_roles()
+    return {
+        name: {"system": spec.system, "task": spec.task}
+        for name, spec in _ROLE_REGISTRY.items()
     }

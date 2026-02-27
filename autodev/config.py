@@ -537,6 +537,21 @@ def _validate_run_section(run: Any, errors: List[str]) -> None:
     budget["max_tokens"] = max_tokens
 
 
+def _validate_plugins_section(plugins: Any, errors: List[str]) -> None:
+    """Validate the optional ``plugins`` configuration section."""
+    if plugins is None:
+        return
+    if not isinstance(plugins, dict):
+        errors.append("plugins must be an object.")
+        return
+    path = plugins.get("path")
+    if path is not None and not isinstance(path, str):
+        errors.append("plugins.path must be a string.")
+    enabled = plugins.get("enabled")
+    if enabled is not None:
+        _validate_string_list(enabled, ["plugins", "enabled"], errors)
+
+
 def _validate_config(config: Any) -> Dict[str, Any]:
     errors: List[str] = []
     if not isinstance(config, dict):
@@ -558,6 +573,8 @@ def _validate_config(config: Any) -> Dict[str, Any]:
         errors.append("run must be an object.")
         config["run"] = {}
     _validate_run_section(config["run"], errors)
+
+    _validate_plugins_section(config.get("plugins"), errors)
 
     if errors:
         msg = "Invalid config:\n- " + "\n- ".join(errors)

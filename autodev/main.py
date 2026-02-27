@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .config import load_config
+from .cli_progress import make_cli_progress_callback
 from .llm_client import LLMClient, ModelEndpoint, ModelRouter
 from .workspace import Workspace
 from .loop import run_autodev_enterprise
@@ -336,6 +337,7 @@ def cli():
     ok = False
     prd_struct: Dict[str, Any] = {}
     plan: Dict[str, Any] = {}
+    _progress_cb = make_cli_progress_callback()
     last_validation: Any = []
     try:
         ok, prd_struct, plan, last_validation = asyncio.run(
@@ -362,6 +364,7 @@ def cli():
                 interactive=bool(args.interactive),
                 role_temperatures=role_temperatures,
                 max_parallel_tasks=max_parallel_tasks,
+                progress_callback=_progress_cb,
             )
         )
     except ValueError as e:

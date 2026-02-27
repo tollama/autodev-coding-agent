@@ -1,5 +1,5 @@
 from jsonschema import validate  # type: ignore[import-untyped]
-from autodev.schemas import CHANGESET_SCHEMA, PLAN_SCHEMA, PRD_SCHEMA, PRD_ANALYSIS_SCHEMA, OPENAPI_SPEC_SCHEMA, ACCEPTANCE_TEST_SCHEMA
+from autodev.schemas import CHANGESET_SCHEMA, PLAN_SCHEMA, PRD_SCHEMA, PRD_ANALYSIS_SCHEMA, OPENAPI_SPEC_SCHEMA, ACCEPTANCE_TEST_SCHEMA, DB_SCHEMA_SCHEMA, TOOL_RESULT_SCHEMA
 
 
 def test_plan_schema_rejects_task_without_quality_expectations():
@@ -434,3 +434,92 @@ def test_openapi_spec_schema_rejects_missing_spec_yaml():
         pass
     else:
         assert False, "Expected OPENAPI_SPEC_SCHEMA validation error for missing spec_yaml"
+
+
+# ── DB_SCHEMA_SCHEMA ─────────────────────────────────────────────────
+
+
+def test_db_schema_schema_accepts_valid():
+    payload = {
+        "models": [
+            {
+                "name": "User",
+                "table_name": "users",
+                "fields": [
+                    {"name": "id", "column_type": "Integer", "primary_key": True},
+                    {"name": "email", "column_type": "String", "nullable": False, "unique": True},
+                    {"name": "name", "column_type": "String", "nullable": False},
+                ],
+            },
+        ],
+        "relationships": [
+            {
+                "from_model": "User",
+                "to_model": "Post",
+                "rel_type": "one_to_many",
+                "foreign_key": "user_id",
+            },
+        ],
+        "source_code": "from sqlalchemy.orm import declarative_base\n\nBase = declarative_base()\n",
+        "alembic_migration": "# initial migration",
+    }
+    validate(instance=payload, schema=DB_SCHEMA_SCHEMA)
+
+
+def test_db_schema_schema_rejects_missing_source_code():
+    payload = {
+        "models": [],
+        "relationships": [],
+    }
+    try:
+        validate(instance=payload, schema=DB_SCHEMA_SCHEMA)
+    except Exception:
+        pass
+    else:
+        assert False, "Expected DB_SCHEMA_SCHEMA validation error for missing source_code"
+
+
+def test_db_schema_schema_rejects_empty_model_name():
+    payload = {
+        "models": [
+            {
+                "name": "",
+                "table_name": "users",
+                "fields": [{"name": "id", "column_type": "Integer"}],
+            },
+        ],
+        "relationships": [],
+        "source_code": "Base = declarative_base()\n",
+    }
+    try:
+        validate(instance=payload, schema=DB_SCHEMA_SCHEMA)
+    except Exception:
+        pass
+    else:
+        assert False, "Expected DB_SCHEMA_SCHEMA validation error for empty model name"
+
+
+# ---------------------------------------------------------------------------
+# TOOL_RESULT_SCHEMA
+# ---------------------------------------------------------------------------
+
+
+def test_tool_result_schema_accepts_valid():
+    payload = {
+        "tools": [
+            {"tool_name": "file_search", "ok": True, "output": "src/main.py:5: class App"},
+            {"tool_name": "lint_check", "ok": False, "output": "", "error": "exit code 1", "truncated": False},
+        ],
+        "total_tools": 2,
+    }
+    validate(instance=payload, schema=TOOL_RESULT_SCHEMA)
+
+
+def test_tool_result_schema_rejects_missing_tools():
+    payload = {"total_tools": 0}
+    try:
+        validate(instance=payload, schema=TOOL_RESULT_SCHEMA)
+    except Exception:
+        pass
+    else:
+        assert False, "Expected TOOL_RESULT_SCHEMA validation error for missing tools"
