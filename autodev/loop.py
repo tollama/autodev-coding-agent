@@ -81,6 +81,12 @@ from .loop_validators import (  # noqa: F401
     _quality_metadata_from_changeset,
     _extract_fingerprint_digests,
 )
+from .adaptive_gate import (
+    collect_validator_stats as _collect_validator_stats,
+    load_validator_stats,
+    resolve_adaptive_gate_config,
+    select_validators,
+)
 from .context_cache import IncrementalContextCache
 from .perf_baseline import record_and_check as _perf_baseline_check
 from .task_scheduler import (
@@ -953,6 +959,34 @@ async def run_autodev_enterprise(
         stub_format=_icc_stub_fmt,
     )
 
+    # -- Adaptive quality gate: smart per-task validator selection ---------------
+    _adaptive_gate_config = resolve_adaptive_gate_config(quality_profile)
+    _ag_validator_stats: Dict[str, Any] = {}
+    _promoted_soft_map: Dict[str, Set[str]] = {}
+    if _adaptive_gate_config.enabled:
+        try:
+            _baseline_path_ag = os.path.join(ws.root, ".autodev", "perf_baseline.json")
+            if os.path.exists(_baseline_path_ag):
+                import json as _json_ag
+
+                with open(_baseline_path_ag, "r", encoding="utf-8") as _f_ag:
+                    _baseline_data_ag = _json_ag.load(_f_ag)
+                _ag_validator_stats = load_validator_stats(
+                    _baseline_data_ag,
+                    window=_adaptive_gate_config.history_window,
+                )
+                if _ag_validator_stats:
+                    _log_event(
+                        "adaptive_gate.loaded",
+                        run_id=run_id,
+                        request_id=request_id,
+                        profile=profile,
+                        validator_count=len(_ag_validator_stats),
+                        mode=_adaptive_gate_config.mode,
+                    )
+        except Exception:
+            logger.debug("adaptive_gate: failed to load validator stats", exc_info=True)
+
     def _cached_files_context(task_id: str, files: List[str], goal: str = "") -> Dict[str, str]:
         cache_key = f"{task_id}:{'|'.join(files)}"
         cached = task_context_cache.get(cache_key)
@@ -986,6 +1020,9 @@ async def run_autodev_enterprise(
         run_set: List[str],
     ) -> Dict[str, Any]:
         nonlocal total_fix_loops
+
+        # Merge adaptively promoted soft-fail validators
+        _effective_soft = task_soft | _promoted_soft_map.get(task["id"], set())
 
         if verbose:
             print(f"\n== TASK {task['id']} == {task['title']}")
@@ -1180,7 +1217,7 @@ async def run_autodev_enterprise(
                         validators.run_all(
                             run_set,
                             audit_required=audit_required,
-                            soft_validators=task_soft,
+                            soft_validators=_effective_soft,
                             phase="per_task",
                             run_id=run_id,
                             request_id=request_id,
@@ -1194,7 +1231,7 @@ async def run_autodev_enterprise(
                     validators.run_all(
                         run_set,
                         audit_required=audit_required,
-                        soft_validators=task_soft,
+                        soft_validators=_effective_soft,
                         phase="per_task",
                         run_id=run_id,
                         request_id=request_id,
@@ -1205,7 +1242,7 @@ async def run_autodev_enterprise(
                 )
             task_last_validation = validation_results
             previous_validation_rows = task_last_validation
-            progress.validation_end(task["id"], ok=_validations_ok(task_last_validation, task_soft))
+            progress.validation_end(task["id"], ok=_validations_ok(task_last_validation, _effective_soft))
             signature = _failure_signature(task_last_validation)
             duration_ms = int((time.perf_counter() - start) * 1000)
             row = _build_quality_row(
@@ -1214,8 +1251,8 @@ async def run_autodev_enterprise(
                 run_set=run_set,
                 validation_rows=task_last_validation,
                 duration_ms=duration_ms,
-                soft_validators=task_soft,
-                all_ok=_validations_ok(task_last_validation, task_soft),
+                soft_validators=_effective_soft,
+                all_ok=_validations_ok(task_last_validation, _effective_soft),
                 quality_notes=quality_trace[-1]["quality_notes"],
                 validation_links=quality_trace[-1]["validation_links"],
                 repair_pass=repair_used,
@@ -1642,7 +1679,17 @@ async def run_autodev_enterprise(
 
             for task in batch_tasks:
                 iteration = task_order[task["id"]]
-                run_set = _resolve_validators(task.get("validator_focus"), effective_validators_enabled)
+                _base_run_set = _resolve_validators(task.get("validator_focus"), effective_validators_enabled)
+                run_set, _ag_promoted = select_validators(
+                    task_files=task.get("files", []),
+                    resolved_validators=_base_run_set,
+                    has_validator_focus=bool(task.get("validator_focus")),
+                    config=_adaptive_gate_config,
+                    stats=_ag_validator_stats,
+                    per_task_soft=task_soft,
+                )
+                if _ag_promoted:
+                    _promoted_soft_map[task["id"]] = _ag_promoted
 
                 if resume and task["id"] in completed_task_ids:
                     _log_event(
@@ -2139,6 +2186,7 @@ async def run_autodev_enterprise(
 
     # -- Performance baseline tracking ----------------------------------------
     _task_timings = collect_task_timings(quality_summary)
+    _validator_run_stats = _collect_validator_stats(quality_summary)
     try:
         _perf_result = _perf_baseline_check(
             ws_root=ws.root,
@@ -2148,6 +2196,7 @@ async def run_autodev_enterprise(
             quality_summary=quality_summary,
             quality_profile=quality_profile,
             task_timings=_task_timings,
+            validator_stats=_validator_run_stats,
         )
         _log_event(
             "perf_baseline.checked",

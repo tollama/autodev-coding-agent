@@ -92,6 +92,9 @@ class RunMetricsSnapshot:
     # Per-task timing records for intelligent scheduling
     task_timings: List[Dict[str, Any]] = field(default_factory=list)
 
+    # Per-validator pass/fail/duration records for adaptive quality gate
+    validator_stats: List[Dict[str, Any]] = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -215,6 +218,7 @@ def collect_run_metrics(
     trace_dict: Dict[str, Any],
     quality_summary: Dict[str, Any],
     task_timings: List[Dict[str, Any]] | None = None,
+    validator_stats: List[Dict[str, Any]] | None = None,
 ) -> RunMetricsSnapshot:
     """Build a :class:`RunMetricsSnapshot` from run_trace and quality_summary."""
 
@@ -273,6 +277,7 @@ def collect_run_metrics(
         total_task_attempts=_safe_int(totals.get("total_task_attempts", 0)),
         repair_passes=_safe_int(totals.get("repair_passes", 0)),
         task_timings=task_timings or [],
+        validator_stats=validator_stats or [],
     )
 
 
@@ -473,6 +478,7 @@ def record_and_check(
     quality_summary: Dict[str, Any],
     quality_profile: Dict[str, Any] | None = None,
     task_timings: List[Dict[str, Any]] | None = None,
+    validator_stats: List[Dict[str, Any]] | None = None,
 ) -> PerfBaselineResult:
     """End-of-run entry point: collect, persist baseline, detect regressions.
 
@@ -492,6 +498,7 @@ def record_and_check(
             snapshot = collect_run_metrics(
                 run_id, profile, trace_dict, quality_summary,
                 task_timings=task_timings,
+                validator_stats=validator_stats,
             )
             return PerfBaselineResult(
                 has_baseline=False,
@@ -512,6 +519,7 @@ def record_and_check(
     snapshot = collect_run_metrics(
         run_id, profile, trace_dict, quality_summary,
         task_timings=task_timings,
+        validator_stats=validator_stats,
     )
 
     baseline_path = os.path.join(ws_root, ".autodev", "perf_baseline.json")
