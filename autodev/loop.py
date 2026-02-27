@@ -16,7 +16,7 @@ from jsonschema import validate  # type: ignore[import-untyped]
 from .llm_client import LLMClient
 from .json_utils import strict_json_loads, json_dumps
 from .roles import prompts
-from .schemas import PRD_SCHEMA, PLAN_SCHEMA, CHANGESET_SCHEMA, ARCHITECTURE_SCHEMA, REVIEW_SCHEMA, PRD_ANALYSIS_SCHEMA
+from .schemas import PRD_SCHEMA, PLAN_SCHEMA, CHANGESET_SCHEMA, ARCHITECTURE_SCHEMA, REVIEW_SCHEMA, PRD_ANALYSIS_SCHEMA, OPENAPI_SPEC_SCHEMA, ACCEPTANCE_TEST_SCHEMA
 from .workspace import Workspace, Change
 from .exec_kernel import ExecKernel
 from .env_manager import EnvManager
@@ -1257,6 +1257,43 @@ async def run_autodev_enterprise(
                 api_contracts=len(architecture.get("api_contracts", [])),
             )
 
+        # 2.5) Generate OpenAPI spec from architecture (optional)
+        _api_spec: Dict[str, Any] | None = None
+        if "api_spec_generator" in p and architecture is not None:
+            _api_contracts = architecture.get("api_contracts", [])
+            if _api_contracts:
+                _spec_input: Dict[str, Any] = {
+                    "task": p["api_spec_generator"]["task"],
+                    "api_contracts": _api_contracts,
+                    "data_models": architecture.get("data_models", []),
+                    "project_name": prd_struct.get("title", "API"),
+                }
+                _api_spec = await _llm_json(
+                    client,
+                    p["api_spec_generator"]["system"],
+                    json_dumps(_spec_input),
+                    OPENAPI_SPEC_SCHEMA,
+                    max_repair=max_json_repair,
+                    run_id=run_id,
+                    request_id=request_id,
+                    profile=profile,
+                    component="api_spec_generator",
+                    temperature=_role_temperature("api_spec_generator", 0.15),
+                    role_hint="api_spec_generator",
+                )
+                _spec_yaml = _api_spec.get("spec_yaml", "")
+                if _spec_yaml:
+                    ws.write_text("openapi.yaml", _spec_yaml)
+                _write_json(ws, ".autodev/api_spec.json", _api_spec)
+                _log_event(
+                    "run.api_spec_generated",
+                    run_id=run_id,
+                    request_id=request_id,
+                    profile=profile,
+                    paths=len(_api_spec.get("paths", [])),
+                    components=len(_api_spec.get("components_schemas", [])),
+                )
+
         # 3) Plan
         planner_input: Dict[str, Any] = {
             "template_candidates": template_candidates,
@@ -1265,6 +1302,11 @@ async def run_autodev_enterprise(
         }
         if architecture is not None:
             planner_input["architecture"] = architecture
+        if _api_spec is not None:
+            planner_input["api_spec_summary"] = {
+                "paths": [{"path": p_item.get("path"), "method": p_item.get("method")} for p_item in _api_spec.get("paths", [])],
+                "has_openapi_yaml": True,
+            }
         plan = await _llm_json(
             client,
             p["planner"]["system"],
@@ -1347,6 +1389,69 @@ async def run_autodev_enterprise(
 
     _write_json(ws, ".autodev/prd_struct.json", prd_struct)
     _write_json(ws, ".autodev/plan.json", plan)
+
+    # 3.5) Generate acceptance test skeletons (optional — skipped if role not defined)
+    if "acceptance_test_generator" in p:
+        for _atg_task in plan.get("tasks", []):
+            _atg_acceptance = _atg_task.get("acceptance", [])
+            _atg_quality = _atg_task.get("quality_expectations", {})
+            if not _atg_quality.get("requires_tests", False) and not _atg_acceptance:
+                continue
+
+            _atg_input: Dict[str, Any] = {
+                "task": p["acceptance_test_generator"]["task"],
+                "task_id": _atg_task["id"],
+                "task_goal": _atg_task.get("goal", ""),
+                "acceptance_criteria": _atg_acceptance,
+                "quality_expectations": _atg_quality,
+                "project_type": plan["project"].get("type", ""),
+                "project_name": plan["project"].get("name", ""),
+                "prd_acceptance": prd_struct.get("acceptance_criteria", []),
+                "task_files": _atg_task.get("files", []),
+            }
+            if architecture is not None:
+                _atg_input["architecture_summary"] = {
+                    "components": [c["name"] for c in architecture.get("components", [])],
+                    "api_contracts": architecture.get("api_contracts", []),
+                }
+
+            _atg_scaffold = await _llm_json(
+                client,
+                p["acceptance_test_generator"]["system"],
+                json_dumps(_atg_input),
+                ACCEPTANCE_TEST_SCHEMA,
+                max_repair=max_json_repair,
+                run_id=run_id,
+                request_id=request_id,
+                profile=profile,
+                component="acceptance_test_generator",
+                temperature=_role_temperature("acceptance_test_generator", 0.15),
+                role_hint="acceptance_test_generator",
+            )
+
+            _atg_test_file = _atg_scaffold.get("test_file", "")
+            _atg_source = _atg_scaffold.get("source_code", "")
+            if _atg_test_file and _atg_source:
+                # Ensure unique test file per task to avoid file overlap between parallel tasks
+                _atg_base, _atg_ext = os.path.splitext(_atg_test_file)
+                _atg_unique_file = f"{_atg_base}_{_atg_task['id']}{_atg_ext}"
+                ws.write_text(_atg_unique_file, _atg_source)
+                _atg_scaffold["test_file"] = _atg_unique_file
+                _write_json(ws, f".autodev/acceptance_tests_{_atg_task['id']}.json", _atg_scaffold)
+                # Add test file to task's files if not already present
+                if _atg_unique_file not in _atg_task.get("files", []):
+                    _atg_task.setdefault("files", []).append(_atg_unique_file)
+
+            _log_event(
+                "run.acceptance_tests_generated",
+                run_id=run_id,
+                request_id=request_id,
+                profile=profile,
+                task_id=_atg_task["id"],
+                test_file=_atg_test_file,
+                test_count=len(_atg_scaffold.get("test_cases", [])),
+            )
+
     if interactive:
         plan_path = os.path.join(ws.root, ".autodev", "plan.json")
         print(f"[interactive] Plan generated: {plan_path}")
@@ -1516,6 +1621,30 @@ async def run_autodev_enterprise(
         impl_payload = _build_task_payload(plan, task, performance_context=performance_context)
         impl_payload["files_context"] = files_ctx
         impl_payload["guidance"] = p["implementer"]["task"]
+        # Inject pre-generated acceptance test context if available
+        _atg_meta_path = f".autodev/acceptance_tests_{task['id']}.json"
+        if ws.exists(_atg_meta_path):
+            try:
+                _atg_meta = strict_json_loads(ws.read_text(_atg_meta_path))
+                _atg_file = _atg_meta.get("test_file", "")
+                if _atg_file and ws.exists(_atg_file):
+                    impl_payload["acceptance_tests"] = {
+                        "test_file": _atg_file,
+                        "source": ws.read_text(_atg_file)[:6000],
+                        "hint": "Pre-generated acceptance tests exist. Implement code so these tests PASS. Do NOT delete or weaken the test assertions.",
+                    }
+            except Exception:
+                pass
+        # Inject OpenAPI spec context if available
+        if ws.exists("openapi.yaml"):
+            try:
+                impl_payload["api_spec"] = {
+                    "file": "openapi.yaml",
+                    "source": ws.read_text("openapi.yaml")[:4000],
+                    "hint": "Implement API endpoints matching this OpenAPI spec exactly. Respect paths, methods, request/response schemas, and status codes.",
+                }
+            except Exception:
+                pass
         changeset = await _llm_json(
             client,
             p["implementer"]["system"],

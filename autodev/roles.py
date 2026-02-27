@@ -91,6 +91,26 @@ Notes:
 - For implementation-bearing tasks, include requirements for test updates in acceptance criteria.
 """,
         },
+        "acceptance_test_generator": {
+            "system": "You are a Senior QA Engineer and Test Architect. "
+                      "Generate acceptance test skeletons from requirements.\n" + COMMON_RULES,
+            "task": """
+Given the task acceptance criteria and project context, generate a test file that will verify each acceptance criterion.
+
+Rules:
+1. Each acceptance criterion → at least one test function (test_ prefix).
+2. Use pytest style with descriptive names: test_<feature>_<behavior>_<expected>.
+3. Include appropriate fixtures for setup/teardown.
+4. For error path criteria → generate tests that assert exceptions or error responses.
+5. For API criteria → generate integration-style tests with mock clients.
+6. Mark tests that require implementation with `pytest.skip("awaiting implementation")` in the body.
+7. Include docstrings mapping back to the acceptance criterion text.
+8. Generate parametrized tests when criteria imply multiple cases.
+9. The source_code field must contain the COMPLETE, runnable test file.
+
+Return JSON matching ACCEPTANCE_TEST_SCHEMA.
+""",
+        },
         "implementer": {
             "system": "You are a Senior Software Engineer. Implement ONE task at a time.\n" + COMMON_RULES,
             "task": """
@@ -158,6 +178,24 @@ Design principles:
 - Design for testability (dependency injection, clear interfaces).
 - Include error handling boundaries between components.
 - If PRD mentions persistence, include a database section with tables and relationships.
+""",
+        },
+        "api_spec_generator": {
+            "system": "You are an API Design Specialist. Generate OpenAPI 3.1 specifications from architecture contracts.\n" + COMMON_RULES,
+            "task": """
+Given the architecture's api_contracts and data_models, generate a complete OpenAPI 3.1 specification.
+
+Rules:
+1. Use OpenAPI 3.1.0 format.
+2. Each api_contract → one path+method entry.
+3. Each data_model → one components/schemas entry with proper JSON Schema types.
+4. Include request/response schemas referencing components via $ref.
+5. Include appropriate HTTP status codes (200, 201, 400, 404, 422, 500).
+6. Add error response schemas for 4xx/5xx.
+7. The spec_yaml field must contain the COMPLETE, valid OpenAPI YAML string.
+8. Use snake_case for operation IDs derived from method + path.
+
+Return JSON matching OPENAPI_SPEC_SCHEMA.
 """,
         },
         "reviewer": {

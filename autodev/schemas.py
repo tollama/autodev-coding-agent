@@ -346,6 +346,108 @@ REVIEW_SCHEMA = {
     "additionalProperties": False,
 }
 
+OPENAPI_SPEC_SCHEMA = {
+    "type": "object",
+    "required": ["openapi_version", "info", "paths", "spec_yaml"],
+    "properties": {
+        "openapi_version": {"type": "string", "pattern": "^3\\."},
+        "info": {
+            "type": "object",
+            "required": ["title", "version"],
+            "properties": {
+                "title": {"type": "string", "minLength": 1},
+                "version": {"type": "string", "minLength": 1},
+                "description": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+        "paths": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["path", "method", "summary", "responses"],
+                "properties": {
+                    "path": {"type": "string", "pattern": "^/"},
+                    "method": {"type": "string", "enum": ["get", "post", "put", "patch", "delete"]},
+                    "summary": {"type": "string"},
+                    "operation_id": {"type": "string"},
+                    "request_body_schema": {"type": "object"},
+                    "responses": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "required": ["status_code", "description"],
+                            "properties": {
+                                "status_code": {"type": "integer"},
+                                "description": {"type": "string"},
+                                "schema": {"type": "object"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                    "parameters": {"type": "array", "items": {"type": "object"}},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "additionalProperties": False,
+            },
+        },
+        "components_schemas": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["name", "schema"],
+                "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                    "schema": {"type": "object"},
+                },
+                "additionalProperties": False,
+            },
+        },
+        "spec_yaml": {"type": "string", "minLength": 20},
+    },
+    "additionalProperties": False,
+}
+
+ACCEPTANCE_TEST_SCHEMA = {
+    "type": "object",
+    "required": ["test_file", "test_cases", "source_code"],
+    "properties": {
+        "test_file": {"type": "string", "minLength": 1},
+        "test_cases": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": ["name", "description", "acceptance_ref", "test_type"],
+                "properties": {
+                    "name": {"type": "string", "pattern": "^test_"},
+                    "description": {"type": "string", "minLength": 5},
+                    "acceptance_ref": {"type": "string", "minLength": 1},
+                    "test_type": {"type": "string", "enum": ["unit", "integration", "contract", "error_path"]},
+                    "parameters": {"type": "array", "items": {"type": "object"}},
+                },
+                "additionalProperties": False,
+            },
+        },
+        "imports": {"type": "array", "items": {"type": "string"}},
+        "fixtures": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["name", "code"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "code": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+        },
+        "source_code": {"type": "string", "minLength": 10},
+    },
+    "additionalProperties": False,
+}
+
 CHANGESET_SCHEMA = {
   "type":"object",
   "required":["role","summary","changes","notes","handoff"],

@@ -8,9 +8,11 @@ llm:
     prd_analyst: 0.2
     prd_normalizer: 0.2
     planner: 0.4
+    acceptance_test_generator: 0.15
     implementer: 0.1
     fixer: 0.15
     architect: 0.3
+    api_spec_generator: 0.15
     reviewer: 0.15
 
   # -- Multi-model routing (optional) --

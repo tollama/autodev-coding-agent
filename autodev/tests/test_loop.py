@@ -218,6 +218,29 @@ MINIMAL_REVIEW_APPROVE = {
     "summary": "LGTM",
 }
 
+MINIMAL_ACCEPTANCE_TESTS = {
+    "test_file": "tests/test_acceptance.py",
+    "test_cases": [
+        {
+            "name": "test_placeholder",
+            "description": "Placeholder acceptance test",
+            "acceptance_ref": "AC-1",
+            "test_type": "unit",
+        }
+    ],
+    "imports": ["import pytest"],
+    "fixtures": [],
+    "source_code": "import pytest\n\ndef test_placeholder():\n    pytest.skip('awaiting implementation')\n",
+}
+
+MINIMAL_API_SPEC = {
+    "openapi_version": "3.1.0",
+    "info": {"title": "AutoDev API", "version": "1.0.0"},
+    "paths": [],
+    "components_schemas": [],
+    "spec_yaml": "openapi: '3.1.0'\ninfo:\n  title: AutoDev API\n  version: '1.0.0'\npaths: {}\n",
+}
+
 
 def _with_handoff_if_changeset(payload: Any) -> Any:
     if not isinstance(payload, dict):
@@ -241,6 +264,8 @@ def _with_handoff_if_changeset(payload: Any) -> Any:
 
 _AUTO_ROLE_RESPONSES: dict[str, dict[str, Any]] = {
     "prd_analyst": MINIMAL_PRD_ANALYSIS,
+    "acceptance_test_generator": MINIMAL_ACCEPTANCE_TESTS,
+    "api_spec_generator": MINIMAL_API_SPEC,
     "architect": MINIMAL_ARCHITECTURE,
     "reviewer": MINIMAL_REVIEW_APPROVE,
 }

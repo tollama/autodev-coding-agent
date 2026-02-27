@@ -1,5 +1,5 @@
 from jsonschema import validate  # type: ignore[import-untyped]
-from autodev.schemas import CHANGESET_SCHEMA, PLAN_SCHEMA, PRD_SCHEMA, PRD_ANALYSIS_SCHEMA
+from autodev.schemas import CHANGESET_SCHEMA, PLAN_SCHEMA, PRD_SCHEMA, PRD_ANALYSIS_SCHEMA, OPENAPI_SPEC_SCHEMA, ACCEPTANCE_TEST_SCHEMA
 
 
 def test_plan_schema_rejects_task_without_quality_expectations():
@@ -308,3 +308,129 @@ def test_prd_analysis_schema_rejects_missing_required():
         pass
     else:
         assert False, "Expected PRD_ANALYSIS_SCHEMA validation error"
+
+
+def test_acceptance_test_schema_accepts_valid_scaffold():
+    payload = {
+        "test_file": "tests/test_forecast_api.py",
+        "test_cases": [
+            {
+                "name": "test_forecast_returns_200_for_valid_input",
+                "description": "Verify forecast endpoint returns 200 with valid JSON body",
+                "acceptance_ref": "API returns 200 for valid forecast request",
+                "test_type": "integration",
+            },
+            {
+                "name": "test_forecast_returns_400_for_invalid_input",
+                "description": "Verify forecast endpoint returns 400 when required fields missing",
+                "acceptance_ref": "Return error with 400 status on invalid input",
+                "test_type": "error_path",
+                "parameters": [
+                    {"input": {}, "expected_status": 400},
+                    {"input": {"value": "not_a_number"}, "expected_status": 400},
+                ],
+            },
+        ],
+        "imports": ["import pytest", "from httpx import AsyncClient"],
+        "fixtures": [
+            {
+                "name": "client",
+                "code": "@pytest.fixture\nasync def client():\n    yield AsyncClient()\n",
+            }
+        ],
+        "source_code": "import pytest\n\ndef test_forecast_returns_200_for_valid_input():\n    pytest.skip('awaiting implementation')\n\ndef test_forecast_returns_400_for_invalid_input():\n    pytest.skip('awaiting implementation')\n",
+    }
+
+    validate(instance=payload, schema=ACCEPTANCE_TEST_SCHEMA)
+
+
+def test_acceptance_test_schema_rejects_invalid_test_name():
+    payload = {
+        "test_file": "tests/test_foo.py",
+        "test_cases": [
+            {
+                "name": "invalid_no_test_prefix",
+                "description": "Missing test_ prefix in function name",
+                "acceptance_ref": "AC-1",
+                "test_type": "unit",
+            }
+        ],
+        "source_code": "import pytest\n\ndef invalid_no_test_prefix():\n    pass\n",
+    }
+
+    try:
+        validate(instance=payload, schema=ACCEPTANCE_TEST_SCHEMA)
+    except Exception:
+        pass
+    else:
+        assert False, "Expected ACCEPTANCE_TEST_SCHEMA validation error for invalid test name"
+
+
+def test_acceptance_test_schema_rejects_missing_test_cases():
+    payload = {
+        "test_file": "tests/test_foo.py",
+        "source_code": "import pytest\n\ndef test_placeholder():\n    pass\n",
+    }
+
+    try:
+        validate(instance=payload, schema=ACCEPTANCE_TEST_SCHEMA)
+    except Exception:
+        pass
+    else:
+        assert False, "Expected ACCEPTANCE_TEST_SCHEMA validation error for missing test_cases"
+
+
+def test_openapi_spec_schema_accepts_valid_spec():
+    payload = {
+        "openapi_version": "3.1.0",
+        "info": {"title": "Forecast API", "version": "1.0.0", "description": "Forecast service"},
+        "paths": [
+            {
+                "path": "/api/forecast",
+                "method": "post",
+                "summary": "Create forecast",
+                "operation_id": "post_api_forecast",
+                "request_body_schema": {"type": "object", "properties": {"value": {"type": "number"}}},
+                "responses": [
+                    {"status_code": 200, "description": "Forecast result"},
+                    {"status_code": 400, "description": "Invalid input"},
+                ],
+                "tags": ["forecast"],
+            }
+        ],
+        "components_schemas": [
+            {
+                "name": "ForecastRequest",
+                "schema": {"type": "object", "properties": {"value": {"type": "number"}}},
+            }
+        ],
+        "spec_yaml": "openapi: '3.1.0'\ninfo:\n  title: Forecast API\n  version: '1.0.0'\npaths:\n  /api/forecast:\n    post:\n      summary: Create forecast\n",
+    }
+
+    validate(instance=payload, schema=OPENAPI_SPEC_SCHEMA)
+
+
+def test_openapi_spec_schema_accepts_empty_paths():
+    payload = {
+        "openapi_version": "3.1.0",
+        "info": {"title": "Empty API", "version": "0.1.0"},
+        "paths": [],
+        "spec_yaml": "openapi: '3.1.0'\ninfo:\n  title: Empty API\n  version: '0.1.0'\npaths: {}\n",
+    }
+
+    validate(instance=payload, schema=OPENAPI_SPEC_SCHEMA)
+
+
+def test_openapi_spec_schema_rejects_missing_spec_yaml():
+    payload = {
+        "openapi_version": "3.1.0",
+        "info": {"title": "Incomplete", "version": "1.0.0"},
+        "paths": [],
+    }
+
+    try:
+        validate(instance=payload, schema=OPENAPI_SPEC_SCHEMA)
+    except Exception:
+        pass
+    else:
+        assert False, "Expected OPENAPI_SPEC_SCHEMA validation error for missing spec_yaml"
