@@ -73,6 +73,9 @@ class EventType(str, Enum):
     # Config tuner
     CONFIG_TUNER_ANALYZED = "config_tuner.analyzed"
 
+    # Validator dependency graph
+    VALIDATOR_DEP_SKIPPED = "validator_dep.skipped"
+
 
 # ---------------------------------------------------------------------------
 # Data classes

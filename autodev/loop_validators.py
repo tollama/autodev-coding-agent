@@ -139,7 +139,11 @@ def _extract_fingerprint_digests(
 
 
 def _failed_validator_names(validation_rows: List[Dict[str, Any]]) -> List[str]:
-    return [row["name"] for row in validation_rows if not row["ok"]]
+    return [
+        row["name"]
+        for row in validation_rows
+        if not row["ok"] and row.get("status") != "skipped_dependency"
+    ]
 
 
 def _merge_validation_rows(
@@ -166,7 +170,12 @@ def _merge_validation_rows(
 
 
 def _validations_ok(validation_rows: List[Dict[str, Any]], soft_validators: set[str]) -> bool:
-    blocking = [row for row in validation_rows if row["name"] not in soft_validators]
+    blocking = [
+        row
+        for row in validation_rows
+        if row["name"] not in soft_validators
+        and row.get("status") != "skipped_dependency"
+    ]
     return all(row["ok"] for row in blocking)
 
 

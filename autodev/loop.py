@@ -95,6 +95,12 @@ from .parallel_fixer import (
 )
 from .smart_scope import apply_smart_scope, resolve_smart_scope_config
 from .config_tuner import generate_recommendations as _generate_tuner_recommendations
+from .validator_graph import (
+    resolve_validator_graph_config,
+    resolve_execution_order as _dep_resolve_order,
+    should_skip as _dep_should_skip,
+    make_skipped_result as _dep_make_skipped_result,
+)
 from .context_cache import IncrementalContextCache
 from .perf_baseline import record_and_check as _perf_baseline_check
 from .task_scheduler import (
@@ -1024,6 +1030,9 @@ async def run_autodev_enterprise(
     except Exception:
         logger.debug("config_tuner: failed to analyze previous run", exc_info=True)
 
+    # -- Validator dependency graph: early-exit on prerequisite failures -------
+    _validator_graph_config = resolve_validator_graph_config(quality_profile)
+
     def _cached_files_context(task_id: str, files: List[str], goal: str = "") -> Dict[str, str]:
         cache_key = f"{task_id}:{'|'.join(files)}"
         cached = task_context_cache.get(cache_key)
@@ -1246,7 +1255,52 @@ async def run_autodev_enterprise(
                 run_names = [name for name in run_set if name in failed_names]
                 if not run_names:
                     run_names = list(run_set)
-                if hasattr(validators, "run_one"):
+                if _validator_graph_config.enabled:
+                    # Dependency-aware repair re-run
+                    _dep_completed_r: Dict[str, Dict[str, Any]] = {}
+                    for _prev_r in previous_validation_rows:
+                        if _prev_r.get("ok"):
+                            _dep_completed_r[_prev_r["name"]] = _prev_r
+                    _repair_order = _dep_resolve_order(
+                        run_names, _ag_validator_stats, _validator_graph_config,
+                    )
+                    rerun_rows = []
+                    for name in _repair_order:
+                        _dskip, _dreason = _dep_should_skip(
+                            name, _dep_completed_r, _validator_graph_config, _effective_soft,
+                        )
+                        if _dskip:
+                            _sr = _dep_make_skipped_result(
+                                name, _dreason,
+                                _dreason.split("'")[1] if "'" in _dreason else "unknown",
+                            )
+                            rerun_rows.append(_sr)
+                            _dep_completed_r[name] = _sr
+                            trace.record(
+                                EventType.VALIDATOR_DEP_SKIPPED,
+                                task_id=task["id"],
+                                validator=name,
+                                reason=_dreason,
+                                iteration=loops + 1,
+                            )
+                        else:
+                            rerun_rows.append(
+                                Validators.serialize([
+                                    validators.run_one(
+                                        name,
+                                        audit_required=audit_required,
+                                        phase="per_task",
+                                        run_id=run_id,
+                                        request_id=request_id,
+                                        profile=profile,
+                                        task_id=task["id"],
+                                        iteration=loops + 1,
+                                    )
+                                ])[0]
+                            )
+                            _dep_completed_r[name] = rerun_rows[-1]
+                    validation_results = _merge_validation_rows(previous_validation_rows, rerun_rows, run_set)
+                elif hasattr(validators, "run_one"):
                     rerun_rows = []
                     for name in run_names:
                         rerun_rows.append(
@@ -1278,6 +1332,47 @@ async def run_autodev_enterprise(
                             iteration=loops + 1,
                         )
                     )
+            elif _validator_graph_config.enabled:
+                # First validation pass — dependency-aware execution
+                _dep_order = _dep_resolve_order(
+                    run_set, _ag_validator_stats, _validator_graph_config,
+                )
+                _dep_completed: Dict[str, Dict[str, Any]] = {}
+                _dep_results: List[Dict[str, Any]] = []
+                for _vname in _dep_order:
+                    _dskip, _dreason = _dep_should_skip(
+                        _vname, _dep_completed, _validator_graph_config, _effective_soft,
+                    )
+                    if _dskip:
+                        _sr = _dep_make_skipped_result(
+                            _vname, _dreason,
+                            _dreason.split("'")[1] if "'" in _dreason else "unknown",
+                        )
+                        _dep_results.append(_sr)
+                        _dep_completed[_vname] = _sr
+                        trace.record(
+                            EventType.VALIDATOR_DEP_SKIPPED,
+                            task_id=task["id"],
+                            validator=_vname,
+                            reason=_dreason,
+                            iteration=loops + 1,
+                        )
+                    else:
+                        _one_row = Validators.serialize([
+                            validators.run_one(
+                                _vname,
+                                audit_required=audit_required,
+                                phase="per_task",
+                                run_id=run_id,
+                                request_id=request_id,
+                                profile=profile,
+                                task_id=task["id"],
+                                iteration=loops + 1,
+                            )
+                        ])[0]
+                        _dep_results.append(_one_row)
+                        _dep_completed[_vname] = _one_row
+                validation_results = _dep_results
             else:
                 validation_results = Validators.serialize(
                     validators.run_all(
