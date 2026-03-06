@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import autodev.main as main
-import autodev.gui_mvp_server as gui_server
+import autodev.main as main  # noqa: E402
+import autodev.gui_mvp_server as gui_server  # noqa: E402
 
 
 def test_cli_dispatches_gui_subcommand(monkeypatch, tmp_path: Path) -> None:
