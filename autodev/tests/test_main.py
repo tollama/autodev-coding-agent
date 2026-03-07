@@ -10,6 +10,19 @@ if str(ROOT) not in sys.path:
 import autodev.main as main  # noqa: E402
 
 
+def test_cli_dispatches_autonomous_subcommand(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _fake_autonomous(argv):
+        captured["argv"] = list(argv)
+
+    monkeypatch.setattr(main, "autonomous_cli", _fake_autonomous)
+    monkeypatch.setattr(sys, "argv", ["autodev", "autonomous", "start", "--help"])
+
+    main.cli()
+    assert captured["argv"] == ["start", "--help"]
+
+
 def _build_fake_args(tmp_path: Path, cfg_name: str = "config.yaml"):
     cfg_path = tmp_path / cfg_name
     prd_path = tmp_path / "prd.md"

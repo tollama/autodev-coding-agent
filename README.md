@@ -399,6 +399,41 @@ Require manual confirmation before implementation:
 autodev --prd examples/PRD.md --out ./generated_runs --profile enterprise --interactive
 ```
 
+### Fully autonomous mode (unattended v1)
+Run end-to-end unattended loop (ingest → plan → execute → self-verify → bounded auto-fix retries → report):
+```bash
+autodev autonomous start --prd examples/PRD.md --out ./generated_runs --profile enterprise
+```
+
+Common policy overrides:
+```bash
+autodev autonomous start \
+  --prd examples/PRD.md \
+  --out ./generated_runs \
+  --profile enterprise \
+  --max-iterations 3 \
+  --time-budget-sec 3600 \
+  --workspace-allowlist "$(pwd)" \
+  --blocked-paths "$(pwd)/secrets"
+```
+
+Resume an autonomous session from saved state:
+```bash
+autodev autonomous start --resume-state --run-dir ./generated_runs/<run_dir> --prd examples/PRD.md --out ./generated_runs --profile enterprise
+```
+
+Inspect autonomous state:
+```bash
+autodev autonomous status --run-dir ./generated_runs/<run_dir>
+```
+
+Autonomous artifacts are written under the run directory:
+- `.autodev/autonomous_state.json`
+- `.autodev/autonomous_report.json`
+- `AUTONOMOUS_REPORT.md`
+
+See `docs/AUTONOMOUS_MODE.md` for detailed policy and operational behavior.
+
 ### GUI launcher (MVP)
 Hardened/default mode:
 ```bash
