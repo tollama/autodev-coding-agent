@@ -2,7 +2,7 @@
 
 ## Scope
 
-This plan reflects `main` after merges through **NXT-012**.
+This plan reflects `main` after merges through **NXT-013**, and includes **NXT-014 backlog grooming + priority re-rank**.
 Primary objective: keep local-simple operator workflow reliable, demoable, and RC handoff-ready on a single laptop.
 
 ## Current baseline (already merged)
@@ -19,28 +19,49 @@ Primary objective: keep local-simple operator workflow reliable, demoable, and R
 - NXT-010: One-command demo bootstrap (`make demo-bootstrap*`)
 - NXT-011: Local-simple operator runbook refresh
 - NXT-012: Overview/Validation/Processes empty/error/loading UX pass
+- NXT-013: Next-cut RC checklist + changelog draft
 
-## Next-week focus
+## NXT-014 outcome (this ticket)
 
-1. **RC readiness docs/process (NXT-013)**
-   - Add next-cut release-candidate checklist with explicit pass/fail gates.
-   - Add changelog draft artifact for RC notes handoff.
-   - Keep evidence placeholders explicit (tests/docs/known limits) so dry-run and final RC can share the same template.
+- Groomed backlog using demo-day findings and runbook failure branches.
+- Re-ranked carry-over follow-ups by operator impact and demo risk.
+- Converted carry-over work into actionable tickets with explicit metadata:
+  - priority
+  - owner role
+  - effort
+  - acceptance criteria
+  - recommended PR split
 
-2. **Workflow confidence checks**
-   - Continue using `make smoke-local-simple-e2e` for operator path smoke.
-   - Keep `make check-docs` in docs-only changes.
+## Next-wave priority stack (post NXT-014)
 
-3. **Handoff clarity**
-   - Keep local-simple (single-user) vs hardened mode (`autodev gui`) boundaries explicit.
-   - Keep RC dry-run command examples copy-paste ready.
+1. **NXT-015 (P0)** — RC evidence completeness preflight
+   - Why first: removes cut-time risk by preventing incomplete RC evidence bundles.
+2. **NXT-016 (P0)** — Local-simple startup diagnostics quick-check lane
+   - Why second: fastest way to reduce demo interruption when GUI/API boot path fails.
+3. **NXT-017 (P1)** — Processes triage UX follow-up (filtering + stale hints)
+   - Why third: improves operator recovery speed during stop/retry troubleshooting.
+4. **NXT-018 (P1)** — Artifact Viewer triage exports + docs consistency lint
+   - Why fourth: strengthens incident handoff and avoids docs drift across runbooks.
 
-## Definition of done (docs/workflow)
+Detailed ticket specs live in `docs/BACKLOG_NEXT_WEEK.md`.
 
-- Docs describe what operators can actually do today.
-- RC checklist includes clear pass/fail sections with evidence placeholders.
-- RC changelog draft exists and is ready to copy into `CHANGELOG.md` at cut time.
+## Workflow confidence checks
+
+- Continue using `make smoke-local-simple-e2e` for operator-path smoke validation.
+- Keep `make check-docs` mandatory for docs-only planning/process changes.
+- Keep RC dry-run command examples copy-paste ready from repo root.
+
+## Handoff clarity
+
+- Keep local-simple (single-user) vs hardened mode (`autodev gui`) boundaries explicit.
+- Keep planning docs synced with README and demo playbook known limits.
+
+## Definition of done (planning/workflow)
+
+- Plan and backlog are aligned on priority order and ownership.
+- Carry-over tickets have concrete acceptance + PR split guidance.
 - Active planning links point to this file and `docs/BACKLOG_NEXT_WEEK.md`.
+- Docs validation remains green (`make check-docs`).
 
 ## Related docs
 

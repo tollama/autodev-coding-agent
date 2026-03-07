@@ -2,18 +2,88 @@
 
 This backlog is the execution companion for `docs/PLAN_NEXT_WEEK.md`.
 
-## In progress / ready
+## Newly completed
 
-### NXT-013 — Next-cut RC checklist + changelog draft
+### NXT-013 — Next-cut RC checklist + changelog draft ✅ done
 
 - **Goal:** Prepare docs/process artifacts for release-candidate dry-run and cut handoff.
 - **Scope:** docs-only updates (no product code changes).
-- **Acceptance:**
-  - next-cut RC checklist includes tests/docs/known-limits/changelog evidence placeholders
-  - checklist has explicit pass/fail gate sections and go/no-go outcome block
-  - RC dry-run command examples are copy-paste ready
-  - changelog draft file exists and maps changes to next cut categories
-  - docs validation command documented/used (`make check-docs`)
+- **Completion evidence:**
+  - `docs/RC_NEXT_CUT_CHECKLIST.md`
+  - `docs/CHANGELOG_DRAFT_NEXT_CUT.md`
+
+### NXT-014 — Backlog grooming from demo findings + priority re-rank ✅ done
+
+- **Goal:** Convert demo follow-up work into prioritized, implementation-ready next-wave tickets.
+- **Scope:** docs/planning only (no product code changes).
+- **Completion evidence:**
+  - `docs/PLAN_NEXT_WEEK.md` (priority stack update)
+  - `docs/BACKLOG_NEXT_WEEK.md` (actionable ticket metadata)
+
+## Priority-ranked carry-over tickets (actionable)
+
+> Ticket format for all carry-over items
+> - **Priority:** P0 / P1 / P2
+> - **Owner role:** backend / frontend / platform / docs
+> - **Effort:** S / M / L
+> - **Acceptance criteria:** testable outcomes
+> - **PR split:** recommended patch boundaries for reviewability
+
+### NXT-015 — RC evidence completeness preflight
+
+- **Priority:** P0
+- **Owner role:** platform
+- **Effort:** S
+- **Scope:** Add a lightweight preflight script/check that blocks RC GO when checklist evidence fields remain placeholders.
+- **Acceptance criteria:**
+  - Preflight flags unresolved placeholder markers (`TODO`, empty paths, unchecked pass/fail blocks) in `docs/RC_NEXT_CUT_CHECKLIST.md`.
+  - Command returns non-zero on missing required evidence and prints actionable fix hints.
+  - Preflight usage is documented in RC checklist and README release flow section.
+- **PR split:**
+  1) Script + unit test/smoke check
+  2) RC checklist/README docs wiring
+
+### NXT-016 — Local-simple startup diagnostics quick-check lane
+
+- **Priority:** P0
+- **Owner role:** platform
+- **Effort:** M
+- **Scope:** Reduce demo-time startup failures by adding a one-command diagnostics lane for host/port/dependency/API sanity.
+- **Acceptance criteria:**
+  - One command validates Python/make/curl, port availability, and essential endpoints (`/healthz`, `/api/runs`, `/api/gui/context`).
+  - Failures map to short recovery guidance (port conflict, missing fixtures, server not up).
+  - `docs/DEMO_PLAYBOOK.md` pre-demo checklist points to this lane.
+- **PR split:**
+  1) Diagnostics command/script
+  2) Demo playbook + local-simple docs integration
+
+### NXT-017 — Processes triage UX follow-up (filtering + stale hints)
+
+- **Priority:** P1
+- **Owner role:** frontend
+- **Effort:** M
+- **Scope:** Improve operator recovery speed in the Processes tab during stop/retry troubleshooting.
+- **Acceptance criteria:**
+  - Processes list supports failed/running/stale quick filters without full page reload.
+  - Detail view highlights most recent transition + stale-age hint when updates are old.
+  - Empty/error states remain explicit and include next action hints.
+- **PR split:**
+  1) Frontend state/filter UX
+  2) Copy/docs updates for process troubleshooting flow
+
+### NXT-018 — Artifact Viewer triage exports + docs consistency lint
+
+- **Priority:** P1
+- **Owner role:** backend
+- **Effort:** M
+- **Scope:** Strengthen triage handoff by making artifact exports easier and keeping known-limits statements in sync across docs.
+- **Acceptance criteria:**
+  - Artifact Viewer API/UX supports reliable copy/download path for failed-validator payload handoff.
+  - Add docs consistency check for known-limits statements between README and local-simple/runbook docs.
+  - `make check-docs` (or companion docs check) fails on drift with clear diff/hint output.
+- **PR split:**
+  1) Artifact handoff improvement
+  2) Docs consistency checker + docs updates
 
 ## Completed baseline (for context)
 
@@ -29,12 +99,8 @@ This backlog is the execution companion for `docs/PLAN_NEXT_WEEK.md`.
 - NXT-010 ✅ one-command demo bootstrap lane
 - NXT-011 ✅ local-simple operator runbook refresh
 - NXT-012 ✅ explicit empty/error/loading UX pass for Overview/Validation/Processes
-
-## Candidate follow-ups (post NXT-013)
-
-- Add a lightweight script that validates RC checklist evidence-path fields are filled before release tag.
-- Add an optional `make rc-dry-run` alias that wraps the documented API dry-run command + response assertions.
-- Add docs freshness checks to keep known-limit statements aligned across README and runbooks.
+- NXT-013 ✅ next-cut RC checklist + changelog draft
+- NXT-014 ✅ backlog grooming + priority re-rank from demo findings
 
 ## Related docs
 
