@@ -340,7 +340,7 @@ Minimum backend capabilities:
 
 - Add run comparison view.
 - Add event timeline from run trace.
-- Add failure triage shortcuts and direct links.
+- Add failure triage shortcuts and direct links. ✅ (local-simple polish A: validator → artifact viewer deep-link)
 - Harden error handling for missing/partial artifacts.
 
 ## Week 3–4 (Evaluator/developer depth)

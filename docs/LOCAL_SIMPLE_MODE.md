@@ -45,6 +45,7 @@ autodev --prd examples/PRD.md --out ./generated_runs --profile local_simple
   - Retry: `POST /api/runs/retry` (`process_id` or selected `run_id` fallback)
 - On mutating-action failures, the status area shows concise **Likely fixes** (deterministic rule-based hints).
 - Compare + Trends are available in the Compare tab.
+- Processes tab shows active/recent process list, retry-chain context, run linkage, transition history, and stop/retry controls.
 
 ## When to switch to hardened mode
 

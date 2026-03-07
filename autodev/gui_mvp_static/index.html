@@ -39,6 +39,7 @@
           <button class="tab is-active" data-tab="overview">Overview</button>
           <button class="tab" data-tab="validation">Validation</button>
           <button class="tab" data-tab="compare">Compare</button>
+          <button class="tab" data-tab="processes">Processes</button>
         </div>
 
         <div id="tab-overview" class="tab-content is-active">
@@ -148,6 +149,25 @@
               <div id="validationTriageBody"></div>
             </div>
             <div id="validationTriageEmpty" class="empty">Click a failed validator to open task/artifact context.</div>
+
+            <div class="artifact-viewer-shell">
+              <h4>Artifact Viewer (.autodev/*)</h4>
+              <div class="artifact-viewer-controls">
+                <input id="artifactPathInput" type="text" placeholder=".autodev/task_final_last_validation.json" />
+                <button id="artifactOpenBtn" type="button">Open</button>
+                <button id="artifactReloadBtn" type="button">Reload</button>
+                <button id="artifactClearBtn" type="button">Clear</button>
+              </div>
+              <div id="artifactViewerEmpty" class="empty">Select a failed validator or enter a .autodev artifact path.</div>
+              <div id="artifactViewerPanel" class="artifact-viewer-panel hidden">
+                <div class="artifact-viewer-header">
+                  <span class="artifact-viewer-path">Path: <code id="artifactViewerPathLabel">-</code></span>
+                  <span id="artifactViewerMeta" class="muted"></span>
+                </div>
+                <div id="artifactViewerError" class="empty error-text hidden"></div>
+                <pre id="artifactViewerContent" class="json-panel artifact-viewer-content"></pre>
+              </div>
+            </div>
           </section>
 
           <section>
@@ -187,6 +207,54 @@
             </div>
             <div id="trendSummary" class="empty">No trend data yet.</div>
             <pre id="trendPanel" class="json-panel hidden"></pre>
+          </section>
+        </div>
+
+        <div id="tab-processes" class="tab-content">
+          <section>
+            <h3>Run Processes</h3>
+            <div class="compare-controls">
+              <select id="processStateFilter" aria-label="Filter process state">
+                <option value="all">All states</option>
+                <option value="running">Running</option>
+                <option value="stopping">Stopping</option>
+                <option value="exited">Exited</option>
+                <option value="terminated">Terminated</option>
+                <option value="killed">Killed</option>
+              </select>
+              <input id="processRunIdFilter" type="text" placeholder="Filter by run_id" />
+              <button id="processRefreshBtn" type="button">Refresh</button>
+              <span id="processStatusLine" class="muted"></span>
+            </div>
+
+            <div class="process-layout">
+              <div>
+                <div id="processList" class="list"></div>
+                <div id="processListEmpty" class="empty">No tracked processes yet.</div>
+                <div id="processListError" class="empty error-text hidden"></div>
+              </div>
+
+              <div class="process-detail">
+                <div id="processDetailEmpty" class="empty">Select a process to inspect details/history.</div>
+                <div id="processDetailError" class="empty error-text hidden"></div>
+                <div id="processDetailCard" class="hidden">
+                  <div class="detail-header">
+                    <h4 id="processDetailTitle">Process</h4>
+                    <span id="processStateChip" class="chip chip-unknown">UNKNOWN</span>
+                  </div>
+                  <div id="processMeta" class="meta-grid"></div>
+                  <div id="processRetrySummary" class="empty subtle"></div>
+                  <div class="run-actions">
+                    <button id="processStopBtn" type="button">Stop process</button>
+                    <button id="processRetryBtn" type="button">Retry process</button>
+                    <button id="processSelectRunBtn" type="button">Open linked run</button>
+                  </div>
+                  <h4>Transition history</h4>
+                  <div id="processHistory" class="timeline-list"></div>
+                  <div id="processHistoryEmpty" class="empty">No transition history.</div>
+                </div>
+              </div>
+            </div>
           </section>
         </div>
       </section>

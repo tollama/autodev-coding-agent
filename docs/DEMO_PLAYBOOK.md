@@ -26,6 +26,8 @@ References:
 ### Data
 - [ ] At least 3 runs available (`ok`, `failed`, `running/partial`) in runs root
 - [ ] If local runs are missing, generate fixtures: `python3 scripts/showoff_seed_fixtures.py --clean`
+- [ ] Generate local scorecard snapshot: `make demo-scorecard`
+- [ ] Confirm `artifacts/demo-day/demo_scorecard_latest.{md,json}` exists
 
 ### Server sanity
 - [ ] `autodev gui --runs-root ./generated_runs --host 127.0.0.1 --port 8787`
@@ -35,6 +37,29 @@ References:
 ### Backup assets
 - [ ] Keep one screenshot of dashboard and run detail as fallback
 - [ ] Keep one pre-recorded 60s terminal output snippet as hard fallback
+
+### Demo scorecard command (operator quick use)
+
+```bash
+# one-command local report generation
+make demo-scorecard
+
+# direct script usage (optional)
+python3 scripts/demo_scorecard.py \
+  --runs-root ./generated_runs \
+  --output-dir ./artifacts/demo-day \
+  --latest 5
+```
+
+Outputs:
+- `artifacts/demo-day/demo_scorecard_latest.md` (demo script notes)
+- `artifacts/demo-day/demo_scorecard_latest.json` (automation payload)
+
+Report highlights:
+- Latest run status/profile/model + key validator totals
+- Blockers and failed validators snapshot
+- Previous→latest delta summary (status/totals/blockers/validator changes)
+- Trends snapshot (status mix, pass rate, top failing validators/blockers)
 
 ---
 

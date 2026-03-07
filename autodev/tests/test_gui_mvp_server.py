@@ -330,6 +330,81 @@ def test_gui_context_endpoint_defaults(gui_server):
     assert body["api"]["run_controls"] == ["start", "resume", "stop", "retry"]
 
 
+def test_artifact_read_endpoint_returns_json_payload(gui_server):
+    base_url, runs_root = gui_server
+    run = runs_root / "run-artifact"
+    _write_json(run / ".autodev" / "run_metadata.json", {"run_id": "run-artifact"})
+    _write_json(run / ".autodev" / "task_final_last_validation.json", {"validation": [{"name": "ruff", "ok": False}]})
+
+    status, body = _get_json(
+        f"{base_url}/api/runs/run-artifact/artifacts/read?path=.autodev/task_final_last_validation.json"
+    )
+
+    assert status == 200
+    assert body["content_type"] == "application/json"
+    assert body["content"]["validation"][0]["name"] == "ruff"
+    assert body["path"] == ".autodev/task_final_last_validation.json"
+
+
+def test_artifact_read_endpoint_preserves_typed_malformed_json_error(gui_server):
+    base_url, runs_root = gui_server
+    run = runs_root / "run-bad"
+    _write_json(run / ".autodev" / "run_metadata.json", {"run_id": "run-bad"})
+    bad = run / ".autodev" / "plan.json"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text('{"tasks": [', encoding="utf-8")
+
+    status, body = _get_json(f"{base_url}/api/runs/run-bad/artifacts/read?path=plan.json")
+
+    assert status == 200
+    assert body["content_type"] == "application/json"
+    assert body["content"] is None
+    assert body["error"]["kind"] == "artifact_json_error"
+    assert body["error"]["code"] == "artifact_json_malformed"
+
+
+def test_artifact_read_endpoint_truncates_and_reports_typed_error(gui_server):
+    base_url, runs_root = gui_server
+    run = runs_root / "run-trunc"
+    _write_json(run / ".autodev" / "run_metadata.json", {"run_id": "run-trunc"})
+    _write_json(run / ".autodev" / "plan.json", {"tasks": [{"id": "a", "note": "x" * 200}]})
+
+    status, body = _get_json(
+        f"{base_url}/api/runs/run-trunc/artifacts/read?path=plan.json&max_bytes=32"
+    )
+
+    assert status == 200
+    assert body["truncated"] is True
+    assert body["content"] is None
+    assert body["error"]["code"] == "artifact_json_truncated"
+
+
+def test_artifact_read_endpoint_rejects_invalid_query(gui_server):
+    base_url, runs_root = gui_server
+    run = runs_root / "run-invalid"
+    _write_json(run / ".autodev" / "run_metadata.json", {"run_id": "run-invalid"})
+
+    missing_status, missing_body = _get_json(f"{base_url}/api/runs/run-invalid/artifacts/read")
+    assert missing_status == 400
+    assert missing_body["error"]["code"] == "missing_artifact_path"
+
+    invalid_status, invalid_body = _get_json(
+        f"{base_url}/api/runs/run-invalid/artifacts/read?path=../../etc/passwd"
+    )
+    assert invalid_status == 422
+    assert invalid_body["error"]["code"] == "invalid_artifact_request"
+
+
+def test_artifact_read_endpoint_returns_404_for_unknown_run(gui_server):
+    base_url, _ = gui_server
+
+    status, body = _get_json(
+        f"{base_url}/api/runs/not-found/artifacts/read?path=.autodev/task_quality_index.json"
+    )
+    assert status == 404
+    assert body["error"]["code"] == "artifact_not_found"
+
+
 def test_quality_trends_aggregates_validators_and_blockers(tmp_path):
     run_a = tmp_path / "run-a"
     _write_json(
@@ -562,6 +637,16 @@ def _post_json(url: str, payload: dict, headers: dict[str, str] | None = None):
 
     try:
         with request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            return resp.status, body
+    except error.HTTPError as exc:
+        body = json.loads(exc.read().decode("utf-8"))
+        return exc.code, body
+
+
+def _get_json(url: str):
+    try:
+        with request.urlopen(url, timeout=5) as resp:
             body = json.loads(resp.read().decode("utf-8"))
             return resp.status, body
     except error.HTTPError as exc:
@@ -912,6 +997,23 @@ def test_process_read_endpoints_list_detail_history(gui_server, tmp_path, monkey
     assert resp.status == 200
     assert history_body["process_id"] == process_id
     assert [row["state"] for row in history_body["history"]][:2] == ["spawned", "running"]
+
+
+def test_process_panel_static_contract(gui_server):
+    base_url, _ = gui_server
+
+    with request.urlopen(f"{base_url}/index.html", timeout=5) as resp:
+        index_html = resp.read().decode("utf-8")
+    assert 'data-tab="processes"' in index_html
+    assert 'id="tab-processes"' in index_html
+    assert 'id="processList"' in index_html
+    assert 'id="processStopBtn"' in index_html
+
+    with request.urlopen(f"{base_url}/app.js", timeout=5) as resp:
+        app_js = resp.read().decode("utf-8")
+    assert "/api/processes?" in app_js
+    assert "/api/processes/${encodeURIComponent(state.selectedProcessId)}" in app_js
+    assert "function initProcessControls()" in app_js
 
 
 def test_retry_endpoint_supports_run_id_target(gui_server, tmp_path, monkeypatch):

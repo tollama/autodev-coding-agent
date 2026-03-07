@@ -23,6 +23,18 @@ const state = {
   healthSnapshot: null,
   lastProcessId: '',
   trendPayload: null,
+  artifactViewerPath: '',
+  artifactViewerPayload: null,
+  artifactViewerError: '',
+  artifactViewerLoading: false,
+  artifactViewerRequestedBy: '',
+  processes: [],
+  selectedProcessId: null,
+  selectedProcessDetail: null,
+  selectedProcessHistory: [],
+  processFilterState: 'all',
+  processFilterRunId: '',
+  processListError: '',
 };
 
 const PHASE_COLORS = {
@@ -148,6 +160,43 @@ const mock = {
       metadata: { profile: 'enterprise', model: 'mock-model-v2' },
     },
   },
+  processes: [
+    {
+      process_id: 'proc-mock-001',
+      action: 'start',
+      pid: 12345,
+      state: 'running',
+      retry_of: null,
+      retry_root: 'proc-mock-001',
+      retry_attempt: 1,
+      run_link: { run_id: 'mock-run-001', out: './generated_runs/mock-run-001' },
+      started_at: new Date(Date.now() - 45_000).toISOString(),
+      returncode: null,
+      stop_reason: null,
+      transitions: [
+        { at: new Date(Date.now() - 45_000).toISOString(), state: 'spawned', detail: { pid: 12345 } },
+        { at: new Date(Date.now() - 44_500).toISOString(), state: 'running' },
+      ],
+    },
+    {
+      process_id: 'proc-mock-002',
+      action: 'retry',
+      pid: 12346,
+      state: 'exited',
+      retry_of: 'proc-mock-001',
+      retry_root: 'proc-mock-001',
+      retry_attempt: 2,
+      run_link: { run_id: 'mock-run-001', out: './generated_runs/mock-run-001' },
+      started_at: new Date(Date.now() - 120_000).toISOString(),
+      returncode: 0,
+      stop_reason: null,
+      transitions: [
+        { at: new Date(Date.now() - 120_000).toISOString(), state: 'spawned', detail: { pid: 12346 } },
+        { at: new Date(Date.now() - 119_500).toISOString(), state: 'running' },
+        { at: new Date(Date.now() - 90_000).toISOString(), state: 'exited', detail: { returncode: 0 } },
+      ],
+    },
+  ],
 };
 
 const el = (id) => document.getElementById(id);
@@ -164,6 +213,24 @@ function setStatusChip(status) {
   const normalized = (status || 'unknown').toLowerCase();
   chip.className = `chip chip-${normalized}`;
   chip.textContent = normalized.toUpperCase();
+}
+
+function setProcessStateChip(status) {
+  const chip = el('processStateChip');
+  if (!chip) return;
+  const normalized = (status || 'unknown').toLowerCase();
+  chip.className = `chip chip-${normalized}`;
+  chip.textContent = normalized.toUpperCase();
+}
+
+function isProcessActive(status) {
+  return ['running', 'spawned', 'stopping'].includes(String(status || '').toLowerCase());
+}
+
+function normalizeProcessStateFilter(raw) {
+  const val = String(raw || '').trim().toLowerCase();
+  if (!val || val === 'all') return '';
+  return val;
 }
 
 function activateTab(tabName) {
@@ -395,7 +462,7 @@ function setRunControlHints(hints) {
 }
 
 function selectedRunValidatorHint() {
-  const rows = normalizeValidationRows(state.selectedDetail || {});
+  const rows = normalizeValidationRows(state.detail || {});
   const failed = rows
     .filter((row) => ['failed', 'soft_fail'].includes(row.status))
     .map((row) => String(row.name || '').trim())
@@ -453,6 +520,7 @@ function deriveRunControlHints(action, payload) {
 function updateProcessIdInput(processId) {
   if (!processId) return;
   state.lastProcessId = processId;
+  state.selectedProcessId = processId;
   const input = el('controlProcessId');
   if (input && !input.value) {
     input.value = processId;
@@ -759,6 +827,159 @@ function renderValidationSummaryChips(rows, filteredRows) {
   });
 }
 
+function clearArtifactViewerState({ preservePath = false } = {}) {
+  if (!preservePath) {
+    state.artifactViewerPath = '';
+  }
+  state.artifactViewerPayload = null;
+  state.artifactViewerError = '';
+  state.artifactViewerLoading = false;
+  state.artifactViewerRequestedBy = '';
+}
+
+function renderArtifactViewer() {
+  const panel = el('artifactViewerPanel');
+  const empty = el('artifactViewerEmpty');
+  const errorNode = el('artifactViewerError');
+  const contentNode = el('artifactViewerContent');
+  const pathNode = el('artifactViewerPathLabel');
+  const metaNode = el('artifactViewerMeta');
+  const pathInput = el('artifactPathInput');
+
+  if (!panel || !empty || !errorNode || !contentNode || !pathNode || !metaNode) {
+    return;
+  }
+
+  if (pathInput && pathInput.value !== state.artifactViewerPath) {
+    pathInput.value = state.artifactViewerPath;
+  }
+
+  pathNode.textContent = state.artifactViewerPath || '-';
+  if (state.artifactViewerLoading) {
+    panel.classList.remove('hidden');
+    empty.classList.add('hidden');
+    errorNode.classList.add('hidden');
+    metaNode.textContent = 'Loading artifact…';
+    contentNode.textContent = '';
+    return;
+  }
+
+  if (state.artifactViewerError) {
+    panel.classList.remove('hidden');
+    empty.classList.add('hidden');
+    errorNode.classList.remove('hidden');
+    errorNode.textContent = state.artifactViewerError;
+    metaNode.textContent = state.artifactViewerRequestedBy
+      ? `requested by ${state.artifactViewerRequestedBy}`
+      : 'Artifact read failed';
+    contentNode.textContent = '';
+    return;
+  }
+
+  const payload = state.artifactViewerPayload;
+  if (!payload) {
+    panel.classList.add('hidden');
+    empty.classList.remove('hidden');
+    empty.textContent = 'Select a failed validator or enter a .autodev artifact path.';
+    errorNode.classList.add('hidden');
+    metaNode.textContent = '';
+    contentNode.textContent = '';
+    return;
+  }
+
+  panel.classList.remove('hidden');
+  empty.classList.add('hidden');
+  errorNode.classList.add('hidden');
+
+  const metaParts = [payload.content_type || 'text/plain'];
+  if (payload.truncated) {
+    metaParts.push('truncated');
+  }
+  if (payload.error?.code) {
+    metaParts.push(`error=${payload.error.code}`);
+  }
+  if (state.artifactViewerRequestedBy) {
+    metaParts.push(`requested by ${state.artifactViewerRequestedBy}`);
+  }
+  metaNode.textContent = metaParts.join(' • ');
+
+  if (payload.error?.kind === 'artifact_json_error' && payload.content == null) {
+    const typed = payload.error;
+    const detail = [`${typed.code || 'artifact_json_error'}: ${typed.message || 'Unable to parse JSON'}`];
+    if (typed.line != null && typed.column != null) {
+      detail.push(`line=${typed.line}, column=${typed.column}`);
+    }
+    if (typed.position != null) {
+      detail.push(`position=${typed.position}`);
+    }
+    contentNode.textContent = detail.join('\n');
+    return;
+  }
+
+  if (payload.content_type === 'application/json' && payload.content !== undefined) {
+    contentNode.textContent = JSON.stringify(payload.content, null, 2);
+    return;
+  }
+
+  if (typeof payload.content === 'string') {
+    contentNode.textContent = payload.content;
+    return;
+  }
+
+  contentNode.textContent = payload.content == null ? '' : JSON.stringify(payload.content, null, 2);
+}
+
+async function fetchJsonWithPayload(url) {
+  const res = await fetch(url);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ApiError(friendlyApiError(body, `${url} -> ${res.status}`), body);
+  }
+  return body;
+}
+
+async function openArtifactInViewer(path, { source = '', autoFocus = true } = {}) {
+  const normalizedPath = String(path || '').trim();
+  if (!normalizedPath) {
+    clearArtifactViewerState();
+    state.artifactViewerError = 'artifact path is required';
+    renderArtifactViewer();
+    return;
+  }
+
+  if (!state.selectedRunId || state.useMock) {
+    clearArtifactViewerState({ preservePath: true });
+    state.artifactViewerPath = normalizedPath;
+    state.artifactViewerError = 'artifact viewer requires a selected real run (mock mode unsupported).';
+    state.artifactViewerRequestedBy = source;
+    renderArtifactViewer();
+    return;
+  }
+
+  state.artifactViewerPath = normalizedPath;
+  state.artifactViewerPayload = null;
+  state.artifactViewerError = '';
+  state.artifactViewerLoading = true;
+  state.artifactViewerRequestedBy = source;
+  renderArtifactViewer();
+
+  const query = new URLSearchParams({ path: normalizedPath, max_bytes: '512000' }).toString();
+  try {
+    const payload = await fetchJsonWithPayload(`/api/runs/${encodeURIComponent(state.selectedRunId)}/artifacts/read?${query}`);
+    state.artifactViewerPayload = payload;
+    state.artifactViewerError = '';
+  } catch (err) {
+    state.artifactViewerPayload = null;
+    state.artifactViewerError = err?.message || 'artifact read failed';
+  } finally {
+    state.artifactViewerLoading = false;
+    renderArtifactViewer();
+    if (autoFocus) {
+      activateTab('validation');
+    }
+  }
+}
+
 function renderValidationTriageContext(context, allRows) {
   const panel = el('validationTriagePanel');
   const empty = el('validationTriageEmpty');
@@ -797,7 +1018,16 @@ function renderValidationTriageContext(context, allRows) {
   artifactList.className = 'triage-list';
   artifacts.forEach((path) => {
     const li = document.createElement('li');
-    li.innerHTML = `<code>${escapeHtml(path)}</code>`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'triage-link-btn triage-artifact-btn';
+    btn.innerHTML = `<code>${escapeHtml(path)}</code>`;
+    btn.addEventListener('click', () => {
+      void openArtifactInViewer(path, {
+        source: `validator=${context.name}`,
+      });
+    });
+    li.appendChild(btn);
     artifactList.appendChild(li);
   });
   if (artifacts.length) {
@@ -959,6 +1189,12 @@ function renderValidationPanels(detail) {
               artifact_path: row.artifact_path,
             };
             renderValidationTriageContext(state.triageContext, rows);
+            if (row.artifact_path) {
+              void openArtifactInViewer(row.artifact_path, {
+                source: `validator=${row.name}`,
+                autoFocus: false,
+              });
+            }
           });
         }
 
@@ -1302,6 +1538,317 @@ async function refreshComparison({ silent = false } = {}) {
   }
 }
 
+function processRetrySummary(process) {
+  if (!process || typeof process !== 'object') {
+    return 'No retry-chain metadata.';
+  }
+
+  const root = String(process.retry_root || process.process_id || '').trim();
+  const attempt = Number(process.retry_attempt || 1);
+  const chain = state.processes.filter((row) => String(row.retry_root || row.process_id || '') === root);
+  const maxAttempt = chain.reduce((acc, row) => Math.max(acc, Number(row.retry_attempt || 1)), 1);
+
+  return `chain=${root || '-'} • attempt=${attempt}/${maxAttempt} • processes in chain=${chain.length || 1}`;
+}
+
+function renderProcessList(processes) {
+  const list = el('processList');
+  const empty = el('processListEmpty');
+  const error = el('processListError');
+  if (!list || !empty || !error) return;
+
+  list.innerHTML = '';
+  error.textContent = state.processListError || '';
+  error.classList.toggle('hidden', !state.processListError);
+
+  if (state.processListError) {
+    empty.classList.add('hidden');
+    return;
+  }
+
+  if (!Array.isArray(processes) || !processes.length) {
+    empty.classList.remove('hidden');
+    return;
+  }
+
+  empty.classList.add('hidden');
+
+  processes.forEach((process) => {
+    const id = String(process.process_id || '-');
+    const runId = String(process.run_link?.run_id || '-');
+    const item = document.createElement('button');
+    item.className = `list-item process-item ${state.selectedProcessId === id ? 'is-active' : ''}`;
+    item.innerHTML = `
+      <div class="title">${escapeHtml(id)}</div>
+      <div class="meta">state=${escapeHtml(process.state || 'unknown')} • action=${escapeHtml(process.action || '-')}</div>
+      <div class="meta">run=${escapeHtml(runId)} • attempt=${Number(process.retry_attempt || 1)}</div>
+    `;
+    item.addEventListener('click', async () => {
+      await selectProcess(id);
+      renderProcessList(state.processes);
+    });
+    list.appendChild(item);
+  });
+}
+
+function renderProcessDetail(process, history) {
+  const card = el('processDetailCard');
+  const empty = el('processDetailEmpty');
+  const error = el('processDetailError');
+  const title = el('processDetailTitle');
+  const meta = el('processMeta');
+  const summary = el('processRetrySummary');
+  const historyNode = el('processHistory');
+  const historyEmpty = el('processHistoryEmpty');
+  const stopBtn = el('processStopBtn');
+  const retryBtn = el('processRetryBtn');
+  const selectRunBtn = el('processSelectRunBtn');
+
+  if (!card || !empty || !error || !title || !meta || !summary || !historyNode || !historyEmpty) return;
+
+  error.classList.add('hidden');
+  error.textContent = '';
+
+  if (!process) {
+    card.classList.add('hidden');
+    empty.classList.remove('hidden');
+    return;
+  }
+
+  card.classList.remove('hidden');
+  empty.classList.add('hidden');
+
+  title.textContent = `Process: ${process.process_id || '-'}`;
+  setProcessStateChip(process.state || 'unknown');
+
+  const runLink = process.run_link || {};
+  const rows = [
+    ['Process ID', process.process_id || '-'],
+    ['State', process.state || 'unknown'],
+    ['Action', process.action || '-'],
+    ['PID', process.pid ?? '-'],
+    ['Started', formatTime(process.started_at)],
+    ['Run ID', runLink.run_id || '-'],
+    ['Run Out', runLink.out || '-'],
+    ['Return code', process.returncode ?? '-'],
+    ['Stop reason', process.stop_reason || '-'],
+    ['Retry of', process.retry_of || '-'],
+    ['Retry root', process.retry_root || '-'],
+    ['Retry attempt', process.retry_attempt ?? '-'],
+  ];
+
+  meta.innerHTML = '';
+  rows.forEach(([label, value]) => {
+    const item = document.createElement('div');
+    item.className = 'meta-item';
+    item.innerHTML = `<div class="meta-label">${escapeHtml(label)}</div><div class="meta-value">${escapeHtml(String(value))}</div>`;
+    meta.appendChild(item);
+  });
+
+  summary.textContent = processRetrySummary(process);
+
+  if (stopBtn) {
+    stopBtn.disabled = !isProcessActive(process.state);
+  }
+  if (retryBtn) {
+    retryBtn.disabled = !process.process_id;
+  }
+  if (selectRunBtn) {
+    selectRunBtn.disabled = !runLink.run_id;
+  }
+
+  historyNode.innerHTML = '';
+  const rowsHistory = Array.isArray(history) ? history : [];
+  if (!rowsHistory.length) {
+    historyEmpty.classList.remove('hidden');
+  } else {
+    historyEmpty.classList.add('hidden');
+    rowsHistory.forEach((entry) => {
+      const row = document.createElement('div');
+      row.className = 'timeline-row';
+      const detail = entry?.detail && typeof entry.detail === 'object'
+        ? Object.entries(entry.detail).map(([k, v]) => `${k}=${v}`).join(', ')
+        : '';
+      row.innerHTML = `
+        <span class="timeline-dot"></span>
+        <div>
+          <div><strong>${escapeHtml(String(entry.state || 'unknown'))}</strong> • ${escapeHtml(formatTime(entry.at))}</div>
+          ${detail ? `<div class="muted">${escapeHtml(detail)}</div>` : ''}
+        </div>
+      `;
+      historyNode.appendChild(row);
+    });
+  }
+}
+
+async function selectProcess(processId) {
+  state.selectedProcessId = processId || null;
+  if (!state.selectedProcessId) {
+    state.selectedProcessDetail = null;
+    state.selectedProcessHistory = [];
+    renderProcessDetail(null, []);
+    return;
+  }
+
+  try {
+    let detail;
+    let historyPayload;
+    if (state.useMock) {
+      detail = state.processes.find((row) => row.process_id === state.selectedProcessId) || null;
+      historyPayload = { history: detail?.transitions || [] };
+    } else {
+      [detail, historyPayload] = await Promise.all([
+        fetchJson(`/api/processes/${encodeURIComponent(state.selectedProcessId)}`),
+        fetchJson(`/api/processes/${encodeURIComponent(state.selectedProcessId)}/history`),
+      ]);
+    }
+
+    state.selectedProcessDetail = detail;
+    state.selectedProcessHistory = Array.isArray(historyPayload?.history) ? historyPayload.history : [];
+    renderProcessDetail(state.selectedProcessDetail, state.selectedProcessHistory);
+  } catch (err) {
+    state.selectedProcessDetail = null;
+    state.selectedProcessHistory = [];
+    renderProcessDetail(null, []);
+    const node = el('processDetailError');
+    if (node) {
+      node.textContent = `Failed to load process detail: ${err.message}`;
+      node.classList.remove('hidden');
+    }
+  }
+}
+
+async function loadProcesses({ silent = false } = {}) {
+  const status = el('processStatusLine');
+  const stateFilter = normalizeProcessStateFilter(state.processFilterState);
+  const runIdFilter = normalizeLocalPath(state.processFilterRunId);
+
+  try {
+    let payload;
+    if (state.useMock) {
+      const rows = mock.processes.filter((row) => {
+        if (stateFilter && row.state !== stateFilter) return false;
+        if (runIdFilter && String(row.run_link?.run_id || '') !== runIdFilter) return false;
+        return true;
+      });
+      payload = { processes: rows, count: rows.length };
+    } else {
+      const params = new URLSearchParams({ limit: '80' });
+      if (stateFilter) params.set('state', stateFilter);
+      if (runIdFilter) params.set('run_id', runIdFilter);
+      payload = await fetchJson(`/api/processes?${params.toString()}`);
+    }
+
+    state.processListError = '';
+    state.processes = Array.isArray(payload?.processes) ? payload.processes : [];
+
+    if (!state.selectedProcessId && state.processes.length) {
+      state.selectedProcessId = state.processes[0].process_id;
+    }
+
+    const stillExists = state.processes.some((row) => row.process_id === state.selectedProcessId);
+    if (!stillExists) {
+      state.selectedProcessId = state.processes[0]?.process_id || null;
+    }
+
+    renderProcessList(state.processes);
+    if (state.selectedProcessId) {
+      await selectProcess(state.selectedProcessId);
+      renderProcessList(state.processes);
+    } else {
+      renderProcessDetail(null, []);
+    }
+
+    if (status) {
+      status.textContent = `${state.processes.length} process(es)`;
+    }
+  } catch (err) {
+    state.processes = [];
+    state.processListError = `Failed to load processes: ${err.message}`;
+    renderProcessList(state.processes);
+    renderProcessDetail(null, []);
+    if (!silent && status) {
+      status.textContent = state.processListError;
+    }
+  }
+}
+
+async function runProcessAction(action) {
+  const detail = state.selectedProcessDetail;
+  if (!detail?.process_id) return;
+
+  try {
+    if (action === 'stop') {
+      const timeoutRaw = Number(el('controlGracefulTimeout')?.value || 2.0);
+      const gracefulTimeoutSec = Number.isFinite(timeoutRaw) ? timeoutRaw : 2.0;
+      await postJson('/api/runs/stop', {
+        process_id: detail.process_id,
+        graceful_timeout_sec: gracefulTimeoutSec,
+      });
+    } else {
+      const retryBody = await postJson('/api/runs/retry', {
+        process_id: detail.process_id,
+        execute: true,
+      });
+      if (retryBody?.process?.process_id) {
+        updateProcessIdInput(retryBody.process.process_id);
+        state.selectedProcessId = retryBody.process.process_id;
+      }
+    }
+
+    await Promise.all([loadRuns(), loadProcesses()]);
+    setRunControlStatus(`${action.toUpperCase()} OK • process=${detail.process_id}`);
+  } catch (err) {
+    const msg = `${action.toUpperCase()} failed: ${err.message}`;
+    setRunControlStatus(msg, { error: true });
+    const status = el('processStatusLine');
+    if (status) status.textContent = msg;
+  }
+}
+
+function initProcessControls() {
+  const stateFilter = el('processStateFilter');
+  const runIdFilter = el('processRunIdFilter');
+  const refreshBtn = el('processRefreshBtn');
+  const stopBtn = el('processStopBtn');
+  const retryBtn = el('processRetryBtn');
+  const openRunBtn = el('processSelectRunBtn');
+
+  if (!stateFilter || !runIdFilter || !refreshBtn || !stopBtn || !retryBtn || !openRunBtn) return;
+
+  stateFilter.value = state.processFilterState;
+  runIdFilter.value = state.processFilterRunId;
+
+  stateFilter.addEventListener('change', async () => {
+    state.processFilterState = stateFilter.value;
+    await loadProcesses();
+  });
+
+  runIdFilter.addEventListener('change', async () => {
+    state.processFilterRunId = runIdFilter.value || '';
+    await loadProcesses();
+  });
+
+  refreshBtn.addEventListener('click', async () => {
+    await loadProcesses();
+  });
+
+  stopBtn.addEventListener('click', async () => {
+    await runProcessAction('stop');
+  });
+
+  retryBtn.addEventListener('click', async () => {
+    await runProcessAction('retry');
+  });
+
+  openRunBtn.addEventListener('click', async () => {
+    const runId = state.selectedProcessDetail?.run_link?.run_id;
+    if (!runId) return;
+    await selectRun(runId);
+    activateTab('overview');
+  });
+}
+
 async function fetchJson(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${url} -> ${res.status}`);
@@ -1321,6 +1868,11 @@ function setupPolling() {
 
   state.pollTimer = setInterval(async () => {
     await refreshCurrentRun({ silent: true });
+    const activeTab = document.querySelector('.tab[data-tab="processes"].is-active');
+    const selectedState = state.selectedProcessDetail?.state || '';
+    if (activeTab || isProcessActive(selectedState)) {
+      await loadProcesses({ silent: true });
+    }
   }, state.pollIntervalMs);
 }
 
@@ -1354,6 +1906,7 @@ async function loadRuns() {
     refreshCompareRunOptions();
     await refreshComparison({ silent: true });
     await refreshTrends({ silent: true });
+    await loadProcesses({ silent: true });
     await refreshHealthBanner();
     el('statusLine').textContent = 'Mock mode enabled (?mock=1).';
     setupPolling();
@@ -1378,6 +1931,7 @@ async function loadRuns() {
     refreshCompareRunOptions();
     await refreshComparison({ silent: true });
     await refreshTrends({ silent: true });
+    await loadProcesses({ silent: true });
     await refreshHealthBanner();
     setupPolling();
   } catch (err) {
@@ -1387,6 +1941,7 @@ async function loadRuns() {
     refreshCompareRunOptions();
     renderComparison(null, { error: 'Unable to load runs for comparison.' });
     renderTrends(null);
+    await loadProcesses({ silent: true });
     await refreshHealthBanner();
     setupPolling();
   }
@@ -1396,6 +1951,7 @@ function renderDetail(detail) {
   state.detail = detail;
   state.triageContext = null;
   state.focusedTaskId = null;
+  clearArtifactViewerState();
   el('runTitle').textContent = `Run Detail: ${detail.run_id || '-'}`;
   setStatusChip(detail.status);
   renderMetaGrid(detail);
@@ -1403,6 +1959,7 @@ function renderDetail(detail) {
   renderTasks(detail.tasks || []);
   renderBlockers(detail.blockers || []);
   renderValidationPanels(detail);
+  renderArtifactViewer();
   renderHealthBanner({
     ...(state.healthSnapshot || {}),
     model: firstNonEmpty([detail?.model, state.healthSnapshot?.model]),
@@ -1434,8 +1991,12 @@ async function selectRun(runId, options = { rerenderList: true }) {
 
 function initTabs() {
   document.querySelectorAll('.tab').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      activateTab(btn.dataset.tab);
+    btn.addEventListener('click', async () => {
+      const tab = btn.dataset.tab;
+      activateTab(tab);
+      if (tab === 'processes') {
+        await loadProcesses({ silent: true });
+      }
     });
   });
 }
@@ -1474,6 +2035,44 @@ function initValidationControls() {
     state.failedFirst = failedFirst.checked;
     if (state.detail) renderValidationPanels(state.detail);
   });
+}
+
+function initArtifactViewerControls() {
+  const pathInput = el('artifactPathInput');
+  const openBtn = el('artifactOpenBtn');
+  const reloadBtn = el('artifactReloadBtn');
+  const clearBtn = el('artifactClearBtn');
+
+  if (!pathInput || !openBtn || !reloadBtn || !clearBtn) return;
+
+  pathInput.addEventListener('input', () => {
+    state.artifactViewerPath = pathInput.value;
+  });
+
+  openBtn.addEventListener('click', async () => {
+    await openArtifactInViewer(pathInput.value, { source: 'manual' });
+  });
+
+  pathInput.addEventListener('keydown', async (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    await openArtifactInViewer(pathInput.value, { source: 'manual' });
+  });
+
+  reloadBtn.addEventListener('click', async () => {
+    if (!state.artifactViewerPath) return;
+    await openArtifactInViewer(state.artifactViewerPath, {
+      source: state.artifactViewerRequestedBy || 'reload',
+      autoFocus: false,
+    });
+  });
+
+  clearBtn.addEventListener('click', () => {
+    clearArtifactViewerState();
+    renderArtifactViewer();
+  });
+
+  renderArtifactViewer();
 }
 
 async function loadGuiContext() {
@@ -1546,7 +2145,7 @@ async function runControlAction(action, payloadOverride = null) {
     setRunControlStatus(`${action.toUpperCase()} OK${summary.length ? ` • ${summary.join(' • ')}` : ''}`);
     setRunControlHints([]);
 
-    await loadRuns();
+    await Promise.all([loadRuns(), loadProcesses({ silent: true })]);
     if (state.selectedRunId) {
       await refreshCurrentRun({ silent: true });
     }
@@ -1768,7 +2367,9 @@ function initLiveUpdateControls() {
 
 initTabs();
 initValidationControls();
+initArtifactViewerControls();
 initRunControls();
+initProcessControls();
 initCompareControls();
 initTrendControls();
 initLiveUpdateControls();

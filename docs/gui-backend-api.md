@@ -252,6 +252,32 @@ GUI bootstrapping context를 제공한다 (mode/defaults/capabilities).
   - `prd`
 - `api.run_controls`: `["start", "resume", "stop", "retry"]`
 
+### `GET /api/runs/<run_id>/artifacts/read?path=<artifact_rel_path>&max_bytes=<int>` (SHW-019A)
+
+validation triage 및 artifact viewer에서 사용하는 read-only artifact endpoint.
+
+- query params
+  - required: `path`
+  - optional: `max_bytes` (default `512000`, max clamp `2000000`)
+- 경로 정책
+  - `.autodev/*` 하위만 허용 (`path traversal` 차단)
+  - `path=plan.json` 같은 상대 입력도 내부에서 `.autodev/plan.json`으로 정규화
+- 반환 payload
+  - `run_name`, `path`, `content_type`, `truncated`, `content`
+  - JSON parse 실패 시 typed error 포함:
+    - `error.kind = "artifact_json_error"`
+    - `error.code = "artifact_json_malformed" | "artifact_json_truncated"`
+- HTTP error semantics
+  - `400 missing_artifact_path`
+  - `422 invalid_artifact_request` (invalid path/max_bytes)
+  - `404 artifact_not_found`
+
+예시:
+
+```bash
+curl "http://127.0.0.1:8787/api/runs/run-001/artifacts/read?path=.autodev/task_final_last_validation.json"
+```
+
 ### `GET /api/runs/compare?left=<run_id>&right=<run_id>` (SHW-012)
 
 두 개의 run을 비교 가능한 공통 요약 스키마로 반환한다.

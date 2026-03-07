@@ -389,6 +389,8 @@ Local simple mode quick notes:
 - default GUI role becomes `developer` for low-friction run controls
 - default GUI profile hint becomes `local_simple`
 - Overview tab has **Quick Run** (one-click `/api/runs/start` execute mode) using local-simple defaults + selected/default PRD path
+- Validation tab includes read-only **Artifact Viewer** (`/api/runs/<run_id>/artifacts/read`) with failed-validator triage deep-link buttons
+- Processes tab surfaces active/recent tracked processes (`/api/processes`) with run linkage, retry-chain summary, transition history, and stop/retry actions
 
 See `docs/LOCAL_SIMPLE_MODE.md` for quickstart + when to switch to hardened mode.
 
