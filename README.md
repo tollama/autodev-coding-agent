@@ -424,8 +424,17 @@ python scripts/local_simple_e2e_smoke.py --artifacts-dir ./artifacts/local-simpl
 ```
 Smoke artifacts are persisted under `./artifacts/local-simple-e2e-smoke/<timestamp>/` (server stdout/stderr logs + API snapshots) so failures remain debuggable.
 
+RC dry-run command (no process spawn):
+```bash
+curl -fsS -X POST http://127.0.0.1:8787/api/runs/start \
+  -H 'Content-Type: application/json' \
+  -d '{"prd":"examples/PRD.md","out":"./generated_runs","profile":"local_simple","execute":false}'
+```
+Expected highlights: `spawned=false`, `result_status=dry_run`.
+
 See `docs/LOCAL_SIMPLE_MODE.md` for local-simple operator quickstart, run controls, and hardened-mode handoff.
 For day-1 setup and demo flow, use `docs/onboarding.md` and `docs/DEMO_PLAYBOOK.md`.
+For RC handoff artifacts, use `docs/RC_NEXT_CUT_CHECKLIST.md` and `docs/CHANGELOG_DRAFT_NEXT_CUT.md`.
 
 Known limits (MVP):
 - Polling-based updates only (no live stream/WebSocket yet).

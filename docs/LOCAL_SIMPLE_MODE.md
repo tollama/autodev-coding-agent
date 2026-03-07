@@ -77,6 +77,25 @@ AUTODEV_GUI_ROLE=evaluator \
 autodev gui --runs-root ./generated_runs --host 127.0.0.1 --port 8787
 ```
 
+## RC dry-run (run-control API, no spawn)
+
+Use this to validate payload/command preview path before an RC cut:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:8787/api/runs/start \
+  -H 'Content-Type: application/json' \
+  -d '{"prd":"examples/PRD.md","out":"./generated_runs","profile":"local_simple","execute":false}'
+```
+
+Expected highlights:
+- `spawned=false`
+- `result_status=dry_run`
+- non-empty `command_preview`
+
+For full RC gate tracking (tests/docs/known limits/changelog), use:
+- `docs/RC_NEXT_CUT_CHECKLIST.md`
+- `docs/CHANGELOG_DRAFT_NEXT_CUT.md`
+
 ## NXT-007 smoke suite (quick run -> process update -> artifact read)
 
 Use this deterministic lane to validate the local-simple run-control chain end-to-end:
