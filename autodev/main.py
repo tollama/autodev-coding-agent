@@ -19,6 +19,7 @@ from .workspace import Workspace
 from .loop import run_autodev_enterprise
 from .report import write_report
 from .json_utils import json_dumps
+from .autonomous_mode import cli as autonomous_cli
 
 logger = logging.getLogger("autodev")
 
@@ -589,6 +590,9 @@ def cli(argv: list[str] | None = None) -> None:
         return
     if raw_argv and raw_argv[0] in {"local-simple", "local"}:
         _cli_local_simple(raw_argv[1:])
+        return
+    if raw_argv and raw_argv[0] == "autonomous":
+        autonomous_cli(raw_argv[1:])
         return
     _cli_run(raw_argv)
 
