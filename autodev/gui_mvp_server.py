@@ -63,6 +63,15 @@ DEFAULT_ARTIFACT_READ_MAX_BYTES = 512_000
 MAX_ARTIFACT_READ_MAX_BYTES = 2_000_000
 SAFE_RUN_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:/@+-]+$")
 
+SCORECARD_CARD_ORDER: list[tuple[str, str]] = [
+    ("task_pass_rate_percent", "Pass Rate"),
+    ("task_pass_fraction", "Tasks"),
+    ("total_task_attempts", "Attempts"),
+    ("repair_passes", "Repairs"),
+    ("hard_failures", "Hard Fails"),
+    ("soft_failures", "Soft Fails"),
+]
+
 
 @dataclass(frozen=True)
 class AuthContext:
@@ -615,6 +624,127 @@ def _parse_artifact_max_bytes(raw: str | None) -> int:
     return parsed
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _derive_scorecard_from_quality(quality_index: dict[str, Any]) -> dict[str, Any]:
+    tasks = quality_index.get("tasks") if isinstance(quality_index.get("tasks"), list) else []
+    final = quality_index.get("final") if isinstance(quality_index.get("final"), dict) else {}
+    totals = quality_index.get("totals") if isinstance(quality_index.get("totals"), dict) else {}
+
+    passed = sum(1 for row in tasks if isinstance(row, dict) and str(row.get("status") or "").lower() == "passed")
+    total = len(tasks)
+    pass_rate = round((passed / total * 100.0), 1) if total else 0.0
+
+    return {
+        "task_pass_rate_percent": pass_rate,
+        "task_pass_count": passed,
+        "task_total": total,
+        "task_pass_fraction": f"{passed}/{total}",
+        "final_status": str(final.get("status") or "unknown").strip() or "unknown",
+        "total_task_attempts": _safe_int(totals.get("total_task_attempts"), 0),
+        "hard_failures": _safe_int(totals.get("hard_failures"), 0),
+        "soft_failures": _safe_int(totals.get("soft_failures"), 0),
+        "repair_passes": _safe_int(totals.get("repair_passes"), 0),
+        "unresolved_blocker_count": len(quality_index.get("unresolved_blockers", []))
+        if isinstance(quality_index.get("unresolved_blockers"), list)
+        else 0,
+    }
+
+
+def _scorecard_card_tone(key: str, value: Any) -> str:
+    if key == "hard_failures":
+        return "danger" if _safe_int(value, 0) > 0 else "ok"
+    if key == "soft_failures":
+        return "warning" if _safe_int(value, 0) > 0 else "ok"
+    if key == "task_pass_rate_percent":
+        return "ok" if float(value or 0) >= 100.0 else "neutral"
+    return "neutral"
+
+
+def _build_scorecard_cards(scorecard: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for key, label in SCORECARD_CARD_ORDER:
+        value = scorecard.get(key)
+        display = f"{value}%" if key == "task_pass_rate_percent" else str(value)
+        rows.append(
+            {
+                "key": key,
+                "label": label,
+                "value": display,
+                "tone": _scorecard_card_tone(key, value),
+            }
+        )
+    return rows
+
+
+def _latest_scorecard_summary(runs_root: Path) -> dict[str, Any]:
+    if not runs_root.exists() or not runs_root.is_dir():
+        return {
+            "empty": True,
+            "message": "No runs root found.",
+            "latest": None,
+            "summary": None,
+            "cards": [],
+            "artifact_errors": [],
+        }
+
+    run_dirs = sorted((p for p in runs_root.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not run_dirs:
+        return {
+            "empty": True,
+            "message": "No runs found in runs root.",
+            "latest": None,
+            "summary": None,
+            "cards": [],
+            "artifact_errors": [],
+        }
+
+    run_dir = run_dirs[0]
+    quality_raw, quality_error = _load_json(run_dir / ".autodev" / "task_quality_index.json")
+    run_trace_raw, run_trace_error = _load_json(run_dir / ".autodev" / "run_trace.json")
+    metadata_raw, metadata_error = _load_json(run_dir / ".autodev" / "run_metadata.json")
+    checkpoint_raw, checkpoint_error = _load_json(run_dir / ".autodev" / "checkpoint.json")
+
+    quality = quality_raw if isinstance(quality_raw, dict) else {}
+    run_trace = run_trace_raw if isinstance(run_trace_raw, dict) else {}
+    metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+    checkpoint = checkpoint_raw if isinstance(checkpoint_raw, dict) else {}
+
+    profile = ""
+    resolved_profile = quality.get("resolved_quality_profile")
+    if isinstance(resolved_profile, dict):
+        profile = str(resolved_profile.get("name") or "").strip()
+    if not profile:
+        profile = str(metadata.get("requested_profile") or "").strip()
+
+    trace_dto = normalize_run_trace(run_trace)
+    scorecard = _derive_scorecard_from_quality(quality)
+    artifact_errors = [err for err in [quality_error, run_trace_error, metadata_error, checkpoint_error] if err]
+
+    return {
+        "empty": False,
+        "message": "",
+        "latest": {
+            "run_id": run_dir.name,
+            "path": str(run_dir),
+            "updated_at": datetime.fromtimestamp(run_dir.stat().st_mtime).isoformat(),
+            "status": normalize_run_status(metadata=metadata, checkpoint=checkpoint, quality_index=quality, default="unknown"),
+            "profile": profile,
+            "model": str(trace_dto.get("model") or "").strip(),
+            "started_at": str(trace_dto.get("started_at") or "").strip(),
+            "completed_at": str(trace_dto.get("completed_at") or "").strip(),
+        },
+        "summary": scorecard,
+        "cards": _build_scorecard_cards(scorecard),
+        "artifact_errors": artifact_errors,
+    }
+
+
 def _quality_trends(runs_root: Path, window: int, *, allow_partial: bool = False) -> dict[str, Any]:
     trend_window = max(1, min(int(window), MAX_TREND_WINDOW))
     if not runs_root.exists():
@@ -826,6 +956,7 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                     "api": {
                         "run_controls": ["start", "resume", "stop", "retry"],
                         "trends": True,
+                        "scorecard": True,
                     },
                 }
             )
@@ -863,6 +994,10 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                 self._json_response(get_process_detail(process_id))
             except FileNotFoundError as exc:
                 self._json_response({"error": "process not found", "detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            return
+
+        if path == "/api/scorecard/latest":
+            self._json_response(_latest_scorecard_summary(self.config.runs_root))
             return
 
         if path == "/api/runs":

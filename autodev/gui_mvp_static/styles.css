@@ -131,6 +131,43 @@ section { margin-bottom: 16px; }
   font-weight: 600;
 }
 
+.scorecard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.scorecard-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+}
+.scorecard-card .value {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.scorecard-card .label {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.scorecard-card.tone-ok {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+.scorecard-card.tone-warning {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+.scorecard-card.tone-danger {
+  border-color: #fecaca;
+  background: #fff1f2;
+}
+
 .timeline {
   display: flex;
   height: 28px;

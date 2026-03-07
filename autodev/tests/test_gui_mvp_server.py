@@ -13,6 +13,7 @@ from autodev.gui_api import _reset_process_manager_for_tests
 from autodev.gui_mvp_server import (
     GuiConfig,
     GuiRequestHandler,
+    _latest_scorecard_summary,
     _list_runs,
     _quality_trends,
     _resolve_request_auth,
@@ -328,6 +329,76 @@ def test_gui_context_endpoint_defaults(gui_server):
     assert body["defaults"]["profile"]
     assert "prd" in body["defaults"]
     assert body["api"]["run_controls"] == ["start", "resume", "stop", "retry"]
+    assert body["api"]["scorecard"] is True
+
+
+def test_latest_scorecard_summary_empty(tmp_path):
+    payload = _latest_scorecard_summary(tmp_path / "missing")
+    assert payload["empty"] is True
+    assert payload["latest"] is None
+    assert payload["cards"] == []
+
+
+def test_latest_scorecard_summary_uses_latest_run_and_derived_metrics(tmp_path):
+    run_a = tmp_path / "run-a"
+    _write_json(
+        run_a / ".autodev" / "task_quality_index.json",
+        {
+            "tasks": [
+                {"task_id": "task-1", "status": "passed"},
+                {"task_id": "task-2", "status": "failed"},
+            ],
+            "totals": {
+                "total_task_attempts": 4,
+                "hard_failures": 1,
+                "soft_failures": 2,
+                "repair_passes": 1,
+            },
+            "final": {"status": "failed"},
+            "resolved_quality_profile": {"name": "enterprise"},
+        },
+    )
+    _write_json(run_a / ".autodev" / "run_trace.json", {"model": "openai/gpt-5.3"})
+    _write_json(run_a / ".autodev" / "run_metadata.json", {"requested_profile": "enterprise"})
+    _write_json(run_a / ".autodev" / "checkpoint.json", {"status": "failed"})
+
+    run_b = tmp_path / "run-b"
+    _write_json(run_b / ".autodev" / "task_quality_index.json", {"final": {"status": "ok"}})
+    _write_json(run_b / ".autodev" / "run_metadata.json", {"requested_profile": "minimal"})
+
+    payload = _latest_scorecard_summary(tmp_path)
+    assert payload["empty"] is False
+    assert payload["latest"]["run_id"] == "run-b"
+    assert payload["summary"]["task_pass_rate_percent"] == 0.0
+    assert payload["summary"]["task_pass_fraction"] == "0/0"
+    assert payload["summary"]["total_task_attempts"] == 0
+    assert len(payload["cards"]) == 6
+    assert payload["cards"][0]["label"] == "Pass Rate"
+
+
+def test_scorecard_latest_endpoint_returns_payload(gui_server):
+    base_url, runs_root = gui_server
+    run = runs_root / "run-scorecard"
+    _write_json(
+        run / ".autodev" / "task_quality_index.json",
+        {
+            "tasks": [{"task_id": "task-1", "status": "passed"}],
+            "totals": {"total_task_attempts": 1, "hard_failures": 0, "soft_failures": 0, "repair_passes": 0},
+            "final": {"status": "ok"},
+            "resolved_quality_profile": {"name": "minimal"},
+        },
+    )
+    _write_json(run / ".autodev" / "run_trace.json", {"llm": {"model": "anthropic/claude-sonnet-4-6"}})
+    _write_json(run / ".autodev" / "run_metadata.json", {"requested_profile": "minimal", "result_ok": True})
+    _write_json(run / ".autodev" / "checkpoint.json", {"status": "completed"})
+
+    status, body = _get_json(f"{base_url}/api/scorecard/latest")
+    assert status == 200
+    assert body["empty"] is False
+    assert body["latest"]["run_id"] == "run-scorecard"
+    assert body["latest"]["status"] == "ok"
+    assert body["summary"]["task_pass_fraction"] == "1/1"
+    assert body["cards"][0]["value"] == "100.0%"
 
 
 def test_artifact_read_endpoint_returns_json_payload(gui_server):
@@ -404,6 +475,23 @@ def test_artifact_viewer_static_contract_includes_export_controls(gui_server):
     assert "function announceArtifactViewerAction(message, kind = 'ok')" in app_js
     assert "function withPreservedFocus(action)" in app_js
     assert "artifactViewerDownloadName" in app_js
+
+
+def test_overview_scorecard_static_contract(gui_server):
+    base_url, _ = gui_server
+
+    with request.urlopen(f"{base_url}/index.html", timeout=5) as resp:
+        index_html = resp.read().decode("utf-8")
+    assert 'id="scorecardCards"' in index_html
+    assert 'id="scorecardEmpty"' in index_html
+    assert 'id="scorecardError"' in index_html
+
+    with request.urlopen(f"{base_url}/app.js", timeout=5) as resp:
+        app_js = resp.read().decode("utf-8")
+    assert "function refreshScorecardWidget({ silent = false } = {})" in app_js
+    assert "function renderScorecardWidget()" in app_js
+    assert "buildMockScorecardPayload" in app_js
+    assert "/api/scorecard/latest" in app_js
 
 
 def test_artifact_read_endpoint_rejects_invalid_query(gui_server):
