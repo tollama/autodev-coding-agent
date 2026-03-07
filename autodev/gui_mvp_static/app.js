@@ -21,6 +21,9 @@ const state = {
   compareManualSelection: false,
   guiContext: null,
   healthSnapshot: null,
+  scorecardPayload: null,
+  scorecardError: '',
+  scorecardLoading: false,
   lastProcessId: '',
   trendPayload: null,
   artifactViewerPath: '',
@@ -484,6 +487,144 @@ function renderMetaGrid(detail) {
     item.innerHTML = `<div class="meta-label">${label}</div><div class="meta-value">${value}</div>`;
     metaGrid.appendChild(item);
   });
+}
+
+function buildMockScorecardPayload() {
+  const detail = mock.details[mock.runs[0]?.run_id] || {};
+  const tasks = Array.isArray(detail.tasks) ? detail.tasks : [];
+  const passed = tasks.filter((row) => row.status === 'passed').length;
+  const total = tasks.length;
+  const passRate = total ? Number(((passed / total) * 100).toFixed(1)) : 0;
+  const totals = detail.summary?.totals || {};
+
+  const summary = {
+    task_pass_rate_percent: passRate,
+    task_pass_count: passed,
+    task_total: total,
+    task_pass_fraction: `${passed}/${total}`,
+    final_status: String(detail.status || 'unknown'),
+    total_task_attempts: Number(totals.total_task_attempts || 0),
+    hard_failures: Number(totals.hard_failures || 0),
+    soft_failures: Number(totals.soft_failures || 0),
+    repair_passes: 0,
+  };
+
+  const cardDefs = [
+    ['task_pass_rate_percent', 'Pass Rate'],
+    ['task_pass_fraction', 'Tasks'],
+    ['total_task_attempts', 'Attempts'],
+    ['repair_passes', 'Repairs'],
+    ['hard_failures', 'Hard Fails'],
+    ['soft_failures', 'Soft Fails'],
+  ];
+
+  const cards = cardDefs.map(([key, label]) => {
+    const raw = summary[key];
+    const value = key === 'task_pass_rate_percent' ? `${raw}%` : String(raw);
+    let tone = 'neutral';
+    if (key === 'hard_failures') tone = Number(raw) > 0 ? 'danger' : 'ok';
+    else if (key === 'soft_failures') tone = Number(raw) > 0 ? 'warning' : 'ok';
+    else if (key === 'task_pass_rate_percent') tone = Number(raw) >= 100 ? 'ok' : 'neutral';
+    return { key, label, value, tone };
+  });
+
+  return {
+    empty: false,
+    message: '',
+    latest: {
+      run_id: String(detail.run_id || mock.runs[0]?.run_id || ''),
+      status: String(detail.status || 'unknown'),
+      profile: String(detail.summary?.profile?.name || ''),
+      model: String(detail.model || ''),
+      updated_at: new Date().toISOString(),
+    },
+    summary,
+    cards,
+    artifact_errors: [],
+  };
+}
+
+function renderScorecardWidget() {
+  const cardsNode = el('scorecardCards');
+  const emptyNode = el('scorecardEmpty');
+  const errorNode = el('scorecardError');
+  const metaNode = el('scorecardMeta');
+  if (!cardsNode || !emptyNode || !errorNode || !metaNode) return;
+
+  cardsNode.innerHTML = '';
+  errorNode.classList.add('hidden');
+  errorNode.textContent = '';
+
+  if (state.scorecardLoading) {
+    cardsNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = 'Loading latest scorecard…';
+    metaNode.textContent = '';
+    return;
+  }
+
+  if (state.scorecardError) {
+    cardsNode.classList.add('hidden');
+    emptyNode.classList.add('hidden');
+    errorNode.classList.remove('hidden');
+    errorNode.textContent = state.scorecardError;
+    metaNode.textContent = '';
+    return;
+  }
+
+  const payload = state.scorecardPayload;
+  const cards = Array.isArray(payload?.cards) ? payload.cards : [];
+  if (!payload || payload.empty || !cards.length) {
+    cardsNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = payload?.message || 'No scorecard data available yet.';
+    metaNode.textContent = '';
+    return;
+  }
+
+  cards.forEach((card) => {
+    const article = document.createElement('article');
+    article.className = `scorecard-card tone-${card?.tone || 'neutral'}`;
+    article.innerHTML = `
+      <div class="value">${escapeHtml(card?.value ?? '-')}</div>
+      <div class="label">${escapeHtml(card?.label || card?.key || '-')}</div>
+    `;
+    cardsNode.appendChild(article);
+  });
+
+  const latest = payload.latest || {};
+  const metaParts = [];
+  if (latest.run_id) metaParts.push(`run=${latest.run_id}`);
+  if (latest.status) metaParts.push(`status=${latest.status}`);
+  if (latest.profile) metaParts.push(`profile=${latest.profile}`);
+  if (latest.model) metaParts.push(`model=${latest.model}`);
+  if (latest.updated_at) metaParts.push(`updated=${formatTime(latest.updated_at)}`);
+  metaNode.textContent = metaParts.join(' • ');
+
+  emptyNode.classList.add('hidden');
+  cardsNode.classList.remove('hidden');
+}
+
+async function refreshScorecardWidget({ silent = false } = {}) {
+  state.scorecardLoading = true;
+  if (!silent) {
+    state.scorecardError = '';
+  }
+  renderScorecardWidget();
+
+  try {
+    const payload = state.useMock
+      ? buildMockScorecardPayload()
+      : await fetchJson('/api/scorecard/latest');
+    state.scorecardPayload = payload;
+    state.scorecardError = '';
+  } catch (err) {
+    state.scorecardPayload = null;
+    state.scorecardError = `Latest scorecard unavailable: ${err.message || 'request failed'}`;
+  } finally {
+    state.scorecardLoading = false;
+    renderScorecardWidget();
+  }
 }
 
 function escapeHtml(value) {
@@ -2600,6 +2741,7 @@ async function loadRuns() {
     refreshCompareRunOptions();
     await refreshComparison({ silent: true });
     await refreshTrends({ silent: true });
+    await refreshScorecardWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     el('statusLine').textContent = 'Mock mode enabled (?mock=1).';
@@ -2625,6 +2767,7 @@ async function loadRuns() {
     refreshCompareRunOptions();
     await refreshComparison({ silent: true });
     await refreshTrends({ silent: true });
+    await refreshScorecardWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     setupPolling();
@@ -2635,6 +2778,10 @@ async function loadRuns() {
     refreshCompareRunOptions();
     renderComparison(null, { error: 'Unable to load runs for comparison.' });
     renderTrends(null);
+    state.scorecardPayload = null;
+    state.scorecardError = 'Latest scorecard unavailable: unable to load runs list.';
+    state.scorecardLoading = false;
+    renderScorecardWidget();
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     setupPolling();
@@ -3113,4 +3260,5 @@ initProcessControls();
 initCompareControls();
 initTrendControls();
 initLiveUpdateControls();
+renderScorecardWidget();
 loadRuns();
