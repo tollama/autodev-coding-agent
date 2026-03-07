@@ -507,6 +507,8 @@ Next-wave planning/governance docs:
 - `docs/PLAN_NEXT_WEEK.md`
 - `docs/BACKLOG_NEXT_WEEK.md`
 - `docs/AUTONOMOUS_COMMERCIAL_PLAN.md` (commercial autonomous rollout strategy)
+- `docs/AUTONOMOUS_V2_WAVE_PLAN.md` (Autonomous v2 kickoff milestones, architecture deltas, risk register)
+- `docs/AUTONOMOUS_V2_BACKLOG.md` (Autonomous v2 kickoff execution ticket set)
 
 Legacy showoff planning docs (reference/archive):
 - `docs/ROADMAP_SHOWOFF.md`

@@ -1,6 +1,7 @@
 # Autonomous Commercial App Generation Plan (Execution-Ready v1)
 
 > v1b refresh (2026-03-07): clarified cross-doc linkage and operator entry points from README, onboarding, and autonomous mode guide.
+> v2 kickoff linkage: planning package lives in `docs/AUTONOMOUS_V2_WAVE_PLAN.md` and `docs/AUTONOMOUS_V2_BACKLOG.md`.
 
 ## Executive summary
 
@@ -332,6 +333,14 @@ Dashboard requirements:
 - by risk tier and product surface,
 - trend + anomaly flags,
 - links back to raw evidence artifacts.
+
+## v2 kickoff execution package
+
+For immediate wave execution planning and ticket slicing, use:
+- `docs/AUTONOMOUS_V2_WAVE_PLAN.md`
+- `docs/AUTONOMOUS_V2_BACKLOG.md`
+
+These docs translate this commercial strategy into an 8-week wave with 2-week milestones and implementation-ready ticket definitions.
 
 ---
 
