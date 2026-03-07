@@ -545,11 +545,18 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="scorecardCards"' in index_html
     assert 'id="scorecardEmpty"' in index_html
     assert 'id="scorecardError"' in index_html
+    assert 'id="overviewStateBox"' in index_html
+    assert 'id="overviewRefreshBtn"' in index_html
+    assert 'id="validationStateBox"' in index_html
+    assert 'id="validationRefreshBtn"' in index_html
 
     with request.urlopen(f"{base_url}/app.js", timeout=5) as resp:
         app_js = resp.read().decode("utf-8")
     assert "function refreshScorecardWidget({ silent = false } = {})" in app_js
     assert "function renderScorecardWidget()" in app_js
+    assert "function renderOverviewState()" in app_js
+    assert "function renderValidationState({ rows = [], filtered = [] } = {})" in app_js
+    assert "function initTabRecoveryActions()" in app_js
     assert "buildMockScorecardPayload" in app_js
     assert "/api/scorecard/latest" in app_js
 
@@ -1431,6 +1438,9 @@ def test_process_panel_static_contract(gui_server):
     assert 'id="processPageNextBtn"' in index_html
     assert 'id="processPollingHint"' in index_html
     assert 'id="processStaleIndicator"' in index_html
+    assert 'id="processStateBox"' in index_html
+    assert 'id="processStateRefreshBtn"' in index_html
+    assert 'id="processStateLogsHintBtn"' in index_html
 
     with request.urlopen(f"{base_url}/app.js", timeout=5) as resp:
         app_js = resp.read().decode("utf-8")
@@ -1441,6 +1451,8 @@ def test_process_panel_static_contract(gui_server):
     assert "rowRunId.includes(runIdFilter)" in app_js
     assert "function renderProcessPagination(meta)" in app_js
     assert "function syncProcessActionButtons(process)" in app_js
+    assert "function renderProcessTabState()" in app_js
+    assert "function loadLogsHint()" in app_js
     assert "state.processActionInFlight" in app_js
     assert "state.processLoadRequestSeq" in app_js
     assert "function noteProcessPollingSnapshot(rows, { source = 'manual' } = {})" in app_js
