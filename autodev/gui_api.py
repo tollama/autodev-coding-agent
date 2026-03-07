@@ -402,6 +402,7 @@ def trigger_retry(payload: Mapping[str, Any], *, execute: bool = False) -> dict[
         "run_id": run_id,
         "retry_of": retry_of,
         "spawned": result.get("spawned", False),
+        "idempotent_replay": bool(result.get("idempotent_replay", False)),
     }
     if isinstance(result.get("process"), dict):
         event["new_process_id"] = result["process"].get("process_id")
