@@ -28,12 +28,15 @@ const state = {
   artifactViewerError: '',
   artifactViewerLoading: false,
   artifactViewerRequestedBy: '',
+  artifactViewerActionStatus: null,
   processes: [],
   selectedProcessId: null,
   selectedProcessDetail: null,
   selectedProcessHistory: [],
   processFilterState: 'all',
   processFilterRunId: '',
+  processPage: 1,
+  processPageSize: 20,
   processListError: '',
 };
 
@@ -231,6 +234,72 @@ function normalizeProcessStateFilter(raw) {
   const val = String(raw || '').trim().toLowerCase();
   if (!val || val === 'all') return '';
   return val;
+}
+
+function normalizeProcessRunIdFilter(raw) {
+  return String(raw || '').trim().toLowerCase();
+}
+
+function normalizeProcessPageSize(raw) {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return 20;
+  if (parsed <= 10) return 10;
+  if (parsed <= 20) return 20;
+  return 50;
+}
+
+function filterProcesses(rows) {
+  const stateFilter = normalizeProcessStateFilter(state.processFilterState);
+  const runIdFilter = normalizeProcessRunIdFilter(state.processFilterRunId);
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    const rowState = String(row?.state || '').toLowerCase();
+    const rowRunId = String(row?.run_link?.run_id || '').toLowerCase();
+    if (stateFilter && rowState !== stateFilter) return false;
+    if (runIdFilter && !rowRunId.includes(runIdFilter)) return false;
+    return true;
+  });
+}
+
+function buildProcessPage(filteredRows) {
+  const rows = Array.isArray(filteredRows) ? filteredRows : [];
+  const pageSize = normalizeProcessPageSize(state.processPageSize);
+  state.processPageSize = pageSize;
+  const total = rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
+  const currentPage = Math.min(Math.max(Number(state.processPage) || 1, 1), totalPages);
+  state.processPage = currentPage;
+  const start = (currentPage - 1) * pageSize;
+  return {
+    rows,
+    pageRows: rows.slice(start, start + pageSize),
+    total,
+    pageSize,
+    totalPages,
+    currentPage,
+  };
+}
+
+function renderProcessPagination(meta) {
+  const root = el('processPagination');
+  const label = el('processPageLabel');
+  const firstBtn = el('processPageFirstBtn');
+  const prevBtn = el('processPagePrevBtn');
+  const nextBtn = el('processPageNextBtn');
+  const lastBtn = el('processPageLastBtn');
+  if (!root || !label || !firstBtn || !prevBtn || !nextBtn || !lastBtn) return;
+
+  const total = Number(meta?.total || 0);
+  const currentPage = Number(meta?.currentPage || 1);
+  const totalPages = Number(meta?.totalPages || 1);
+  const show = total > 0 || state.processListError;
+
+  root.classList.toggle('hidden', !show);
+  label.textContent = `Page ${currentPage} / ${totalPages}`;
+
+  firstBtn.disabled = currentPage <= 1;
+  prevBtn.disabled = currentPage <= 1;
+  nextBtn.disabled = currentPage >= totalPages;
+  lastBtn.disabled = currentPage >= totalPages;
 }
 
 function activateTab(tabName) {
@@ -835,6 +904,108 @@ function clearArtifactViewerState({ preservePath = false } = {}) {
   state.artifactViewerError = '';
   state.artifactViewerLoading = false;
   state.artifactViewerRequestedBy = '';
+  state.artifactViewerActionStatus = null;
+}
+
+function formatArtifactJsonError(error) {
+  if (!error || error.kind !== 'artifact_json_error') return '';
+  const detail = [`${error.code || 'artifact_json_error'}: ${error.message || 'Unable to parse JSON'}`];
+  if (error.line != null && error.column != null) {
+    detail.push(`line=${error.line}, column=${error.column}`);
+  }
+  if (error.position != null) {
+    detail.push(`position=${error.position}`);
+  }
+  return detail.join(' • ');
+}
+
+function getArtifactViewerTextPayload(payload) {
+  if (!payload) {
+    return { text: '', mode: 'empty', canExport: false };
+  }
+
+  const isJson = payload.content_type === 'application/json';
+  if (isJson && payload.content !== null && payload.content !== undefined) {
+    return {
+      text: JSON.stringify(payload.content, null, 2),
+      mode: 'json_pretty',
+      canExport: true,
+    };
+  }
+
+  if (isJson && typeof payload.raw_content === 'string') {
+    return {
+      text: payload.raw_content,
+      mode: 'json_raw',
+      canExport: payload.raw_content.length > 0,
+    };
+  }
+
+  if (typeof payload.content === 'string') {
+    return {
+      text: payload.content,
+      mode: payload.content_type === 'text/markdown' ? 'markdown' : 'text',
+      canExport: payload.content.length > 0,
+    };
+  }
+
+  if (payload.content !== null && payload.content !== undefined) {
+    return {
+      text: JSON.stringify(payload.content, null, 2),
+      mode: 'object_pretty',
+      canExport: true,
+    };
+  }
+
+  return { text: '', mode: 'empty', canExport: false };
+}
+
+function artifactViewerDownloadName(path, payload) {
+  const normalized = String(path || '').trim();
+  if (!normalized) {
+    return payload?.content_type === 'application/json' ? 'artifact.json' : 'artifact.txt';
+  }
+  const base = normalized.split('/').pop() || 'artifact';
+  if (base.includes('.')) {
+    return base;
+  }
+  if (payload?.content_type === 'application/json') {
+    return `${base}.json`;
+  }
+  return `${base}.txt`;
+}
+
+function setArtifactViewerActionStatus(message, kind = 'ok') {
+  const node = el('artifactViewerActionStatus');
+  if (!node) return;
+  if (!message) {
+    node.textContent = '';
+    node.classList.add('hidden');
+    node.classList.remove('ok', 'error');
+    return;
+  }
+  node.textContent = message;
+  node.classList.remove('hidden');
+  node.classList.remove('ok', 'error');
+  node.classList.add(kind === 'error' ? 'error' : 'ok');
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const ghost = document.createElement('textarea');
+  ghost.value = text;
+  ghost.setAttribute('readonly', '');
+  ghost.style.position = 'fixed';
+  ghost.style.opacity = '0';
+  document.body.appendChild(ghost);
+  ghost.focus();
+  ghost.select();
+  document.execCommand('copy');
+  document.body.removeChild(ghost);
 }
 
 function renderArtifactViewer() {
@@ -845,6 +1016,8 @@ function renderArtifactViewer() {
   const pathNode = el('artifactViewerPathLabel');
   const metaNode = el('artifactViewerMeta');
   const pathInput = el('artifactPathInput');
+  const copyBtn = el('artifactCopyBtn');
+  const downloadBtn = el('artifactDownloadBtn');
 
   if (!panel || !empty || !errorNode || !contentNode || !pathNode || !metaNode) {
     return;
@@ -855,12 +1028,16 @@ function renderArtifactViewer() {
   }
 
   pathNode.textContent = state.artifactViewerPath || '-';
+  setArtifactViewerActionStatus(state.artifactViewerActionStatus?.message || '', state.artifactViewerActionStatus?.kind || 'ok');
+
   if (state.artifactViewerLoading) {
     panel.classList.remove('hidden');
     empty.classList.add('hidden');
     errorNode.classList.add('hidden');
     metaNode.textContent = 'Loading artifact…';
     contentNode.textContent = '';
+    if (copyBtn) copyBtn.disabled = true;
+    if (downloadBtn) downloadBtn.disabled = true;
     return;
   }
 
@@ -873,6 +1050,8 @@ function renderArtifactViewer() {
       ? `requested by ${state.artifactViewerRequestedBy}`
       : 'Artifact read failed';
     contentNode.textContent = '';
+    if (copyBtn) copyBtn.disabled = true;
+    if (downloadBtn) downloadBtn.disabled = true;
     return;
   }
 
@@ -884,12 +1063,13 @@ function renderArtifactViewer() {
     errorNode.classList.add('hidden');
     metaNode.textContent = '';
     contentNode.textContent = '';
+    if (copyBtn) copyBtn.disabled = true;
+    if (downloadBtn) downloadBtn.disabled = true;
     return;
   }
 
   panel.classList.remove('hidden');
   empty.classList.add('hidden');
-  errorNode.classList.add('hidden');
 
   const metaParts = [payload.content_type || 'text/plain'];
   if (payload.truncated) {
@@ -901,32 +1081,26 @@ function renderArtifactViewer() {
   if (state.artifactViewerRequestedBy) {
     metaParts.push(`requested by ${state.artifactViewerRequestedBy}`);
   }
+
+  const textPayload = getArtifactViewerTextPayload(payload);
+  if (textPayload.mode === 'json_raw') {
+    metaParts.push('raw-fallback');
+  }
   metaNode.textContent = metaParts.join(' • ');
 
-  if (payload.error?.kind === 'artifact_json_error' && payload.content == null) {
-    const typed = payload.error;
-    const detail = [`${typed.code || 'artifact_json_error'}: ${typed.message || 'Unable to parse JSON'}`];
-    if (typed.line != null && typed.column != null) {
-      detail.push(`line=${typed.line}, column=${typed.column}`);
-    }
-    if (typed.position != null) {
-      detail.push(`position=${typed.position}`);
-    }
-    contentNode.textContent = detail.join('\n');
-    return;
+  const typedError = formatArtifactJsonError(payload.error);
+  if (typedError) {
+    errorNode.classList.remove('hidden');
+    errorNode.textContent = typedError;
+  } else {
+    errorNode.classList.add('hidden');
+    errorNode.textContent = '';
   }
 
-  if (payload.content_type === 'application/json' && payload.content !== undefined) {
-    contentNode.textContent = JSON.stringify(payload.content, null, 2);
-    return;
-  }
-
-  if (typeof payload.content === 'string') {
-    contentNode.textContent = payload.content;
-    return;
-  }
-
-  contentNode.textContent = payload.content == null ? '' : JSON.stringify(payload.content, null, 2);
+  contentNode.textContent = textPayload.text;
+  const canExport = textPayload.canExport;
+  if (copyBtn) copyBtn.disabled = !canExport;
+  if (downloadBtn) downloadBtn.disabled = !canExport;
 }
 
 async function fetchJsonWithPayload(url) {
@@ -961,6 +1135,7 @@ async function openArtifactInViewer(path, { source = '', autoFocus = true } = {}
   state.artifactViewerError = '';
   state.artifactViewerLoading = true;
   state.artifactViewerRequestedBy = source;
+  state.artifactViewerActionStatus = null;
   renderArtifactViewer();
 
   const query = new URLSearchParams({ path: normalizedPath, max_bytes: '512000' }).toString();
@@ -1585,10 +1760,56 @@ function renderProcessList(processes) {
     `;
     item.addEventListener('click', async () => {
       await selectProcess(id);
-      renderProcessList(state.processes);
+      const filtered = filterProcesses(state.processes);
+      const pageMeta = buildProcessPage(filtered);
+      renderProcessList(pageMeta.pageRows);
+      renderProcessPagination(pageMeta);
     });
     list.appendChild(item);
   });
+}
+
+async function refreshProcessPanel({ syncSelection = true, statusMessage = '' } = {}) {
+  const filtered = filterProcesses(state.processes);
+  const pageMeta = buildProcessPage(filtered);
+  renderProcessList(pageMeta.pageRows);
+  renderProcessPagination(pageMeta);
+
+  if (!syncSelection) {
+    return pageMeta;
+  }
+
+  if (!filtered.length) {
+    state.selectedProcessId = null;
+    state.selectedProcessDetail = null;
+    state.selectedProcessHistory = [];
+    renderProcessDetail(null, []);
+    return pageMeta;
+  }
+
+  const hasSelectedInFiltered = filtered.some((row) => row.process_id === state.selectedProcessId);
+  if (!hasSelectedInFiltered) {
+    state.selectedProcessId = pageMeta.pageRows[0]?.process_id || filtered[0]?.process_id || null;
+  }
+
+  if (state.selectedProcessId) {
+    const sameDetail = state.selectedProcessDetail?.process_id === state.selectedProcessId;
+    if (!sameDetail) {
+      await selectProcess(state.selectedProcessId);
+      const refreshedMeta = buildProcessPage(filterProcesses(state.processes));
+      renderProcessList(refreshedMeta.pageRows);
+      renderProcessPagination(refreshedMeta);
+    } else {
+      renderProcessDetail(state.selectedProcessDetail, state.selectedProcessHistory);
+    }
+  }
+
+  const status = el('processStatusLine');
+  if (status) {
+    status.textContent = statusMessage || `${pageMeta.total} match(es) • page ${pageMeta.currentPage}/${pageMeta.totalPages}`;
+  }
+
+  return pageMeta;
 }
 
 function renderProcessDetail(process, history) {
@@ -1720,52 +1941,25 @@ async function selectProcess(processId) {
 
 async function loadProcesses({ silent = false } = {}) {
   const status = el('processStatusLine');
-  const stateFilter = normalizeProcessStateFilter(state.processFilterState);
-  const runIdFilter = normalizeLocalPath(state.processFilterRunId);
 
   try {
     let payload;
     if (state.useMock) {
-      const rows = mock.processes.filter((row) => {
-        if (stateFilter && row.state !== stateFilter) return false;
-        if (runIdFilter && String(row.run_link?.run_id || '') !== runIdFilter) return false;
-        return true;
-      });
-      payload = { processes: rows, count: rows.length };
+      payload = { processes: mock.processes, count: mock.processes.length };
     } else {
-      const params = new URLSearchParams({ limit: '80' });
-      if (stateFilter) params.set('state', stateFilter);
-      if (runIdFilter) params.set('run_id', runIdFilter);
+      const params = new URLSearchParams({ limit: '500' });
       payload = await fetchJson(`/api/processes?${params.toString()}`);
     }
 
     state.processListError = '';
     state.processes = Array.isArray(payload?.processes) ? payload.processes : [];
-
-    if (!state.selectedProcessId && state.processes.length) {
-      state.selectedProcessId = state.processes[0].process_id;
-    }
-
-    const stillExists = state.processes.some((row) => row.process_id === state.selectedProcessId);
-    if (!stillExists) {
-      state.selectedProcessId = state.processes[0]?.process_id || null;
-    }
-
-    renderProcessList(state.processes);
-    if (state.selectedProcessId) {
-      await selectProcess(state.selectedProcessId);
-      renderProcessList(state.processes);
-    } else {
-      renderProcessDetail(null, []);
-    }
-
-    if (status) {
-      status.textContent = `${state.processes.length} process(es)`;
-    }
+    await refreshProcessPanel();
   } catch (err) {
     state.processes = [];
     state.processListError = `Failed to load processes: ${err.message}`;
-    renderProcessList(state.processes);
+    const pageMeta = buildProcessPage([]);
+    renderProcessList([]);
+    renderProcessPagination(pageMeta);
     renderProcessDetail(null, []);
     if (!silent && status) {
       status.textContent = state.processListError;
@@ -1809,24 +2003,73 @@ async function runProcessAction(action) {
 function initProcessControls() {
   const stateFilter = el('processStateFilter');
   const runIdFilter = el('processRunIdFilter');
+  const clearBtn = el('processClearFiltersBtn');
   const refreshBtn = el('processRefreshBtn');
   const stopBtn = el('processStopBtn');
   const retryBtn = el('processRetryBtn');
   const openRunBtn = el('processSelectRunBtn');
+  const pageSizeSelect = el('processPageSizeSelect');
+  const firstBtn = el('processPageFirstBtn');
+  const prevBtn = el('processPagePrevBtn');
+  const nextBtn = el('processPageNextBtn');
+  const lastBtn = el('processPageLastBtn');
 
-  if (!stateFilter || !runIdFilter || !refreshBtn || !stopBtn || !retryBtn || !openRunBtn) return;
+  if (
+    !stateFilter || !runIdFilter || !clearBtn || !refreshBtn || !stopBtn || !retryBtn || !openRunBtn
+    || !pageSizeSelect || !firstBtn || !prevBtn || !nextBtn || !lastBtn
+  ) {
+    return;
+  }
 
   stateFilter.value = state.processFilterState;
   runIdFilter.value = state.processFilterRunId;
+  pageSizeSelect.value = String(normalizeProcessPageSize(state.processPageSize));
 
   stateFilter.addEventListener('change', async () => {
     state.processFilterState = stateFilter.value;
-    await loadProcesses();
+    state.processPage = 1;
+    await refreshProcessPanel();
   });
 
-  runIdFilter.addEventListener('change', async () => {
+  runIdFilter.addEventListener('input', async () => {
     state.processFilterRunId = runIdFilter.value || '';
-    await loadProcesses();
+    state.processPage = 1;
+    await refreshProcessPanel();
+  });
+
+  clearBtn.addEventListener('click', async () => {
+    state.processFilterState = 'all';
+    state.processFilterRunId = '';
+    state.processPage = 1;
+    stateFilter.value = 'all';
+    runIdFilter.value = '';
+    await refreshProcessPanel({ statusMessage: 'Filters cleared' });
+  });
+
+  pageSizeSelect.addEventListener('change', async () => {
+    state.processPageSize = normalizeProcessPageSize(pageSizeSelect.value);
+    pageSizeSelect.value = String(state.processPageSize);
+    state.processPage = 1;
+    await refreshProcessPanel();
+  });
+
+  firstBtn.addEventListener('click', async () => {
+    state.processPage = 1;
+    await refreshProcessPanel({ syncSelection: false });
+  });
+  prevBtn.addEventListener('click', async () => {
+    state.processPage = Math.max(1, Number(state.processPage || 1) - 1);
+    await refreshProcessPanel({ syncSelection: false });
+  });
+  nextBtn.addEventListener('click', async () => {
+    state.processPage = Number(state.processPage || 1) + 1;
+    await refreshProcessPanel({ syncSelection: false });
+  });
+  lastBtn.addEventListener('click', async () => {
+    const total = filterProcesses(state.processes).length;
+    const size = normalizeProcessPageSize(state.processPageSize);
+    state.processPage = Math.max(1, Math.ceil(total / size));
+    await refreshProcessPanel({ syncSelection: false });
   });
 
   refreshBtn.addEventListener('click', async () => {
@@ -2042,8 +2285,10 @@ function initArtifactViewerControls() {
   const openBtn = el('artifactOpenBtn');
   const reloadBtn = el('artifactReloadBtn');
   const clearBtn = el('artifactClearBtn');
+  const copyBtn = el('artifactCopyBtn');
+  const downloadBtn = el('artifactDownloadBtn');
 
-  if (!pathInput || !openBtn || !reloadBtn || !clearBtn) return;
+  if (!pathInput || !openBtn || !reloadBtn || !clearBtn || !copyBtn || !downloadBtn) return;
 
   pathInput.addEventListener('input', () => {
     state.artifactViewerPath = pathInput.value;
@@ -2069,6 +2314,38 @@ function initArtifactViewerControls() {
 
   clearBtn.addEventListener('click', () => {
     clearArtifactViewerState();
+    renderArtifactViewer();
+  });
+
+  copyBtn.addEventListener('click', async () => {
+    const payload = state.artifactViewerPayload;
+    const textPayload = getArtifactViewerTextPayload(payload);
+    if (!textPayload.canExport) return;
+    try {
+      await copyTextToClipboard(textPayload.text);
+      state.artifactViewerActionStatus = { message: 'Copied artifact content to clipboard.', kind: 'ok' };
+    } catch {
+      state.artifactViewerActionStatus = { message: 'Copy failed. Browser clipboard access was denied.', kind: 'error' };
+    }
+    renderArtifactViewer();
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    const payload = state.artifactViewerPayload;
+    const textPayload = getArtifactViewerTextPayload(payload);
+    if (!textPayload.canExport) return;
+
+    const blobType = payload?.content_type === 'application/json' ? 'application/json;charset=utf-8' : 'text/plain;charset=utf-8';
+    const blob = new Blob([textPayload.text], { type: blobType });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = artifactViewerDownloadName(state.artifactViewerPath, payload);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
+
+    state.artifactViewerActionStatus = { message: `Downloaded ${link.download}.`, kind: 'ok' };
     renderArtifactViewer();
   });
 

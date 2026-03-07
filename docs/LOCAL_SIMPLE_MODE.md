@@ -12,6 +12,10 @@ autodev local-simple --runs-root ./generated_runs
 
 # Optional: auto-open browser on startup
 autodev local-simple --runs-root ./generated_runs --open
+
+# Optional: open GUI + kick off Quick Run immediately
+# (GUI continues even if kickoff fails)
+autodev local-simple --runs-root ./generated_runs --open --run examples/PRD.md
 ```
 
 Recommended run profile for this mode:
@@ -31,12 +35,15 @@ autodev --prd examples/PRD.md --out ./generated_runs --profile local_simple
   - PRD hint: `examples/PRD.md` (if present)
   - one-screen run controls for start/resume/stop/retry + **Quick Run** preset button
 - Optional `--open` flag launches the default browser to the GUI URL on startup (best-effort, non-fatal if unavailable)
+- Optional `--run <PRD>` triggers an immediate Quick Run kickoff on startup (best-effort, non-fatal if kickoff fails)
+- Startup summary prints GUI URL, browser-open status, run kickoff status, and suggested next steps
 
 ## One-command local workflow
 
 - Start GUI + controls in one command:
   - `autodev local-simple --runs-root ./generated_runs`
   - `autodev local-simple --runs-root ./generated_runs --open` (best-effort browser auto-open)
+  - `autodev local-simple --runs-root ./generated_runs --open --run examples/PRD.md` (best-effort kickoff + explicit startup summary)
 - In GUI Overview tab, use **Run Controls**:
   - **Quick Run**: one-click `POST /api/runs/start` with `execute=true` and local-simple defaults (`profile/out` + selected/default PRD path)
   - Start: `POST /api/runs/start`

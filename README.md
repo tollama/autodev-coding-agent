@@ -376,6 +376,8 @@ Local simple mode (recommended for single-user laptop workflow):
 autodev local-simple --runs-root ./generated_runs
 # optional: auto-open browser
 autodev local-simple --runs-root ./generated_runs --open
+# optional: auto-open + kickoff quick run on startup (best-effort)
+autodev local-simple --runs-root ./generated_runs --open --run examples/PRD.md
 ```
 
 Options:
@@ -383,13 +385,15 @@ Options:
 - `--host`: bind address (default: `127.0.0.1`)
 - `--port`: bind port (default: `8787`)
 - `--open` (local-simple): best-effort open GUI URL in default browser on startup
+- `--run <PRD_PATH>` (local-simple): best-effort quick-run kickoff on startup (non-fatal if kickoff fails)
 
 Local simple mode quick notes:
 - localhost-first bind safety (`127.0.0.1` by default)
 - default GUI role becomes `developer` for low-friction run controls
 - default GUI profile hint becomes `local_simple`
 - Overview tab has **Quick Run** (one-click `/api/runs/start` execute mode) using local-simple defaults + selected/default PRD path
-- Validation tab includes read-only **Artifact Viewer** (`/api/runs/<run_id>/artifacts/read`) with failed-validator triage deep-link buttons
+- CLI startup summary now prints GUI URL, browser-open result, run kickoff status, and next steps (with actionable hints on kickoff failure)
+- Validation tab includes read-only **Artifact Viewer** (`/api/runs/<run_id>/artifacts/read`) with failed-validator triage deep-link buttons, pretty JSON rendering (raw fallback on malformed/truncated payloads), plus copy/download utilities
 - Processes tab surfaces active/recent tracked processes (`/api/processes`) with run linkage, retry-chain summary, transition history, and stop/retry actions
 
 See `docs/LOCAL_SIMPLE_MODE.md` for quickstart + when to switch to hardened mode.
