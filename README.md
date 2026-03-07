@@ -409,6 +409,7 @@ Local simple mode quick notes:
 - default GUI role becomes `developer` for low-friction run controls
 - default GUI profile hint becomes `local_simple`
 - Overview tab has **Quick Run** (one-click `/api/runs/start` execute mode) using local-simple defaults + selected/default PRD path
+- Overview/Validation/Processes tabs now expose explicit loading/empty/error state boxes with recovery actions (refresh/retry + logs hint shortcuts)
 - CLI startup now emits one concise summary block: URL (including `--open` result), kickoff status, and a single next action
 - Validation tab includes read-only **Artifact Viewer** (`/api/runs/<run_id>/artifacts/read`) with failed-validator triage deep-link buttons, pretty JSON rendering (raw fallback on malformed/truncated payloads), plus copy/download utilities with auto-clearing success/error toasts and focus preservation
 - Processes tab surfaces active/recent tracked processes (`/api/processes`) with run linkage, retry-chain summary, transition history, and stop/retry actions

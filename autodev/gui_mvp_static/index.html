@@ -47,6 +47,15 @@
             <h3>Run Controls</h3>
             <div id="runModeBadge" class="mode-badge">Loading mode…</div>
             <div id="localHealthBanner" class="health-banner">Health: checking gateway/model/context…</div>
+            <div id="overviewStateBox" class="tab-state hidden" aria-live="polite">
+              <div id="overviewStateMessage" class="tab-state-message"></div>
+              <div class="tab-state-actions">
+                <button id="overviewRefreshBtn" type="button">Refresh runs</button>
+                <button id="overviewRetryDetailBtn" type="button">Retry detail</button>
+                <button id="overviewLogsHintBtn" type="button">Open logs hint</button>
+              </div>
+              <div id="overviewStateHint" class="tab-state-hint"></div>
+            </div>
             <div class="run-controls-grid">
               <input id="controlPrd" type="text" placeholder="PRD file path (required for start/resume)" />
               <input id="controlOut" type="text" placeholder="Output root or run directory" />
@@ -125,6 +134,14 @@
         <div id="tab-validation" class="tab-content">
           <section>
             <h3>Validators</h3>
+            <div id="validationStateBox" class="tab-state hidden" aria-live="polite">
+              <div id="validationStateMessage" class="tab-state-message"></div>
+              <div class="tab-state-actions">
+                <button id="validationRefreshBtn" type="button">Refresh run detail</button>
+                <button id="validationLogsHintBtn" type="button">Open logs hint</button>
+              </div>
+              <div id="validationStateHint" class="tab-state-hint"></div>
+            </div>
             <div class="validation-controls">
               <input id="validationSearch" type="search" placeholder="Search validator/output…" />
               <select id="validationStatusFilter" aria-label="Filter by status">
@@ -242,6 +259,15 @@
               <span id="processPollingHint" class="muted"></span>
               <span id="processStaleIndicator" class="stale-indicator hidden" aria-live="polite"></span>
               <span id="processStatusLine" class="muted"></span>
+            </div>
+            <div id="processStateBox" class="tab-state hidden" aria-live="polite">
+              <div id="processStateMessage" class="tab-state-message"></div>
+              <div class="tab-state-actions">
+                <button id="processStateRefreshBtn" type="button">Refresh processes</button>
+                <button id="processStateClearBtn" type="button">Clear filters</button>
+                <button id="processStateLogsHintBtn" type="button">Open logs hint</button>
+              </div>
+              <div id="processStateHint" class="tab-state-hint"></div>
             </div>
 
             <div class="process-layout">

@@ -52,6 +52,10 @@ const state = {
   processPollMaxBackoffExp: 3,
   processNextPollAtMs: 0,
   processStaleThresholdMs: 45_000,
+  runsLoading: false,
+  runsError: '',
+  detailLoading: false,
+  detailError: '',
 };
 
 const ARTIFACT_ACTION_TOAST_MS = 3200;
@@ -345,6 +349,7 @@ function renderRuns(runs) {
 
   if (!runs.length) {
     list.innerHTML = '<div class="empty">No runs found in runs root.</div>';
+    renderOverviewState();
     return;
   }
 
@@ -358,6 +363,8 @@ function renderRuns(runs) {
     item.addEventListener('click', () => selectRun(run.run_id));
     list.appendChild(item);
   });
+
+  renderOverviewState();
 }
 
 function renderTimeline(phases) {
@@ -670,6 +677,145 @@ function setProcessStatus(message, { error = false } = {}) {
   if (!node) return;
   node.textContent = String(message || '');
   node.classList.toggle('error-text', Boolean(error));
+}
+
+function renderTabStateBox(prefix, { show = false, kind = 'empty', message = '', hint = '' } = {}) {
+  const box = el(`${prefix}StateBox`);
+  const messageNode = el(`${prefix}StateMessage`);
+  const hintNode = el(`${prefix}StateHint`);
+  if (!box || !messageNode || !hintNode) return;
+
+  box.classList.remove('is-loading', 'is-error', 'is-empty');
+  if (!show) {
+    box.classList.add('hidden');
+    messageNode.textContent = '';
+    hintNode.textContent = '';
+    return;
+  }
+
+  const normalizedKind = ['loading', 'error', 'empty'].includes(kind) ? kind : 'empty';
+  box.classList.add(`is-${normalizedKind}`);
+  box.classList.remove('hidden');
+  messageNode.textContent = String(message || '');
+  hintNode.textContent = String(hint || '');
+}
+
+function loadLogsHint() {
+  return 'Logs hint: check Process transition history, then inspect .autodev/task_final_last_validation.json in Artifact Viewer.';
+}
+
+async function openValidationLogsHint({ autoOpen = false } = {}) {
+  const defaultPath = '.autodev/task_final_last_validation.json';
+  const input = el('artifactPathInput');
+  if (input) input.value = defaultPath;
+  state.artifactViewerPath = defaultPath;
+  activateTab('validation');
+
+  if (autoOpen && state.selectedRunId) {
+    await openArtifactInViewer(defaultPath, { source: 'logs-hint', autoFocus: false });
+  } else {
+    announceArtifactViewerAction('Loaded validation logs hint path. Click Open to inspect artifact.', 'ok');
+  }
+}
+
+function renderOverviewState() {
+  if (state.runsLoading) {
+    renderTabStateBox('overview', {
+      show: true,
+      kind: 'loading',
+      message: 'Loading runs and selected run detail…',
+      hint: 'If this takes too long, click Refresh runs to retry.',
+    });
+    return;
+  }
+
+  if (state.runsError) {
+    renderTabStateBox('overview', {
+      show: true,
+      kind: 'error',
+      message: `Failed to load runs: ${state.runsError}`,
+      hint: loadLogsHint(),
+    });
+    return;
+  }
+
+  if (!state.runs.length) {
+    renderTabStateBox('overview', {
+      show: true,
+      kind: 'empty',
+      message: 'No runs found yet.',
+      hint: 'Start a new run via Quick Run or Start, then refresh this tab.',
+    });
+    return;
+  }
+
+  if (state.detailLoading) {
+    renderTabStateBox('overview', {
+      show: true,
+      kind: 'loading',
+      message: `Loading detail for ${state.selectedRunId || 'selected run'}…`,
+      hint: 'Use Retry detail if loading stalls.',
+    });
+    return;
+  }
+
+  if (state.detailError) {
+    renderTabStateBox('overview', {
+      show: true,
+      kind: 'error',
+      message: `Failed to load run detail: ${state.detailError}`,
+      hint: loadLogsHint(),
+    });
+    return;
+  }
+
+  renderTabStateBox('overview', { show: false });
+}
+
+function renderProcessTabState() {
+  const filtered = filterProcesses(state.processes);
+
+  if (state.processLoadInFlight && !state.processes.length) {
+    renderTabStateBox('process', {
+      show: true,
+      kind: 'loading',
+      message: 'Loading process list…',
+      hint: 'Use Refresh processes to retry if this appears stuck.',
+    });
+    return;
+  }
+
+  if (state.processListError) {
+    renderTabStateBox('process', {
+      show: true,
+      kind: 'error',
+      message: state.processListError,
+      hint: loadLogsHint(),
+    });
+    return;
+  }
+
+  if (!state.processes.length) {
+    renderTabStateBox('process', {
+      show: true,
+      kind: 'empty',
+      message: 'No tracked processes yet.',
+      hint: 'Start/retry a run from Overview, then refresh this panel.',
+    });
+    return;
+  }
+
+  if (!filtered.length) {
+    renderTabStateBox('process', {
+      show: true,
+      kind: 'empty',
+      message: 'No processes match current filters.',
+      hint: 'Clear filters or refresh processes to recover.',
+    });
+    return;
+  }
+
+  renderTabStateBox('process', { show: false });
 }
 
 function parseIsoMs(raw) {
@@ -1730,13 +1876,57 @@ function renderValidationTriageContext(context, allRows) {
   body.appendChild(filterHint);
 }
 
+function renderValidationState({ rows = [], filtered = [] } = {}) {
+  if (state.detailLoading) {
+    renderTabStateBox('validation', {
+      show: true,
+      kind: 'loading',
+      message: `Loading validation data for ${state.selectedRunId || 'selected run'}…`,
+      hint: 'Use Refresh run detail if loading stalls.',
+    });
+    return;
+  }
+
+  if (state.detailError) {
+    renderTabStateBox('validation', {
+      show: true,
+      kind: 'error',
+      message: `Failed to load run detail: ${state.detailError}`,
+      hint: loadLogsHint(),
+    });
+    return;
+  }
+
+  if (!rows.length) {
+    renderTabStateBox('validation', {
+      show: true,
+      kind: 'empty',
+      message: 'Validation artifact not found for selected run.',
+      hint: 'Refresh run detail, then open logs hint to inspect .autodev artifacts.',
+    });
+    return;
+  }
+
+  if (!filtered.length) {
+    renderTabStateBox('validation', {
+      show: true,
+      kind: 'empty',
+      message: 'No validators match current filter/search.',
+      hint: 'Clear/adjust filters to reveal validator results.',
+    });
+    return;
+  }
+
+  renderTabStateBox('validation', { show: false });
+}
+
 function renderValidationPanels(detail) {
   const groupsRoot = el('validationCards');
   const validationEmpty = el('validationEmpty');
   const qualityPanel = el('qualityPanel');
   const qualityEmpty = el('qualityEmpty');
 
-  const rows = normalizeValidationRows(detail);
+  const rows = normalizeValidationRows(detail || {});
   refreshValidationNameFilter(rows);
 
   const keyword = state.validationSearch.trim().toLowerCase();
@@ -1752,6 +1942,8 @@ function renderValidationPanels(detail) {
       || String(row.stderr || '').toLowerCase().includes(keyword);
     return statusOk && nameOk && keywordOk;
   });
+
+  renderValidationState({ rows, filtered });
 
   const contextStillExists = state.triageContext
     && rows.some((row) => row.name === state.triageContext.name && row.status === state.triageContext.status);
@@ -2237,11 +2429,13 @@ function renderProcessList(processes) {
 
   if (state.processListError) {
     empty.classList.add('hidden');
+    renderProcessTabState();
     return;
   }
 
   if (!Array.isArray(processes) || !processes.length) {
     empty.classList.remove('hidden');
+    renderProcessTabState();
     return;
   }
 
@@ -2266,6 +2460,8 @@ function renderProcessList(processes) {
     });
     list.appendChild(item);
   });
+
+  renderProcessTabState();
 }
 
 async function refreshProcessPanel({ syncSelection = true, statusMessage = '' } = {}) {
@@ -2471,6 +2667,7 @@ async function loadProcesses({ silent = false, source = 'manual' } = {}) {
   const requestSeq = Number(state.processLoadRequestSeq || 0) + 1;
   state.processLoadRequestSeq = requestSeq;
   state.processLoadInFlight = true;
+  renderProcessTabState();
 
   if (!silent) {
     setProcessStatus('Refreshing process list...');
@@ -2514,6 +2711,7 @@ async function loadProcesses({ silent = false, source = 'manual' } = {}) {
     if (requestSeq === state.processLoadRequestSeq) {
       state.processLoadInFlight = false;
     }
+    renderProcessTabState();
   }
 }
 
@@ -2729,6 +2927,9 @@ async function refreshCurrentRun({ silent = false } = {}) {
 
 async function loadRuns() {
   state.useMock = new URLSearchParams(window.location.search).get('mock') === '1';
+  state.runsLoading = true;
+  state.runsError = '';
+  renderOverviewState();
   await loadGuiContext();
 
   if (state.useMock) {
@@ -2744,6 +2945,9 @@ async function loadRuns() {
     await refreshScorecardWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
+    state.runsLoading = false;
+    state.runsError = '';
+    renderOverviewState();
     el('statusLine').textContent = 'Mock mode enabled (?mock=1).';
     setupPolling();
     return;
@@ -2770,11 +2974,17 @@ async function loadRuns() {
     await refreshScorecardWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
+    state.runsLoading = false;
+    state.runsError = '';
+    renderOverviewState();
     setupPolling();
   } catch (err) {
     el('statusLine').textContent = `Failed to load runs. Try ?mock=1 (${err.message})`;
     state.runs = [];
+    state.runsLoading = false;
+    state.runsError = String(err?.message || 'request failed');
     renderRuns(state.runs);
+    renderOverviewState();
     refreshCompareRunOptions();
     renderComparison(null, { error: 'Unable to load runs for comparison.' });
     renderTrends(null);
@@ -2801,6 +3011,8 @@ function renderDetail(detail) {
   renderBlockers(detail.blockers || []);
   renderValidationPanels(detail);
   renderArtifactViewer();
+  renderOverviewState();
+  renderProcessTabState();
   renderHealthBanner({
     ...(state.healthSnapshot || {}),
     model: firstNonEmpty([detail?.model, state.healthSnapshot?.model]),
@@ -2812,6 +3024,10 @@ function renderDetail(detail) {
 async function selectRun(runId, options = { rerenderList: true }) {
   state.selectedRunId = runId;
   state.selectedRun = state.runs.find((run) => run.run_id === runId) || null;
+  state.detailLoading = true;
+  state.detailError = '';
+  renderOverviewState();
+  renderValidationPanels(state.detail || {});
   if (state.selectedRun?.run_dir) {
     const outInput = el('controlOut');
     if (outInput) outInput.value = state.selectedRun.run_dir;
@@ -2823,8 +3039,12 @@ async function selectRun(runId, options = { rerenderList: true }) {
     const detail = state.useMock
       ? (mock.details[runId] || { run_id: runId, status: 'unknown', phase_timeline: [], tasks: [], blockers: [] })
       : await fetchJson(`/api/runs/${encodeURIComponent(runId)}`);
+    state.detailLoading = false;
+    state.detailError = '';
     renderDetail(detail);
   } catch (err) {
+    state.detailLoading = false;
+    state.detailError = String(err?.message || 'request failed');
     renderDetail({ run_id: runId, status: 'unknown', phase_timeline: [], tasks: [], blockers: [] });
     el('statusLine').textContent = `Failed to load detail for ${runId}: ${err.message}`;
   }
@@ -2875,6 +3095,66 @@ function initValidationControls() {
   failedFirst.addEventListener('change', () => {
     state.failedFirst = failedFirst.checked;
     if (state.detail) renderValidationPanels(state.detail);
+  });
+}
+
+function initTabRecoveryActions() {
+  const overviewRefreshBtn = el('overviewRefreshBtn');
+  const overviewRetryBtn = el('overviewRetryDetailBtn');
+  const overviewLogsBtn = el('overviewLogsHintBtn');
+  const validationRefreshBtn = el('validationRefreshBtn');
+  const validationLogsBtn = el('validationLogsHintBtn');
+  const processRefreshBtn = el('processStateRefreshBtn');
+  const processClearBtn = el('processStateClearBtn');
+  const processLogsBtn = el('processStateLogsHintBtn');
+
+  overviewRefreshBtn?.addEventListener('click', async () => {
+    await loadRuns();
+  });
+
+  overviewRetryBtn?.addEventListener('click', async () => {
+    if (state.selectedRunId) {
+      await selectRun(state.selectedRunId, { rerenderList: false });
+    } else {
+      await loadRuns();
+    }
+  });
+
+  overviewLogsBtn?.addEventListener('click', async () => {
+    await openValidationLogsHint();
+  });
+
+  validationRefreshBtn?.addEventListener('click', async () => {
+    if (state.selectedRunId) {
+      await selectRun(state.selectedRunId, { rerenderList: false });
+    } else {
+      await loadRuns();
+    }
+  });
+
+  validationLogsBtn?.addEventListener('click', async () => {
+    await openValidationLogsHint({ autoOpen: true });
+  });
+
+  processRefreshBtn?.addEventListener('click', async () => {
+    resetProcessPollingBackoff();
+    await loadProcesses({ source: 'manual' });
+  });
+
+  processClearBtn?.addEventListener('click', async () => {
+    state.processFilterState = 'all';
+    state.processFilterRunId = '';
+    state.processPage = 1;
+    const stateFilter = el('processStateFilter');
+    const runFilter = el('processRunIdFilter');
+    if (stateFilter) stateFilter.value = 'all';
+    if (runFilter) runFilter.value = '';
+    await refreshProcessPanel({ statusMessage: 'Filters cleared' });
+  });
+
+  processLogsBtn?.addEventListener('click', async () => {
+    setProcessStatus(loadLogsHint());
+    await openValidationLogsHint();
   });
 }
 
@@ -3254,6 +3534,7 @@ function initLiveUpdateControls() {
 
 initTabs();
 initValidationControls();
+initTabRecoveryActions();
 initArtifactViewerControls();
 initRunControls();
 initProcessControls();

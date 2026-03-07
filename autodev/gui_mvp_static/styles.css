@@ -702,6 +702,53 @@ section { margin-bottom: 16px; }
 .run-actions button:hover {
   border-color: #2563eb;
 }
+
+.tab-state {
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.tab-state.is-loading {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+.tab-state.is-error {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.tab-state.is-empty {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+.tab-state-message {
+  font-size: 13px;
+  color: #0f172a;
+}
+.tab-state-actions {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.tab-state-actions button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 12px;
+  background: white;
+  cursor: pointer;
+}
+.tab-state-actions button:hover {
+  border-color: #2563eb;
+}
+.tab-state-hint {
+  margin-top: 6px;
+  color: #475569;
+  font-size: 12px;
+}
+
 .run-actions .quick-run {
   border-color: #f59e0b;
   background: #fffbeb;
