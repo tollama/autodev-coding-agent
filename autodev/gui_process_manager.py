@@ -52,6 +52,26 @@ class GuiRunProcessManager:
         correlation_id: str | None = None,
         run_link: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        with self._lock:
+            return self._spawn_locked(
+                action=action,
+                payload=payload,
+                command=command,
+                retry_of=retry_of,
+                correlation_id=correlation_id,
+                run_link=run_link,
+            )
+
+    def _spawn_locked(
+        self,
+        *,
+        action: str,
+        payload: dict[str, Any],
+        command: list[str],
+        retry_of: str | None,
+        correlation_id: str | None,
+        run_link: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         proc = subprocess.Popen(  # noqa: S603 - sanitized argv + shell=False
             command,
             shell=False,
@@ -61,44 +81,43 @@ class GuiRunProcessManager:
             start_new_session=True,
         )
 
-        with self._lock:
-            now = _utc_now()
-            process_id = f"proc-{uuid.uuid4().hex[:12]}"
-            retry_root = process_id
-            retry_attempt = 1
-            resolved_correlation_id = (correlation_id or "").strip()
-            if retry_of:
-                parent = self._items.get(retry_of)
-                if parent:
-                    retry_root = parent.retry_root or parent.process_id
-                    retry_attempt = int(parent.retry_attempt) + 1
-                    if not resolved_correlation_id:
-                        resolved_correlation_id = parent.correlation_id
+        now = _utc_now()
+        process_id = f"proc-{uuid.uuid4().hex[:12]}"
+        retry_root = process_id
+        retry_attempt = 1
+        resolved_correlation_id = (correlation_id or "").strip()
+        if retry_of:
+            parent = self._items.get(retry_of)
+            if parent:
+                retry_root = parent.retry_root or parent.process_id
+                retry_attempt = int(parent.retry_attempt) + 1
+                if not resolved_correlation_id:
+                    resolved_correlation_id = parent.correlation_id
 
-            if not resolved_correlation_id:
-                resolved_correlation_id = _generate_correlation_id()
+        if not resolved_correlation_id:
+            resolved_correlation_id = _generate_correlation_id()
 
-            item = ManagedRunProcess(
-                process_id=process_id,
-                action=action,
-                payload=dict(payload),
-                command=list(command),
-                pid=int(proc.pid),
-                started_at=now,
-                state="running",
-                retry_of=retry_of,
-                retry_root=retry_root,
-                retry_attempt=retry_attempt,
-                correlation_id=resolved_correlation_id,
-                run_link=_normalize_run_link(run_link),
-                _proc=proc,
-            )
-            self._append_transition(item, "spawned", detail={"pid": item.pid})
-            self._append_transition(item, "running")
-            self._refresh_state(item)
-            self._items[process_id] = item
-            self._persist_state()
-            return self._snapshot(item)
+        item = ManagedRunProcess(
+            process_id=process_id,
+            action=action,
+            payload=dict(payload),
+            command=list(command),
+            pid=int(proc.pid),
+            started_at=now,
+            state="running",
+            retry_of=retry_of,
+            retry_root=retry_root,
+            retry_attempt=retry_attempt,
+            correlation_id=resolved_correlation_id,
+            run_link=_normalize_run_link(run_link),
+            _proc=proc,
+        )
+        self._append_transition(item, "spawned", detail={"pid": item.pid})
+        self._append_transition(item, "running")
+        self._refresh_state(item)
+        self._items[process_id] = item
+        self._persist_state()
+        return self._snapshot(item)
 
     def stop(self, process_id: str, *, graceful_timeout_sec: float = 2.0) -> dict[str, Any]:
         with self._lock:
@@ -144,43 +163,65 @@ class GuiRunProcessManager:
         execute: bool,
         correlation_id: str | None = None,
     ) -> dict[str, Any]:
-        target = self._resolve_retry_target(process_id=process_id, run_id=run_id)
-        command = list(target.command)
-        action = target.action
-        payload = dict(target.payload)
-        run_link = dict(target.run_link)
+        with self._lock:
+            target = self._resolve_retry_target_locked(process_id=process_id, run_id=run_id)
+            command = list(target.command)
+            action = target.action
+            payload = dict(target.payload)
+            run_link = dict(target.run_link)
 
-        resolved_correlation_id = (correlation_id or "").strip() or target.correlation_id
+            resolved_correlation_id = (correlation_id or "").strip() or target.correlation_id
 
-        if not execute:
+            if not execute:
+                return {
+                    "ok": True,
+                    "spawned": False,
+                    "command": command,
+                    "retry_of": target.process_id,
+                    "action": action,
+                    "run_link": run_link,
+                    "correlation_id": resolved_correlation_id,
+                }
+
+            duplicate = self._find_retry_duplicate_locked(
+                retry_of=target.process_id,
+                action=action,
+                payload=payload,
+                command=command,
+                correlation_id=resolved_correlation_id,
+            )
+            if duplicate is not None:
+                return {
+                    "ok": True,
+                    "spawned": True,
+                    "command": command,
+                    "retry_of": target.process_id,
+                    "action": action,
+                    "run_link": run_link,
+                    "correlation_id": duplicate.get("correlation_id", resolved_correlation_id),
+                    "process": duplicate,
+                    "idempotent_replay": True,
+                }
+
+            current = self._spawn_locked(
+                action=action,
+                payload=payload,
+                command=command,
+                retry_of=target.process_id,
+                correlation_id=resolved_correlation_id,
+                run_link=run_link,
+            )
             return {
                 "ok": True,
-                "spawned": False,
+                "spawned": True,
                 "command": command,
                 "retry_of": target.process_id,
                 "action": action,
                 "run_link": run_link,
-                "correlation_id": resolved_correlation_id,
+                "correlation_id": current.get("correlation_id", resolved_correlation_id),
+                "process": current,
+                "idempotent_replay": False,
             }
-
-        current = self.spawn(
-            action=action,
-            payload=payload,
-            command=command,
-            retry_of=target.process_id,
-            correlation_id=resolved_correlation_id,
-            run_link=run_link,
-        )
-        return {
-            "ok": True,
-            "spawned": True,
-            "command": command,
-            "retry_of": target.process_id,
-            "action": action,
-            "run_link": run_link,
-            "correlation_id": current.get("correlation_id", resolved_correlation_id),
-            "process": current,
-        }
 
     def get(self, process_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -216,30 +257,59 @@ class GuiRunProcessManager:
             self._persist_state()
             return [dict(entry) for entry in item.transitions]
 
-    def _resolve_retry_target(self, *, process_id: str | None, run_id: str | None) -> ManagedRunProcess:
-        with self._lock:
-            if process_id:
-                item = self._items.get(process_id)
-                if item is None:
-                    raise KeyError(process_id)
-                self._refresh_state(item)
-                self._persist_state()
-                return item
+    def _find_retry_duplicate_locked(
+        self,
+        *,
+        retry_of: str,
+        action: str,
+        payload: dict[str, Any],
+        command: list[str],
+        correlation_id: str,
+    ) -> dict[str, Any] | None:
+        candidates = [
+            item
+            for item in self._items.values()
+            if item.retry_of == retry_of
+            and item.action == action
+            and item.correlation_id == correlation_id
+            and item.command == command
+            and item.payload == payload
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda it: (it.retry_attempt, it.started_at), reverse=True)
+        match = candidates[0]
+        self._refresh_state(match)
+        self._persist_state()
+        return self._snapshot(match)
 
-            if run_id:
-                candidates = [item for item in self._items.values() if _run_id_of(item) == run_id]
-                if not candidates:
-                    raise KeyError(f"run_id:{run_id}")
-                candidates.sort(
-                    key=lambda it: (it.retry_attempt, it.started_at),
-                    reverse=True,
-                )
-                item = candidates[0]
-                self._refresh_state(item)
-                self._persist_state()
-                return item
+    def _resolve_retry_target_locked(self, *, process_id: str | None, run_id: str | None) -> ManagedRunProcess:
+        if process_id:
+            item = self._items.get(process_id)
+            if item is None:
+                raise KeyError(process_id)
+            self._refresh_state(item)
+            self._persist_state()
+            return item
+
+        if run_id:
+            candidates = [item for item in self._items.values() if _run_id_of(item) == run_id]
+            if not candidates:
+                raise KeyError(f"run_id:{run_id}")
+            candidates.sort(
+                key=lambda it: (it.retry_attempt, it.started_at),
+                reverse=True,
+            )
+            item = candidates[0]
+            self._refresh_state(item)
+            self._persist_state()
+            return item
 
         raise KeyError("retry_target_missing")
+
+    def _resolve_retry_target(self, *, process_id: str | None, run_id: str | None) -> ManagedRunProcess:
+        with self._lock:
+            return self._resolve_retry_target_locked(process_id=process_id, run_id=run_id)
 
     def _refresh_state(self, item: ManagedRunProcess) -> None:
         if item.state in TERMINAL_STATES:

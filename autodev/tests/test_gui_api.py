@@ -68,6 +68,9 @@ class _FakeProcess:
         self._wait_returncode = wait_returncode
         self.terminated = False
         self.killed = False
+        self.terminate_calls = 0
+        self.kill_calls = 0
+        self.wait_calls = 0
 
     def poll(self) -> int | None:
         if self.killed:
@@ -77,12 +80,15 @@ class _FakeProcess:
         return self._poll_result
 
     def terminate(self) -> None:
+        self.terminate_calls += 1
         self.terminated = True
 
     def kill(self) -> None:
+        self.kill_calls += 1
         self.killed = True
 
     def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls += 1
         if self.killed:
             return -9
         if self.terminated and self._terminate_timeout:
@@ -498,6 +504,35 @@ def test_trigger_stop_forced_kill_fallback(monkeypatch: pytest.MonkeyPatch) -> N
     stopped = trigger_stop({"process_id": process_id}, graceful_timeout_sec=0.1)
     assert stopped["process"]["state"] == "killed"
     assert stopped["process"]["stop_reason"] == "forced"
+    assert stopped["audit_event"]["result_state"] == "killed"
+    assert fake.terminate_calls == 1
+    assert fake.kill_calls == 1
+
+
+def test_trigger_stop_duplicate_requests_are_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeProcess(poll_result=None, terminate_timeout=False, wait_returncode=0)
+
+    def _fake_popen(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return fake
+
+    monkeypatch.setattr("autodev.gui_process_manager.subprocess.Popen", _fake_popen)
+
+    started = trigger_start(
+        {
+            "prd": "examples/PRD.md",
+            "out": "./generated_runs/dup-stop",
+            "profile": "enterprise",
+        },
+        execute=True,
+    )
+    process_id = started["process"]["process_id"]
+
+    first = trigger_stop({"process_id": process_id}, graceful_timeout_sec=0.1)
+    second = trigger_stop({"process_id": process_id}, graceful_timeout_sec=0.1)
+
+    assert first["process"]["process_id"] == second["process"]["process_id"]
+    assert first["process"]["state"] == second["process"]["state"] == "terminated"
+    assert fake.terminate_calls == 1
 
 
 def test_trigger_retry_preserves_chain_and_linkage(monkeypatch: pytest.MonkeyPatch) -> None:
