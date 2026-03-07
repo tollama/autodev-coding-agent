@@ -1,12 +1,22 @@
 # STATUS BOARD — CURRENT
 
-Status timestamp: 2026-03-07 (Asia/Seoul)
+Status timestamp: 2026-03-07 21:33 KST (Asia/Seoul)
 
 ## Current phase
 
-- **Mode:** Stabilization
-- **Window:** 48 hours (hotfix-only)
-- **Scope:** Validate merged NXT wave and keep demo/operator path stable before reopening feature delivery.
+- **Mode:** Stabilization Complete (window closed)
+- **Window:** 48 hours (hotfix-only) — completed
+- **Scope:** Completed validation of merged NXT wave; handoff to next-wave planning.
+
+## Stabilization Complete
+
+- **Declared at:** 2026-03-07 21:33 KST
+- **Evidence (clean runs):**
+  - [Day-1 report](./STABILIZATION_DAY1_REPORT.md)
+  - [Day-2 report](./STABILIZATION_DAY2_REPORT.md)
+  - [Day-3 report](./STABILIZATION_DAY3_REPORT.md)
+- **Open hotfixes (P0/P1):** None
+- **Decision:** Exit stabilization and resume normal feature delivery under next-wave plan.
 
 ## Wave closure summary
 
@@ -79,10 +89,6 @@ Status timestamp: 2026-03-07 (Asia/Seoul)
 - Detailed report: `docs/STABILIZATION_DAY3_REPORT.md`
 - Hotfix recommendation: N/A (no Day-3 failure)
 
-## Stabilization completion recommendation
-
-- **Recommendation:** ✅ Close 48-hour stabilization window and resume normal feature delivery.
-- **Basis:** Day-1~Day-3 identical core checks are all green, with no hotfix-triggering regressions.
 
 ## Related docs
 
