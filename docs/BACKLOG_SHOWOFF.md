@@ -125,6 +125,7 @@ References:
 - **Owner role:** frontend
 - **Acceptance Criteria:**
   - Clicking failed validator opens related task/artifact context.
+  - Related artifact links deep-link into read-only Artifact Viewer (`.autodev/*`) using typed read endpoint errors.
   - Filters support failed-only and validator name.
   - Works for final and per-task validation data.
 - **Dependencies:** SHW-010
@@ -230,8 +231,26 @@ References:
   - 정상 + sparse/missing + partial mode 시나리오 테스트 추가 (`autodev/tests/test_gui_mvp_server.py`).
 - **Dependencies:** SHW-015
 
+### SHW-020 — Process panel UX (local-simple polish) ✅ done
+- **Priority:** P2
+- **Effort:** M
+- **Owner role:** frontend
+- **Status:** ✅ Done (2026-03-07)
+- **Acceptance Criteria:**
+  - Dedicated Processes tab shows tracked processes from `/api/processes` with state/run linkage.
+  - Detail pane displays retry chain summary, transition history, and run deep-link.
+  - In-panel stop/retry controls reuse existing mutating endpoints without introducing new API surface.
+  - Empty/error states remain explicit and non-breaking.
+- **Completion notes (2026-03-07):**
+  - GUI에 `Processes` 탭 추가 (`index.html`, `app.js`, `styles.css`).
+  - list/filter + detail/history UX 구현 (`/api/processes`, `/api/processes/{id}`, `/history`).
+  - stop/retry 버튼을 `/api/runs/stop`, `/api/runs/retry`에 연결하고 성공 후 run/process 목록 동기화.
+  - mock mode에서도 동일한 프로세스 패널 흐름 지원.
+  - 정적 contract 테스트 추가 (`test_process_panel_static_contract`).
+- **Dependencies:** SHW-017
+
 ---
 
 ## Suggested Immediate Start Queue (No Blocking Dependencies)
 
-- SHW-016~018 범위는 완료. 다음 우선순위는 별도 planning에서 재정의.
+- SHW-020까지 완료. 다음 우선순위는 별도 planning에서 재정의.

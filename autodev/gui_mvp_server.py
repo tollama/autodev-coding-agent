@@ -17,6 +17,7 @@ from .gui_api import (
     get_process_detail,
     get_process_history,
     list_processes,
+    read_artifact,
     trigger_resume,
     trigger_retry,
     trigger_start,
@@ -57,6 +58,8 @@ MUTATING_ROLES = {"operator", "developer"}
 
 DEFAULT_TREND_WINDOW = 20
 MAX_TREND_WINDOW = 200
+DEFAULT_ARTIFACT_READ_MAX_BYTES = 512_000
+MAX_ARTIFACT_READ_MAX_BYTES = 2_000_000
 
 
 @dataclass(frozen=True)
@@ -576,6 +579,20 @@ def _parse_bool_flag(raw: str | None, *, default: bool = False) -> bool:
     return default
 
 
+def _parse_artifact_max_bytes(raw: str | None) -> int:
+    if raw is None or not raw.strip():
+        return DEFAULT_ARTIFACT_READ_MAX_BYTES
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise GuiApiError("'max_bytes' must be an integer") from exc
+    if parsed < 1:
+        raise GuiApiError("'max_bytes' must be greater than zero")
+    if parsed > MAX_ARTIFACT_READ_MAX_BYTES:
+        return MAX_ARTIFACT_READ_MAX_BYTES
+    return parsed
+
+
 def _quality_trends(runs_root: Path, window: int, *, allow_partial: bool = False) -> dict[str, Any]:
     trend_window = max(1, min(int(window), MAX_TREND_WINDOW))
     if not runs_root.exists():
@@ -843,6 +860,48 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             window = _parse_trend_window(str((query.get("window") or [""])[0]))
             allow_partial = _parse_bool_flag(str((query.get("partial") or query.get("allow_partial") or [""])[0]))
             self._json_response(_quality_trends(self.config.runs_root, window, allow_partial=allow_partial))
+            return
+
+        if path.startswith("/api/runs/") and path.endswith("/artifacts/read"):
+            run_id = unquote(path.removeprefix("/api/runs/").removesuffix("/artifacts/read")).strip("/")
+            if not run_id:
+                self._json_response(
+                    {"error": _error_payload("invalid_run_id", "run id is required")},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            query = parse_qs(parsed.query)
+            artifact_path = str((query.get("path") or [""])[0]).strip()
+            if not artifact_path:
+                self._json_response(
+                    {"error": _error_payload("missing_artifact_path", "query param 'path' is required")},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            try:
+                max_bytes = _parse_artifact_max_bytes(str((query.get("max_bytes") or [""])[0]))
+                payload = read_artifact(
+                    str(self.config.runs_root),
+                    run_id,
+                    artifact_path,
+                    max_bytes=max_bytes,
+                )
+            except GuiApiError as exc:
+                self._json_response(
+                    {"error": _error_payload("invalid_artifact_request", str(exc))},
+                    status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                )
+                return
+            except FileNotFoundError as exc:
+                self._json_response(
+                    {"error": _error_payload("artifact_not_found", str(exc), run_id=run_id, path=artifact_path)},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+
+            self._json_response(payload)
             return
 
         if path.startswith("/api/runs/"):
