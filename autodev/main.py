@@ -526,13 +526,21 @@ def _cli_local_simple(argv: list[str]) -> None:
 
     print("[gui-mvp] local-simple mode enabled")
     print("[gui-mvp] defaults: role=%s auth_config=%s" % (os.environ.get("AUTODEV_GUI_ROLE"), "disabled"))
-    print(f"[gui-mvp] open: {gui_url}")
+    print(f"[gui-mvp] GUI URL: {gui_url}")
+
+    browser_opened = False
+    browser_error = ""
     if args.open:
         try:
             webbrowser.open(gui_url, new=2)
+            browser_opened = True
         except Exception as e:
-            print(f"[gui-mvp] warning: failed to open browser automatically ({e})")
+            browser_error = str(e).strip() or e.__class__.__name__
+            print(f"[gui-mvp] warning: failed to open browser automatically ({browser_error})")
 
+    kickoff_started = False
+    kickoff_process_id = ""
+    kickoff_error = ""
     if run_prd:
         try:
             from .gui_api import trigger_start
@@ -548,12 +556,39 @@ def _cli_local_simple(argv: list[str]) -> None:
                 run_payload["config"] = default_config
 
             run_result = trigger_start(run_payload, execute=True)
-            process_id = ""
             if isinstance(run_result.get("process"), dict):
-                process_id = str(run_result["process"].get("process_id", "")).strip()
-            print(f"[gui-mvp] quick-run kickoff: prd={run_prd} process_id={process_id or 'n/a'}")
+                kickoff_process_id = str(run_result["process"].get("process_id", "")).strip()
+            kickoff_started = True
         except Exception as e:
-            print(f"[gui-mvp] warning: quick-run kickoff failed ({e})")
+            kickoff_error = str(e).strip() or e.__class__.__name__
+            print(f"[gui-mvp] warning: quick-run kickoff failed ({kickoff_error})")
+            print("[gui-mvp] hint: GUI stays up; start manually from Overview → Quick Run.")
+            print("[gui-mvp] hint: verify PRD path/config and retry with --run <PRD>.")
+
+    if args.open:
+        if browser_opened:
+            print("[gui-mvp] browser open: requested (--open), launched default browser")
+        else:
+            print("[gui-mvp] browser open: requested (--open), launch failed (non-fatal)")
+            print(f"[gui-mvp] hint: open this URL manually: {gui_url}")
+
+    if run_prd:
+        if kickoff_started:
+            print(
+                f"[gui-mvp] run kickoff: started for prd={run_prd} process_id={kickoff_process_id or 'n/a'}"
+            )
+        else:
+            print(f"[gui-mvp] run kickoff: failed for prd={run_prd} (non-fatal)")
+
+    print("[gui-mvp] next steps:")
+    print(f"[gui-mvp]   1) Open GUI: {gui_url}")
+    if run_prd:
+        if kickoff_started:
+            print("[gui-mvp]   2) Track progress in Overview/Processes and refresh as needed.")
+        else:
+            print("[gui-mvp]   2) Trigger Quick Run from Overview after fixing the kickoff issue.")
+    else:
+        print("[gui-mvp]   2) Use Quick Run in Overview or restart with --run <PRD>.")
 
     serve(host, args.port, runs_root)
 

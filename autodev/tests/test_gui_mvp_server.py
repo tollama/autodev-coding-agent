@@ -343,6 +343,7 @@ def test_artifact_read_endpoint_returns_json_payload(gui_server):
     assert status == 200
     assert body["content_type"] == "application/json"
     assert body["content"]["validation"][0]["name"] == "ruff"
+    assert body["raw_content"].startswith('{"validation"')
     assert body["path"] == ".autodev/task_final_last_validation.json"
 
 
@@ -359,6 +360,7 @@ def test_artifact_read_endpoint_preserves_typed_malformed_json_error(gui_server)
     assert status == 200
     assert body["content_type"] == "application/json"
     assert body["content"] is None
+    assert body["raw_content"] == '{"tasks": ['
     assert body["error"]["kind"] == "artifact_json_error"
     assert body["error"]["code"] == "artifact_json_malformed"
 
@@ -376,7 +378,25 @@ def test_artifact_read_endpoint_truncates_and_reports_typed_error(gui_server):
     assert status == 200
     assert body["truncated"] is True
     assert body["content"] is None
+    assert isinstance(body["raw_content"], str)
+    assert body["raw_content"]
     assert body["error"]["code"] == "artifact_json_truncated"
+
+
+def test_artifact_viewer_static_contract_includes_export_controls(gui_server):
+    base_url, _ = gui_server
+
+    with request.urlopen(f"{base_url}/index.html", timeout=5) as resp:
+        index_html = resp.read().decode("utf-8")
+    assert 'id="artifactCopyBtn"' in index_html
+    assert 'id="artifactDownloadBtn"' in index_html
+    assert 'id="artifactViewerActionStatus"' in index_html
+
+    with request.urlopen(f"{base_url}/app.js", timeout=5) as resp:
+        app_js = resp.read().decode("utf-8")
+    assert "function getArtifactViewerTextPayload(payload)" in app_js
+    assert "function copyTextToClipboard(text)" in app_js
+    assert "artifactViewerDownloadName" in app_js
 
 
 def test_artifact_read_endpoint_rejects_invalid_query(gui_server):
@@ -1008,12 +1028,17 @@ def test_process_panel_static_contract(gui_server):
     assert 'id="tab-processes"' in index_html
     assert 'id="processList"' in index_html
     assert 'id="processStopBtn"' in index_html
+    assert 'id="processClearFiltersBtn"' in index_html
+    assert 'id="processPageNextBtn"' in index_html
 
     with request.urlopen(f"{base_url}/app.js", timeout=5) as resp:
         app_js = resp.read().decode("utf-8")
     assert "/api/processes?" in app_js
     assert "/api/processes/${encodeURIComponent(state.selectedProcessId)}" in app_js
     assert "function initProcessControls()" in app_js
+    assert "function filterProcesses(rows)" in app_js
+    assert "rowRunId.includes(runIdFilter)" in app_js
+    assert "function renderProcessPagination(meta)" in app_js
 
 
 def test_retry_endpoint_supports_run_id_target(gui_server, tmp_path, monkeypatch):

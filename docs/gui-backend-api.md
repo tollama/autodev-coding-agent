@@ -263,7 +263,8 @@ validation triage 및 artifact viewer에서 사용하는 read-only artifact endp
   - `.autodev/*` 하위만 허용 (`path traversal` 차단)
   - `path=plan.json` 같은 상대 입력도 내부에서 `.autodev/plan.json`으로 정규화
 - 반환 payload
-  - `run_name`, `path`, `content_type`, `truncated`, `content`
+  - `run_name`, `path`, `content_type`, `truncated`, `content`, `raw_content`
+  - JSON은 parse 성공 시 `content`를 객체로 제공하고, 실패/잘림(truncated) 상황에서도 `raw_content`로 원문(또는 잘린 원문) fallback 제공
   - JSON parse 실패 시 typed error 포함:
     - `error.kind = "artifact_json_error"`
     - `error.code = "artifact_json_malformed" | "artifact_json_truncated"`

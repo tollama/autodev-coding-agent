@@ -153,9 +153,11 @@ def read_artifact(
     content_type = "text/plain"
     content: Any
     parse_error: dict[str, Any] | None = None
+    raw_content: str | None = None
     if artifact_path.suffix == ".json":
         content_type = "application/json"
         text = payload.decode("utf-8", errors="replace")
+        raw_content = text
         try:
             content = json.loads(text)
         except json.JSONDecodeError as exc:
@@ -163,9 +165,11 @@ def read_artifact(
             parse_error = _build_json_parse_error_payload(path=safe_rel, err=exc, truncated=truncated)
     elif artifact_path.suffix == ".md":
         content_type = "text/markdown"
-        content = payload.decode("utf-8")
+        content = payload.decode("utf-8", errors="replace")
+        raw_content = content
     else:
         content = payload.decode("utf-8", errors="replace")
+        raw_content = content
 
     result = {
         "run_name": run_dir.name,
@@ -173,6 +177,7 @@ def read_artifact(
         "content_type": content_type,
         "truncated": truncated,
         "content": content,
+        "raw_content": raw_content,
     }
     if parse_error:
         result["error"] = parse_error

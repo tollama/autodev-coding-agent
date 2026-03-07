@@ -131,11 +131,13 @@ def test_read_artifact_json_and_markdown(tmp_path: Path) -> None:
     plan = read_artifact(str(out_root), "rid-1", "plan.json")
     assert plan["content_type"] == "application/json"
     assert plan["content"]["tasks"][0]["id"] == "api"
+    assert plan["raw_content"].startswith('{"tasks"')
     assert "error" not in plan
 
     report = read_artifact(str(out_root), "run-1", ".autodev/REPORT.md")
     assert report["content_type"] == "text/markdown"
     assert report["content"] == "# Report"
+    assert report["raw_content"] == "# Report"
 
 
 def test_read_artifact_returns_structured_json_error_for_malformed_json(tmp_path: Path) -> None:
@@ -149,6 +151,7 @@ def test_read_artifact_returns_structured_json_error_for_malformed_json(tmp_path
     res = read_artifact(str(out_root), "rid-err", "plan.json")
     assert res["content_type"] == "application/json"
     assert res["content"] is None
+    assert res["raw_content"] == '{"tasks": ['
     assert res["error"]["kind"] == "artifact_json_error"
     assert res["error"]["code"] == "artifact_json_malformed"
     assert res["error"]["path"] == ".autodev/plan.json"
@@ -164,6 +167,8 @@ def test_read_artifact_marks_truncated_json_error_code(tmp_path: Path) -> None:
     res = read_artifact(str(out_root), "rid-trunc", "plan.json", max_bytes=20)
     assert res["truncated"] is True
     assert res["content"] is None
+    assert isinstance(res["raw_content"], str)
+    assert res["raw_content"]
     assert res["error"]["code"] == "artifact_json_truncated"
 
 
