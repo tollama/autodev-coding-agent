@@ -30,6 +30,7 @@ autodev autonomous start \
 
 - `--max-iterations <N>`: total unattended attempts (first run + retries)
 - `--time-budget-sec <seconds>`: hard wall-clock budget
+- `--max-estimated-token-budget <N>`: optional budget-guard token placeholder (recorded in diagnostics; currently not enforced without token signal)
 - `--workspace-allowlist <path>` (repeatable): allowed roots for PRD/config/output/run
 - `--blocked-paths <path>` (repeatable): hard-deny roots
 - `--allow-docker-build`: opt-in docker build execution (default: blocked)
@@ -55,8 +56,8 @@ autodev autonomous summary --run-dir ./generated_runs/<run_id> --format text
 ```
 
 Default output is machine-readable JSON with latest run status, preflight status/reason codes,
-gate pass/fail counts, dominant gate fail codes, latest auto-fix strategy, and stop-guard
-decision fields (with graceful warnings for missing artifacts).
+budget-guard outcome/reason codes, gate pass/fail counts, dominant gate fail codes, latest auto-fix
+strategy, and stop-guard decision fields (with graceful warnings for missing artifacts).
 
 ---
 
@@ -89,6 +90,8 @@ run:
       max_consecutive_gate_failures: 3
       max_consecutive_no_improvement: 2
       rollback_recommendation_enabled: true
+    budget_guard_policy:
+      max_estimated_token_budget: 120000
 ```
 
 Notes:
@@ -102,6 +105,7 @@ Notes:
 - Strategy selection uses a bounded no-improvement heuristic to avoid repeating identical strategies when the prior same-strategy retry did not measurably reduce gate failures.
 - Stop-guard policy (`stop_guard_policy`) adds deterministic early-stop decisions before exhausting wasteful retries when (a) gate failures repeat consecutively or (b) consecutive gate-failed attempts show no measurable improvement.
 - Guard decisions persist typed reason codes (for example `autonomous_guard.repeated_gate_failure_limit_reached`) and optional rollback recommendation markers across state/report/summary artifacts.
+- Budget guard tracks wall-clock and iteration limits from the active autonomous policy, emits typed reason codes on threshold-trigger stop (`autonomous_budget_guard.max_wall_clock_seconds_exceeded`, `autonomous_budget_guard.max_autonomous_iterations_reached`), and records optional estimated-token diagnostics (`autonomous_budget_guard.estimated_token_budget_not_available`) when no enforceable token signal is available.
 - Autonomous mode now runs a preflight safety gate before the unattended loop starts (path allowlist/blocked checks + required readable file checks, with optional artifact writability probe).
 - Preflight failures stop early with typed reason codes (for example `autonomous_preflight.path_blocked`) and persist diagnostics in state/report/summary artifacts.
 - `--resume-state` now performs deterministic state normalization (attempt de-duplication + `current_iteration` alignment) to prevent duplicate/lost attempt indexing across restart boundaries.
@@ -114,8 +118,8 @@ Notes:
 
 Each autonomous run writes:
 
-- `.autodev/autonomous_state.json` — live state machine snapshot (phase/status/attempts)
-- `.autodev/autonomous_report.json` — machine-readable final report (includes latest `gate_results` when configured)
+- `.autodev/autonomous_state.json` — live state machine snapshot (phase/status/attempts + `budget_guard` diagnostics/outcome)
+- `.autodev/autonomous_report.json` — machine-readable final report (includes latest `gate_results` when configured, plus `budget_guard` outcome)
 - `.autodev/autonomous_gate_results.json` — per-iteration quality gate evaluation history
 - `.autodev/autonomous_gate_baseline.json` — persistent recent gate observations used for trend-aware regression checks
 - `.autodev/autonomous_strategy_trace.json` — per-iteration strategy routing/rotation trace with latest selected strategy

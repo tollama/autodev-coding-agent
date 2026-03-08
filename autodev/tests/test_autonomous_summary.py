@@ -200,6 +200,41 @@ def test_autonomous_summary_cli_outputs_json_and_text(tmp_path: Path, capsys) ->
     assert "guard_decision: stop (autonomous_guard.repeated_gate_failure_limit_reached)" in text_out
 
 
+def test_extract_autonomous_summary_surfaces_budget_guard_outcome(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-budget-guard"
+    artifacts = run_dir / ".autodev"
+
+    _write_json(
+        artifacts / "autonomous_report.json",
+        {
+            "ok": False,
+            "run_id": "run-budget-guard",
+            "budget_guard": {
+                "status": "triggered",
+                "decision": {
+                    "decision": "stop",
+                    "reason_code": "autonomous_budget_guard.max_autonomous_iterations_reached",
+                },
+                "diagnostics": [
+                    {
+                        "reason_code": "autonomous_budget_guard.estimated_token_budget_not_available",
+                    }
+                ],
+            },
+        },
+    )
+
+    summary = autonomous_mode.extract_autonomous_summary(str(run_dir))
+
+    assert summary["budget_guard_status"] == "triggered"
+    assert summary["budget_guard_decision"]["reason_code"] == "autonomous_budget_guard.max_autonomous_iterations_reached"
+    assert "autonomous_budget_guard.estimated_token_budget_not_available" in summary["budget_guard_reason_codes"]
+
+    rendered = autonomous_mode._render_autonomous_summary_text(summary)
+    assert "budget_guard: triggered" in rendered
+    assert "budget_guard_decision: stop (autonomous_budget_guard.max_autonomous_iterations_reached)" in rendered
+
+
 def test_extract_autonomous_summary_exposes_preflight_status_and_reason_codes(tmp_path: Path) -> None:
     run_dir = tmp_path / "run-preflight"
     artifacts = run_dir / ".autodev"

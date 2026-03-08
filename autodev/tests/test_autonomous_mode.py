@@ -27,6 +27,7 @@ def _write_cfg(
     include_quality_gate_policy: bool = False,
     stop_guard_policy_yaml: str = "",
     preflight_yaml: str = "",
+    budget_guard_policy_yaml: str = "",
 ) -> Path:
     gate_policy = """
     quality_gate_policy:
@@ -46,6 +47,10 @@ def _write_cfg(
     if preflight_yaml.strip():
         preflight_policy = f"\n    preflight:\n{preflight_yaml.rstrip()}"
 
+    budget_guard_policy = ""
+    if budget_guard_policy_yaml.strip():
+        budget_guard_policy = f"\n    budget_guard_policy:\n{budget_guard_policy_yaml.rstrip()}"
+
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
         f"""\
@@ -63,7 +68,7 @@ profiles:
 run:
   autonomous:
     max_iterations: 3
-    time_budget_sec: 600{gate_policy}{stop_guard_policy}{preflight_policy}
+    time_budget_sec: 600{gate_policy}{stop_guard_policy}{preflight_policy}{budget_guard_policy}
 """,
         encoding="utf-8",
     )
@@ -537,6 +542,116 @@ def test_autonomous_start_stops_at_max_iterations(tmp_path, monkeypatch):
     assert len(state["attempts"]) == 2
 
 
+def test_autonomous_start_budget_guard_time_budget_emits_typed_reason(tmp_path, monkeypatch):
+    cfg = _write_cfg(tmp_path)
+    prd = _write_prd(tmp_path)
+    out_root = tmp_path / "runs"
+
+    monkeypatch.setattr(autonomous_mode, "LLMClient", _FakeClient)
+
+    calls = 0
+
+    async def _fake_run(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return False, {"project": {}}, {"tasks": []}, []
+
+    class _FakeClock:
+        def __init__(self):
+            self._values = [1000.0, 1000.0, 1003.0, 1003.0, 1003.0]
+            self._index = 0
+
+        def __call__(self):
+            value = self._values[min(self._index, len(self._values) - 1)]
+            self._index += 1
+            return value
+
+    monkeypatch.setattr(autonomous_mode, "run_autodev_enterprise", _fake_run)
+    monkeypatch.setattr(autonomous_mode.time, "monotonic", _FakeClock())
+
+    with pytest.raises(SystemExit) as exc:
+        autonomous_mode.cli(
+            [
+                "start",
+                "--prd",
+                str(prd),
+                "--out",
+                str(out_root),
+                "--config",
+                str(cfg),
+                "--profile",
+                "minimal",
+                "--max-iterations",
+                "5",
+                "--time-budget-sec",
+                "2",
+                "--workspace-allowlist",
+                str(tmp_path),
+            ]
+        )
+
+    assert exc.value.code == 1
+    assert calls == 1
+
+    run_dir = sorted(out_root.iterdir())[0]
+    state = json.loads((run_dir / ".autodev" / "autonomous_state.json").read_text(encoding="utf-8"))
+    report = json.loads((run_dir / ".autodev" / "autonomous_report.json").read_text(encoding="utf-8"))
+
+    assert state["failure_reason"] == "time_budget_exceeded"
+    assert state["budget_guard"]["status"] == "triggered"
+    assert state["budget_guard"]["decision"]["reason_code"] == "autonomous_budget_guard.max_wall_clock_seconds_exceeded"
+    assert report["budget_guard"]["decision"]["reason_code"] == "autonomous_budget_guard.max_wall_clock_seconds_exceeded"
+
+
+def test_autonomous_start_budget_guard_non_trigger_includes_token_placeholder_diag(tmp_path, monkeypatch):
+    cfg = _write_cfg(tmp_path)
+    prd = _write_prd(tmp_path)
+    out_root = tmp_path / "runs"
+
+    monkeypatch.setattr(autonomous_mode, "LLMClient", _FakeClient)
+
+    async def _fake_run(*_args, **_kwargs):
+        return True, {"project": {}}, {"tasks": []}, []
+
+    monkeypatch.setattr(autonomous_mode, "run_autodev_enterprise", _fake_run)
+
+    autonomous_mode.cli(
+        [
+            "start",
+            "--prd",
+            str(prd),
+            "--out",
+            str(out_root),
+            "--config",
+            str(cfg),
+            "--profile",
+            "minimal",
+            "--max-estimated-token-budget",
+            "1000",
+            "--workspace-allowlist",
+            str(tmp_path),
+        ]
+    )
+
+    run_dir = sorted(out_root.iterdir())[0]
+    state = json.loads((run_dir / ".autodev" / "autonomous_state.json").read_text(encoding="utf-8"))
+    report = json.loads((run_dir / ".autodev" / "autonomous_report.json").read_text(encoding="utf-8"))
+    metadata = json.loads((run_dir / ".autodev" / "run_metadata.json").read_text(encoding="utf-8"))
+
+    assert state["budget_guard"]["status"] == "within_budget"
+    assert state["budget_guard"]["decision"] is None
+    assert state["budget_guard"]["checks"]["estimated_tokens"]["status"] == "not_available"
+
+    reason_codes = [
+        item.get("reason_code")
+        for item in state["budget_guard"].get("diagnostics", [])
+        if isinstance(item, dict)
+    ]
+    assert "autonomous_budget_guard.estimated_token_budget_not_available" in reason_codes
+    assert report["budget_guard"]["checks"]["estimated_tokens"]["status"] == "not_available"
+    assert metadata["autonomous_budget_guard_policy"]["max_estimated_token_budget"] == 1000
+
+
 def test_route_strategy_from_fail_reasons_maps_single_and_mixed_domains() -> None:
     tests_only = autonomous_mode._route_strategy_from_fail_reasons(
         [
@@ -996,6 +1111,11 @@ def test_autonomous_resume_state_deduplicates_attempt_indices_before_retry(tmp_p
         preflight_policy=autonomous_mode.AutonomousPreflightPolicy(),
         quality_gate_policy=None,
         stop_guard_policy=autonomous_mode.AutonomousStopGuardPolicy(),
+        budget_guard_policy=autonomous_mode.AutonomousBudgetGuardPolicy(
+            max_wall_clock_seconds=600,
+            max_autonomous_iterations=3,
+            max_estimated_token_budget=None,
+        ),
         prd_path=str(prd),
         config_path=str(cfg),
     )
