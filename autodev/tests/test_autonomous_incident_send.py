@@ -185,7 +185,7 @@ def test_report_and_summary_expose_incident_send(tmp_path: Path) -> None:
     artifacts = run_dir / ".autodev"
 
     incident_send_payload = {
-        "schema_version": "av3-008-v1",
+        "schema_version": "av3-009-v1",
         "trigger": "autonomous.run_failed",
         "run_dir": str(run_dir),
         "dry_run": True,
@@ -193,6 +193,10 @@ def test_report_and_summary_expose_incident_send(tmp_path: Path) -> None:
         "targets": ["stdout:markdown"],
         "success_count": 1,
         "failure_count": 0,
+        "suppressed": True,
+        "suppressed_count": 1,
+        "suppression_reason_codes": ["incident_send.dedupe_window_active"],
+        "force_send_override": {"applied": False, "code": None, "reason_codes": []},
     }
 
     state = {
@@ -213,7 +217,7 @@ def test_report_and_summary_expose_incident_send(tmp_path: Path) -> None:
     _write_json(
         artifacts / "autonomous_incident_send.json",
         {
-            "schema_version": "av3-008-v1",
+            "schema_version": "av3-009-v1",
             "latest": incident_send_payload,
             "attempts": [incident_send_payload],
         },
@@ -222,12 +226,120 @@ def test_report_and_summary_expose_incident_send(tmp_path: Path) -> None:
     summary = autonomous_mode.extract_autonomous_summary(str(run_dir))
     assert report["incident_send_attempted"] is True
     assert report["incident_send"]["trigger"] == "autonomous.run_failed"
+    assert report["incident_send_reason_codes"] == ["incident_send.dedupe_window_active"]
     assert "## Incident Send" in report_md
     assert "Attempted: yes" in report_md
+    assert "Suppression reason codes: incident_send.dedupe_window_active" in report_md
 
     assert summary["incident_send"]["status"] == "ok"
     assert summary["incident_send"]["payload"]["latest"]["trigger"] == "autonomous.run_failed"
     assert summary["incident_send_status"] == "ok"
+    assert summary["incident_send_reason_codes"] == ["incident_send.dedupe_window_active"]
+    assert summary["incident_send_suppressed"] is True
+
+
+def test_incident_send_rate_limit_suppression(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-rate-limit"
+    packet = _sample_packet()
+    _write_json(run_dir / ".autodev" / "autonomous_incident_packet.json", packet)
+
+    result = incident_send.send_incident_packet(
+        run_dir=run_dir,
+        targets=["stdout"],
+        dry_run=False,
+        trigger="autonomous.cli.incident_send",
+        send_policy={
+            "rate_limit_window_sec": 300,
+            "rate_limit_global_max": 1,
+        },
+        history_attempts=[
+            {
+                "decided_at": "2026-03-08T11:10:00Z",
+                "dry_run": False,
+                "attempts": [{"target": "stdout", "status": "sent", "ok": True}],
+            }
+        ],
+        now_ts=1741432320.0,
+    )
+
+    assert result["ok"] is True
+    assert result["suppressed"] is True
+    assert result["suppressed_count"] == 1
+    assert result["suppression_reason_codes"] == ["incident_send.rate_limit_global"]
+    assert result["attempts"][0]["status"] == "suppressed"
+    assert result["attempts"][0]["reason_code"] == "incident_send.rate_limit_global"
+
+
+def test_incident_send_dedupe_suppression(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-dedupe"
+    packet = _sample_packet()
+    _write_json(run_dir / ".autodev" / "autonomous_incident_packet.json", packet)
+    fingerprint = incident_send._incident_fingerprint(packet)
+
+    result = incident_send.send_incident_packet(
+        run_dir=run_dir,
+        targets=["stdout"],
+        dry_run=False,
+        trigger="autonomous.cli.incident_send",
+        send_policy={"dedupe_window_sec": 600},
+        history_attempts=[
+            {
+                "decided_at": "2026-03-08T11:10:00Z",
+                "dry_run": False,
+                "incident_fingerprint": fingerprint,
+                "attempts": [{"target": "stdout", "status": "sent", "ok": True}],
+            }
+        ],
+        now_ts=1741432320.0,
+    )
+
+    assert result["ok"] is True
+    assert result["suppressed"] is True
+    assert result["suppression_reason_codes"] == ["incident_send.dedupe_window_active"]
+    assert result["attempts"][0]["status"] == "suppressed"
+    assert result["attempts"][0]["reason_code"] == "incident_send.dedupe_window_active"
+
+
+def test_incident_send_force_send_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = tmp_path / "run-force"
+    packet = _sample_packet()
+    _write_json(run_dir / ".autodev" / "autonomous_incident_packet.json", packet)
+
+    calls: list[dict] = []
+
+    def _mock_target(packet: dict, rendered: str, dry_run: bool, context: dict) -> dict:
+        calls.append({"packet": packet, "rendered": rendered, "dry_run": dry_run, "context": context})
+        return {"mock": True}
+
+    monkeypatch.setitem(incident_send._INCIDENT_SEND_TARGETS, "mock_force", _mock_target)
+
+    result = incident_send.send_incident_packet(
+        run_dir=run_dir,
+        targets=["mock_force"],
+        dry_run=False,
+        trigger="autonomous.cli.incident_send",
+        send_policy={
+            "dedupe_window_sec": 600,
+            "force_send": True,
+        },
+        history_attempts=[
+            {
+                "decided_at": "2026-03-08T11:10:00Z",
+                "dry_run": False,
+                "incident_fingerprint": incident_send._incident_fingerprint(packet),
+                "attempts": [{"target": "mock_force", "status": "sent", "ok": True}],
+            }
+        ],
+        now_ts=1741432320.0,
+    )
+
+    assert len(calls) == 1
+    assert result["ok"] is True
+    assert result["suppressed"] is False
+    assert result["attempts"][0]["status"] == "sent"
+    assert result["force_send_override"]["applied"] is True
+    assert result["force_send_override"]["code"] == "incident_send.force_send_override"
+    assert "incident_send.dedupe_window_active" in result["force_send_override"]["reason_codes"]
 
 
 def test_webhook_target_sends_signed_payload_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

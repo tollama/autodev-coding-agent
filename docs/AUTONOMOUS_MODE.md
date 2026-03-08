@@ -80,17 +80,19 @@ Exports `.autodev/autonomous_incident_packet.json` into operator-ready channel f
 packet is missing (for example, successful/non-incident runs), CLI exits with a clear diagnostic and a
 pointer to `autodev autonomous summary`.
 
-### Incident send helper (AV3-007)
+### Incident send helper (AV3-009)
 
 ```bash
 autodev autonomous incident-send --run-dir ./generated_runs/<run_id>
 autodev autonomous incident-send --run-dir ./generated_runs/<run_id> --target stdout --target log:markdown --dry-run false
 autodev autonomous incident-send --run-dir ./generated_runs/<run_id> --target webhook:markdown --dry-run false
+autodev autonomous incident-send --run-dir ./generated_runs/<run_id> --dry-run false --force-send true
 ```
 
 Sends a failed-run incident packet through pluggable targets (`stdout`, `log`, `webhook`) and persists send attempts in
 `.autodev/autonomous_incident_send.json`. Defaults are safe: `--dry-run true` and no automatic send unless enabled
-via autonomous policy.
+via autonomous policy. AV3-009 adds optional dedupe/rate-limit suppression (with typed reason codes) and an explicit
+operator override (`--force-send true`) when immediate delivery is required.
 
 GUI/API parity: `GET /api/autonomous/quality-gate/latest` returns the latest run's autonomous summary snapshot
 (including gate/guard/preflight/operator guidance) and degrades gracefully when some artifacts are missing.
@@ -160,6 +162,12 @@ run:
     incident_send:
       enabled: false
       dry_run: true
+      # Optional AV3-009 safety controls (disabled by default for backward compatibility)
+      dedupe_window_sec: 0
+      rate_limit_window_sec: 0
+      rate_limit_global_max: null
+      rate_limit_per_target_max: null
+      force_send: false
       targets:
         - stdout
       webhook:
@@ -196,6 +204,8 @@ Notes:
 - Report/summary artifacts also expose `incident_routing` derived from typed reason codes (owner/team, severity, target SLA, escalation class), including summary top fields (`incident_owner_team`, `incident_severity`, `incident_target_sla`, `incident_escalation_class`).
 - Failed outcomes now emit `.autodev/autonomous_incident_packet.json` with structured run summary, typed/root-cause codes, routing, reproduction pointers, and top operator actions. Successful outcomes keep no-op behavior (incident packet is not generated).
 - Optional incident-send hooks can be enabled via `run.autonomous.incident_send.enabled`; default remains disabled with `dry_run=true` for side-effect-safe behavior.
+- AV3-009 adds optional incident-send dedupe/rate-limit controls (`dedupe_window_sec`, `rate_limit_window_sec`, `rate_limit_global_max`, `rate_limit_per_target_max`) with safe default values that preserve prior behavior when unset/zero.
+- Incident-send suppression/throttle decisions are persisted with typed reason codes (`incident_send.dedupe_window_active`, `incident_send.rate_limit_global`, `incident_send.rate_limit_target`) and exposed in report/summary artifacts; operators can explicitly override suppression with `force_send` / `--force-send true`.
 - `webhook` target supports HMAC signing (`sha256=<digest>`) and bounded retry/backoff for transient failures (network/429/5xx); permanent 4xx failures are not retried.
 - Send attempts persist in `.autodev/autonomous_incident_send.json` and are exposed through report/summary surfaces.
 - Unknown or newly introduced reason codes still produce graceful fallback guidance/routing (generic or family-level actions + routing defaults) for backward compatibility.
