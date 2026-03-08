@@ -39,6 +39,7 @@ AUTONOMOUS_GUARD_DECISIONS_JSON = ".autodev/autonomous_guard_decisions.json"
 _AUTONOMOUS_GATE_BASELINE_HISTORY_LIMIT = 20
 _AUTONOMOUS_RESUME_DIAGNOSTIC_VERSION = "av2-008"
 _AUTONOMOUS_PREFLIGHT_DIAGNOSTIC_VERSION = "av2-009"
+_AUTONOMOUS_BUDGET_GUARD_DIAGNOSTIC_VERSION = "av2-010"
 
 _AUTONOMOUS_STOP_GUARD_DEFAULT_MAX_CONSECUTIVE_GATE_FAILURES = 3
 _AUTONOMOUS_STOP_GUARD_DEFAULT_MAX_CONSECUTIVE_NO_IMPROVEMENT = 2
@@ -112,6 +113,13 @@ class AutonomousStopGuardPolicy:
     max_consecutive_gate_failures: int = _AUTONOMOUS_STOP_GUARD_DEFAULT_MAX_CONSECUTIVE_GATE_FAILURES
     max_consecutive_no_improvement: int = _AUTONOMOUS_STOP_GUARD_DEFAULT_MAX_CONSECUTIVE_NO_IMPROVEMENT
     rollback_recommendation_enabled: bool = True
+
+
+@dataclass(frozen=True)
+class AutonomousBudgetGuardPolicy:
+    max_wall_clock_seconds: int
+    max_autonomous_iterations: int
+    max_estimated_token_budget: int | None = None
 
 
 def _as_float(value: Any) -> float | None:
@@ -1059,6 +1067,39 @@ def _resolve_autonomous_stop_guard_policy(run_cfg: dict[str, Any]) -> Autonomous
     )
 
 
+def _resolve_autonomous_budget_guard_policy(
+    args: argparse.Namespace,
+    run_cfg: dict[str, Any],
+    policy: AutonomousPolicy,
+) -> AutonomousBudgetGuardPolicy:
+    auto_cfg = run_cfg.get("autonomous")
+    if auto_cfg is not None and not isinstance(auto_cfg, dict):
+        raise SystemExit("config.run.autonomous must be an object when set.")
+    auto_cfg = auto_cfg or {}
+
+    raw_policy = auto_cfg.get("budget_guard_policy")
+    if raw_policy is None:
+        raw_policy = {}
+    if not isinstance(raw_policy, dict):
+        raise SystemExit("config.run.autonomous.budget_guard_policy must be an object when set.")
+
+    token_budget_raw = args.max_estimated_token_budget
+    if token_budget_raw is None:
+        token_budget_raw = raw_policy.get("max_estimated_token_budget")
+    max_estimated_token_budget = _coerce_optional_int(
+        token_budget_raw,
+        "autonomous.budget_guard_policy.max_estimated_token_budget",
+    )
+    if max_estimated_token_budget is not None and max_estimated_token_budget <= 0:
+        raise SystemExit("config.run.autonomous.budget_guard_policy.max_estimated_token_budget must be >= 1.")
+
+    return AutonomousBudgetGuardPolicy(
+        max_wall_clock_seconds=policy.time_budget_sec,
+        max_autonomous_iterations=policy.max_iterations,
+        max_estimated_token_budget=max_estimated_token_budget,
+    )
+
+
 def _coerce_role_temperatures(value: Any) -> Dict[str, float]:
     if value is None:
         return {}
@@ -1330,6 +1371,7 @@ def _new_state(
     preflight_policy: AutonomousPreflightPolicy,
     quality_gate_policy: AutonomousQualityGatePolicy | None,
     stop_guard_policy: AutonomousStopGuardPolicy,
+    budget_guard_policy: AutonomousBudgetGuardPolicy,
     prd_path: str,
     config_path: str,
 ) -> dict[str, Any]:
@@ -1345,6 +1387,7 @@ def _new_state(
     if quality_gate_policy is not None:
         policy_payload["quality_gate_policy"] = asdict(quality_gate_policy)
     policy_payload["stop_guard_policy"] = asdict(stop_guard_policy)
+    policy_payload["budget_guard_policy"] = asdict(budget_guard_policy)
 
     return {
         "version": 1,
@@ -1363,6 +1406,11 @@ def _new_state(
         "resume_diagnostics": [],
         "last_strategy": None,
         "preflight": {"status": "pending", "ok": None, "reason_codes": [], "diagnostics": []},
+        "budget_guard": _make_budget_guard_snapshot(
+            policy=budget_guard_policy,
+            elapsed_seconds=0,
+            current_iteration=0,
+        ),
         "started_at": _utc_now(),
         "updated_at": _utc_now(),
     }
@@ -1616,6 +1664,103 @@ def _write_gate_results_artifact(
     _write_json_if_changed(ws, AUTONOMOUS_GATE_RESULTS_JSON, payload, ignore_keys=("updated_at",))
 
 
+def _make_budget_guard_decision(
+    *,
+    reason_code: str,
+    message: str,
+    policy: AutonomousBudgetGuardPolicy,
+    elapsed_seconds: int,
+    current_iteration: int,
+) -> dict[str, Any]:
+    return {
+        "type": "autonomous_budget_guard",
+        "taxonomy_version": _AUTONOMOUS_BUDGET_GUARD_DIAGNOSTIC_VERSION,
+        "decision": "stop",
+        "reason_code": reason_code,
+        "message": message,
+        "triggered_at": _utc_now(),
+        "elapsed_seconds": elapsed_seconds,
+        "current_iteration": current_iteration,
+        "limits": {
+            "max_wall_clock_seconds": policy.max_wall_clock_seconds,
+            "max_autonomous_iterations": policy.max_autonomous_iterations,
+            "max_estimated_token_budget": policy.max_estimated_token_budget,
+        },
+    }
+
+
+def _make_budget_guard_snapshot(
+    *,
+    policy: AutonomousBudgetGuardPolicy,
+    elapsed_seconds: int,
+    current_iteration: int,
+    decision: dict[str, Any] | None = None,
+    llm_usage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    observed_total_tokens = None
+    if isinstance(llm_usage, dict):
+        maybe_tokens = _as_int(llm_usage.get("total_input_tokens"))
+        maybe_output_tokens = _as_int(llm_usage.get("total_output_tokens"))
+        if maybe_tokens is not None and maybe_output_tokens is not None:
+            observed_total_tokens = maybe_tokens + maybe_output_tokens
+
+    diagnostics: list[dict[str, Any]] = []
+    estimated_status = "not_configured"
+    if policy.max_estimated_token_budget is not None:
+        estimated_status = "not_available"
+        diagnostics.append(
+            {
+                "type": "autonomous_budget_guard_diagnostic",
+                "taxonomy_version": _AUTONOMOUS_BUDGET_GUARD_DIAGNOSTIC_VERSION,
+                "code": "budget_guard.estimated_tokens.not_available",
+                "reason_code": "autonomous_budget_guard.estimated_token_budget_not_available",
+                "severity": "info",
+                "message": "estimated token signal is not available; max_estimated_token_budget is not enforced",
+                "at": _utc_now(),
+                "details": {
+                    "configured_max_estimated_token_budget": policy.max_estimated_token_budget,
+                    "observed_total_tokens": observed_total_tokens,
+                },
+            }
+        )
+
+    wall_status = "within_limit"
+    if decision is not None and decision.get("reason_code") == "autonomous_budget_guard.max_wall_clock_seconds_exceeded":
+        wall_status = "exceeded"
+
+    iteration_status = "within_limit"
+    if decision is not None and decision.get("reason_code") == "autonomous_budget_guard.max_autonomous_iterations_reached":
+        iteration_status = "reached"
+
+    return {
+        "type": "autonomous_budget_guard",
+        "taxonomy_version": _AUTONOMOUS_BUDGET_GUARD_DIAGNOSTIC_VERSION,
+        "status": "triggered" if decision is not None else "within_budget",
+        "triggered": decision is not None,
+        "decision": decision,
+        "checks": {
+            "wall_clock": {
+                "limit_seconds": policy.max_wall_clock_seconds,
+                "elapsed_seconds": elapsed_seconds,
+                "status": wall_status,
+            },
+            "iterations": {
+                "limit": policy.max_autonomous_iterations,
+                "current": current_iteration,
+                "status": iteration_status,
+            },
+            "estimated_tokens": {
+                "limit": policy.max_estimated_token_budget,
+                "estimated_total_tokens": None,
+                "observed_total_tokens": observed_total_tokens,
+                "status": estimated_status,
+            },
+        },
+        "diagnostics": diagnostics,
+        "updated_at": _utc_now(),
+    }
+
+
 def _render_report(state: dict[str, Any], *, ok: bool, last_validation: Any) -> tuple[dict[str, Any], str]:
     attempts = state.get("attempts") if isinstance(state.get("attempts"), list) else []
     gate_attempts = [a for a in attempts if isinstance(a, dict) and isinstance(a.get("gate_results"), dict)]
@@ -1631,6 +1776,7 @@ def _render_report(state: dict[str, Any], *, ok: bool, last_validation: Any) -> 
         d for d in (state.get("resume_diagnostics") or []) if isinstance(d, dict)
     ]
     preflight = state.get("preflight") if isinstance(state.get("preflight"), dict) else None
+    budget_guard = state.get("budget_guard") if isinstance(state.get("budget_guard"), dict) else None
     report = {
         "mode": "autonomous_v1",
         "ok": ok,
@@ -1650,6 +1796,7 @@ def _render_report(state: dict[str, Any], *, ok: bool, last_validation: Any) -> 
         ]),
         "policy": state.get("policy"),
         "preflight": preflight,
+        "budget_guard": budget_guard,
         "gate_results": latest_gate_results,
         "latest_strategy": latest_strategy,
         "guard_decision": latest_guard_decision,
@@ -1677,6 +1824,11 @@ def _render_report(state: dict[str, Any], *, ok: bool, last_validation: Any) -> 
             f"- Preflight: `{str(preflight.get('status') or 'unknown').upper()}` "
             f"(codes={codes_text})"
         )
+    if budget_guard is not None:
+        guard_status = str(budget_guard.get("status") or "unknown").upper()
+        guard_decision = budget_guard.get("decision") if isinstance(budget_guard.get("decision"), dict) else None
+        guard_reason = guard_decision.get("reason_code") if isinstance(guard_decision, dict) else "-"
+        md.append(f"- Budget guard: `{guard_status}` (reason_code={guard_reason})")
 
     md.extend([
         "",
@@ -1733,6 +1885,13 @@ def _render_report(state: dict[str, Any], *, ok: bool, last_validation: Any) -> 
         md.append(json_dumps(report["guard_decision"]))
         md.append("```")
 
+    if isinstance(report.get("budget_guard"), dict):
+        md.append("")
+        md.append("## Budget Guard")
+        md.append("```json")
+        md.append(json_dumps(report["budget_guard"]))
+        md.append("```")
+
     if isinstance(preflight, dict):
         preflight_diagnostics = preflight.get("diagnostics") if isinstance(preflight.get("diagnostics"), list) else []
         if preflight_diagnostics:
@@ -1786,6 +1945,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     )
     start.add_argument("--max-iterations", type=int, default=None)
     start.add_argument("--time-budget-sec", type=int, default=None)
+    start.add_argument("--max-estimated-token-budget", type=int, default=None)
     start.add_argument("--workspace-allowlist", action="append", default=None)
     start.add_argument("--blocked-paths", action="append", default=None)
     start.add_argument("--allow-docker-build", action="store_true", default=None)
@@ -1834,6 +1994,7 @@ def _start(argv: list[str]) -> None:
     preflight_policy = _resolve_autonomous_preflight_policy(args, run_cfg)
     quality_gate_policy = _resolve_autonomous_quality_gate_policy(run_cfg)
     stop_guard_policy = _resolve_autonomous_stop_guard_policy(run_cfg)
+    budget_guard_policy = _resolve_autonomous_budget_guard_policy(args, run_cfg, policy)
 
     run_out = str(Path(args.run_dir).expanduser().resolve()) if args.run_dir else _resolve_output_dir(args.prd, args.out)
     ws = Workspace(run_out)
@@ -1855,6 +2016,7 @@ def _start(argv: list[str]) -> None:
                 preflight_policy=preflight_policy,
                 quality_gate_policy=quality_gate_policy,
                 stop_guard_policy=stop_guard_policy,
+                budget_guard_policy=budget_guard_policy,
                 prd_path=args.prd,
                 config_path=args.config,
             )
@@ -1899,6 +2061,7 @@ def _start(argv: list[str]) -> None:
             preflight_policy=preflight_policy,
             quality_gate_policy=quality_gate_policy,
             stop_guard_policy=stop_guard_policy,
+            budget_guard_policy=budget_guard_policy,
             prd_path=args.prd,
             config_path=args.config,
         )
@@ -1938,8 +2101,10 @@ def _start(argv: list[str]) -> None:
                 "allow_docker_build": policy.allow_docker_build,
                 "allow_external_side_effects": policy.allow_external_side_effects,
                 "preflight_policy": asdict(preflight_policy),
+                "budget_guard_policy": asdict(budget_guard_policy),
             },
             "autonomous_preflight": preflight,
+            "autonomous_budget_guard": state.get("budget_guard"),
         }
         _write_json_if_changed(ws, ".autodev/run_metadata.json", failure_metadata, ignore_keys=("run_completed_at",))
 
@@ -2060,8 +2225,14 @@ def _start(argv: list[str]) -> None:
     if quality_gate_policy is not None:
         run_metadata["autonomous_quality_gate_policy"] = asdict(quality_gate_policy)
     run_metadata["autonomous_stop_guard_policy"] = asdict(stop_guard_policy)
+    run_metadata["autonomous_budget_guard_policy"] = asdict(budget_guard_policy)
     run_metadata["autonomous_preflight"] = preflight
     _write_json_if_changed(ws, ".autodev/run_metadata.json", run_metadata)
+    state["budget_guard"] = _make_budget_guard_snapshot(
+        policy=budget_guard_policy,
+        elapsed_seconds=0,
+        current_iteration=int(state.get("current_iteration") or 0),
+    )
     _write_state(ws, state)
 
     start_monotonic = time.monotonic()
@@ -2075,15 +2246,33 @@ def _start(argv: list[str]) -> None:
     while attempt_index < policy.max_iterations:
         elapsed = int(time.monotonic() - start_monotonic)
         if elapsed >= policy.time_budget_sec:
+            budget_guard_decision = _make_budget_guard_decision(
+                reason_code="autonomous_budget_guard.max_wall_clock_seconds_exceeded",
+                message="wall-clock budget exhausted before next autonomous iteration",
+                policy=budget_guard_policy,
+                elapsed_seconds=elapsed,
+                current_iteration=int(state.get("current_iteration") or 0),
+            )
             state["status"] = "failed"
             state["phase"] = "failed"
             state["failure_reason"] = "time_budget_exceeded"
+            state["budget_guard"] = _make_budget_guard_snapshot(
+                policy=budget_guard_policy,
+                elapsed_seconds=elapsed,
+                current_iteration=int(state.get("current_iteration") or 0),
+                decision=budget_guard_decision,
+            )
             _write_state(ws, state)
             break
 
         attempt_index += 1
         state["current_iteration"] = attempt_index
         state["phase"] = "plan"
+        state["budget_guard"] = _make_budget_guard_snapshot(
+            policy=budget_guard_policy,
+            elapsed_seconds=elapsed,
+            current_iteration=attempt_index,
+        )
         _write_state(ws, state)
 
         resume_flag = explicit_resume_first if attempt_index == 1 else True
@@ -2203,6 +2392,12 @@ def _start(argv: list[str]) -> None:
         elif any(isinstance(a, dict) and isinstance(a.get("guard_decision"), dict) for a in attempts):
             _write_guard_decisions_artifact(ws, policy=stop_guard_policy, attempts=attempts)
 
+        elapsed_after_attempt = int(time.monotonic() - start_monotonic)
+        state["budget_guard"] = _make_budget_guard_snapshot(
+            policy=budget_guard_policy,
+            elapsed_seconds=elapsed_after_attempt,
+            current_iteration=int(state.get("current_iteration") or 0),
+        )
         _write_state(ws, state)
 
         if ok:
@@ -2218,9 +2413,23 @@ def _start(argv: list[str]) -> None:
             break
 
         if attempt_index >= policy.max_iterations:
+            elapsed_on_stop = int(time.monotonic() - start_monotonic)
+            budget_guard_decision = _make_budget_guard_decision(
+                reason_code="autonomous_budget_guard.max_autonomous_iterations_reached",
+                message="autonomous iteration budget reached",
+                policy=budget_guard_policy,
+                elapsed_seconds=elapsed_on_stop,
+                current_iteration=attempt_index,
+            )
             state["status"] = "failed"
             state["phase"] = "failed"
             state["failure_reason"] = "max_iterations_exceeded"
+            state["budget_guard"] = _make_budget_guard_snapshot(
+                policy=budget_guard_policy,
+                elapsed_seconds=elapsed_on_stop,
+                current_iteration=attempt_index,
+                decision=budget_guard_decision,
+            )
             _write_state(ws, state)
             break
 
@@ -2228,6 +2437,19 @@ def _start(argv: list[str]) -> None:
         _write_state(ws, state)
 
     llm_usage = client.usage_summary()
+    existing_budget_guard_decision = None
+    existing_budget_guard = state.get("budget_guard") if isinstance(state.get("budget_guard"), dict) else None
+    if isinstance(existing_budget_guard, dict) and isinstance(existing_budget_guard.get("decision"), dict):
+        existing_budget_guard_decision = existing_budget_guard.get("decision")
+    state["budget_guard"] = _make_budget_guard_snapshot(
+        policy=budget_guard_policy,
+        elapsed_seconds=int(time.monotonic() - start_monotonic),
+        current_iteration=int(state.get("current_iteration") or 0),
+        decision=existing_budget_guard_decision,
+        llm_usage=llm_usage,
+    )
+    _write_state(ws, state)
+
     run_metadata["llm_usage"] = llm_usage
     run_metadata["result_ok"] = bool(ok)
     run_metadata["run_completed_at"] = _utc_now()
@@ -2235,6 +2457,7 @@ def _start(argv: list[str]) -> None:
     run_metadata["autonomous_strategy_trace_path"] = AUTONOMOUS_STRATEGY_TRACE_JSON
     run_metadata["autonomous_guard_decisions_path"] = AUTONOMOUS_GUARD_DECISIONS_JSON
     run_metadata["autonomous_guard_decision"] = state.get("guard_decision")
+    run_metadata["autonomous_budget_guard"] = state.get("budget_guard")
     _write_json_if_changed(ws, ".autodev/run_metadata.json", run_metadata, ignore_keys=("run_completed_at",))
 
     attempts_for_artifact = state.get("attempts") if isinstance(state.get("attempts"), list) else []
@@ -2414,6 +2637,21 @@ def extract_autonomous_summary(run_dir: str) -> dict[str, Any]:
         preflight_diagnostics = [item for item in preflight.get("diagnostics", []) if isinstance(item, dict)]
         diagnostics.extend(preflight_diagnostics)
 
+    budget_guard = report_payload.get("budget_guard") if isinstance(report_payload, dict) and isinstance(report_payload.get("budget_guard"), dict) else None
+    budget_guard_decision = budget_guard.get("decision") if isinstance(budget_guard, dict) and isinstance(budget_guard.get("decision"), dict) else None
+    budget_guard_status = str(budget_guard.get("status") or "unknown") if isinstance(budget_guard, dict) else "unknown"
+    budget_guard_reason_codes: list[str] = []
+    if isinstance(budget_guard_decision, dict) and budget_guard_decision.get("reason_code"):
+        budget_guard_reason_codes.append(str(budget_guard_decision.get("reason_code")))
+    if isinstance(budget_guard, dict) and isinstance(budget_guard.get("diagnostics"), list):
+        for item in budget_guard.get("diagnostics", []):
+            if not isinstance(item, dict):
+                continue
+            diagnostics.append(item)
+            if item.get("reason_code"):
+                budget_guard_reason_codes.append(str(item.get("reason_code")))
+    budget_guard_reason_codes = sorted(set(budget_guard_reason_codes))
+
     return {
         "mode": "autonomous_v1_summary",
         "run_dir": str(run_path),
@@ -2428,6 +2666,10 @@ def extract_autonomous_summary(run_dir: str) -> dict[str, Any]:
         "preflight": preflight,
         "preflight_status": preflight_status,
         "preflight_reason_codes": preflight_reason_codes,
+        "budget_guard": budget_guard,
+        "budget_guard_status": budget_guard_status,
+        "budget_guard_decision": budget_guard_decision,
+        "budget_guard_reason_codes": budget_guard_reason_codes,
         "gate_counts": {
             "pass": pass_count,
             "fail": fail_count,
@@ -2451,6 +2693,7 @@ def _render_autonomous_summary_text(summary: dict[str, Any]) -> str:
     dominant_codes = summary.get("dominant_fail_codes") if isinstance(summary.get("dominant_fail_codes"), list) else []
     latest_strategy = summary.get("latest_strategy") if isinstance(summary.get("latest_strategy"), dict) else None
     guard_decision = summary.get("guard_decision") if isinstance(summary.get("guard_decision"), dict) else None
+    budget_guard_decision = summary.get("budget_guard_decision") if isinstance(summary.get("budget_guard_decision"), dict) else None
     artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
 
     lines = [
@@ -2458,6 +2701,7 @@ def _render_autonomous_summary_text(summary: dict[str, Any]) -> str:
         f"- run_dir: {summary.get('run_dir')}",
         f"- status: {summary.get('status')}",
         f"- preflight: {summary.get('preflight_status', 'unknown')}",
+        f"- budget_guard: {summary.get('budget_guard_status', 'unknown')}",
         f"- gate_counts: pass={gate_counts.get('pass', 0)}, fail={gate_counts.get('fail', 0)}, total={gate_counts.get('total', 0)}",
     ]
 
@@ -2470,6 +2714,16 @@ def _render_autonomous_summary_text(summary: dict[str, Any]) -> str:
         lines.append(f"- preflight_reason_codes: {','.join(str(code) for code in preflight_reason_codes)}")
     else:
         lines.append("- preflight_reason_codes: -")
+
+    budget_guard_reason_codes = (
+        summary.get("budget_guard_reason_codes")
+        if isinstance(summary.get("budget_guard_reason_codes"), list)
+        else []
+    )
+    if budget_guard_reason_codes:
+        lines.append(f"- budget_guard_reason_codes: {','.join(str(code) for code in budget_guard_reason_codes)}")
+    else:
+        lines.append("- budget_guard_reason_codes: -")
 
     if dominant_codes:
         codes_text = ", ".join(
@@ -2492,6 +2746,16 @@ def _render_autonomous_summary_text(summary: dict[str, Any]) -> str:
         )
     else:
         lines.append("- guard_decision: -")
+
+    if budget_guard_decision is not None:
+        lines.append(
+            "- budget_guard_decision: "
+            f"{budget_guard_decision.get('decision', '-')}"
+            f" ({budget_guard_decision.get('reason_code', '-')})"
+        )
+    else:
+        lines.append("- budget_guard_decision: -")
+
     lines.append(f"- guard_decisions_total: {summary.get('guard_decisions_total', 0)}")
 
     lines.append("")
