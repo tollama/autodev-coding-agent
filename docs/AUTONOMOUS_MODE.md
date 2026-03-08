@@ -54,7 +54,8 @@ autodev autonomous summary --run-dir ./generated_runs/<run_id> --format text
 ```
 
 Default output is machine-readable JSON with latest run status, gate pass/fail counts,
-dominant gate fail codes, and latest auto-fix strategy (with graceful warnings for missing artifacts).
+dominant gate fail codes, latest auto-fix strategy, and stop-guard decision fields
+(with graceful warnings for missing artifacts).
 
 ---
 
@@ -81,6 +82,10 @@ run:
         max_high_findings: 0
       performance:
         max_regression_pct: 5
+    stop_guard_policy:
+      max_consecutive_gate_failures: 3
+      max_consecutive_no_improvement: 2
+      rollback_recommendation_enabled: true
 ```
 
 Notes:
@@ -92,6 +97,8 @@ Notes:
 - When a gate fails, autonomous mode records typed fail reasons in attempt artifacts and enters bounded `auto_fix_retry` (still constrained by `max_iterations` and `time_budget_sec`).
 - Auto-fix retries now route through a gate-code/category strategy map (`tests-focused`, `security-focused`, `perf-focused`, `mixed`) and persist selected strategy + rationale per iteration.
 - Strategy selection uses a bounded no-improvement heuristic to avoid repeating identical strategies when the prior same-strategy retry did not measurably reduce gate failures.
+- Stop-guard policy (`stop_guard_policy`) adds deterministic early-stop decisions before exhausting wasteful retries when (a) gate failures repeat consecutively or (b) consecutive gate-failed attempts show no measurable improvement.
+- Guard decisions persist typed reason codes (for example `autonomous_guard.repeated_gate_failure_limit_reached`) and optional rollback recommendation markers across state/report/summary artifacts.
 - Gate fail reasons include a normalized taxonomy payload (`taxonomy_version`, `category`, `severity`, `retryable`, `signal_source`) and explicit baseline regression codes (e.g. `performance.baseline_regression_detected`) so downstream report/triage logic can branch deterministically.
 
 ---
@@ -105,6 +112,7 @@ Each autonomous run writes:
 - `.autodev/autonomous_gate_results.json` — per-iteration quality gate evaluation history
 - `.autodev/autonomous_gate_baseline.json` — persistent recent gate observations used for trend-aware regression checks
 - `.autodev/autonomous_strategy_trace.json` — per-iteration strategy routing/rotation trace with latest selected strategy
+- `.autodev/autonomous_guard_decisions.json` — stop-guard decision history with typed reason codes and rollback recommendation markers
 - `AUTONOMOUS_REPORT.md` — quick human summary
 - existing run artifacts (`report.json`, quality artifacts, checkpoints) are preserved
 

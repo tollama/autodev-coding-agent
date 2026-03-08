@@ -72,6 +72,26 @@ def test_extract_autonomous_summary_aggregates_gate_and_strategy_artifacts(tmp_p
             }
         },
     )
+    _write_json(
+        artifacts / "autonomous_guard_decisions.json",
+        {
+            "decisions": [
+                {
+                    "iteration": 2,
+                    "guard_decision": {
+                        "decision": "stop",
+                        "reason_code": "autonomous_guard.repeated_gate_failure_limit_reached",
+                        "rollback_recommended": True,
+                    },
+                }
+            ],
+            "latest": {
+                "decision": "stop",
+                "reason_code": "autonomous_guard.repeated_gate_failure_limit_reached",
+                "rollback_recommended": True,
+            },
+        },
+    )
 
     summary = autonomous_mode.extract_autonomous_summary(str(run_dir))
 
@@ -81,6 +101,9 @@ def test_extract_autonomous_summary_aggregates_gate_and_strategy_artifacts(tmp_p
     assert summary["dominant_fail_codes"][1] == {"code": "security.max_high_findings_exceeded", "count": 1}
     assert summary["latest_strategy"]["name"] == "security-focused"
     assert summary["latest_strategy_source"] == "strategy_trace"
+    assert summary["guard_decision"]["reason_code"] == "autonomous_guard.repeated_gate_failure_limit_reached"
+    assert summary["guard_decision_source"] == "guard_decisions"
+    assert summary["guard_decisions_total"] == 1
     assert summary["warnings"] == []
 
 
@@ -104,9 +127,12 @@ def test_extract_autonomous_summary_handles_missing_or_partial_artifacts(tmp_pat
     assert summary["dominant_fail_codes"] == []
     assert summary["latest_strategy"]["name"] == "mixed"
     assert summary["latest_strategy_source"] == "report"
-    assert len(summary["warnings"]) == 2
+    assert summary["guard_decision"] is None
+    assert summary["guard_decision_source"] == "none"
+    assert len(summary["warnings"]) == 3
     assert any("gate_results: missing" in item for item in summary["warnings"])
     assert any("strategy_trace: missing" in item for item in summary["warnings"])
+    assert any("guard_decisions: missing" in item for item in summary["warnings"])
 
 
 def test_autonomous_summary_cli_outputs_json_and_text(tmp_path: Path, capsys) -> None:
@@ -119,6 +145,11 @@ def test_autonomous_summary_cli_outputs_json_and_text(tmp_path: Path, capsys) ->
             "ok": False,
             "run_id": "run-cli",
             "latest_strategy": {"name": "mixed"},
+            "guard_decision": {
+                "decision": "stop",
+                "reason_code": "autonomous_guard.repeated_gate_failure_limit_reached",
+            },
+            "guard_decisions_total": 1,
         },
     )
     _write_json(
@@ -135,15 +166,35 @@ def test_autonomous_summary_cli_outputs_json_and_text(tmp_path: Path, capsys) ->
             ]
         },
     )
+    _write_json(
+        artifacts / "autonomous_guard_decisions.json",
+        {
+            "decisions": [
+                {
+                    "iteration": 1,
+                    "guard_decision": {
+                        "decision": "stop",
+                        "reason_code": "autonomous_guard.repeated_gate_failure_limit_reached",
+                    },
+                }
+            ],
+            "latest": {
+                "decision": "stop",
+                "reason_code": "autonomous_guard.repeated_gate_failure_limit_reached",
+            },
+        },
+    )
 
     autonomous_mode.cli(["summary", "--run-dir", str(run_dir)])
     json_out = capsys.readouterr().out
     payload = json.loads(json_out)
     assert payload["status"] == "failed"
     assert payload["gate_counts"]["fail"] == 1
+    assert payload["guard_decision"]["reason_code"] == "autonomous_guard.repeated_gate_failure_limit_reached"
 
     autonomous_mode.cli(["summary", "--run-dir", str(run_dir), "--format", "text"])
     text_out = capsys.readouterr().out
     assert "# Autonomous Run Summary" in text_out
     assert "status: failed" in text_out
     assert "dominant_fail_codes: tests.min_pass_rate_not_met(1)" in text_out
+    assert "guard_decision: stop (autonomous_guard.repeated_gate_failure_limit_reached)" in text_out

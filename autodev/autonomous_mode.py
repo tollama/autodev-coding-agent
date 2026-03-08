@@ -35,7 +35,11 @@ AUTONOMOUS_REPORT_MD = "AUTONOMOUS_REPORT.md"
 AUTONOMOUS_GATE_RESULTS_JSON = ".autodev/autonomous_gate_results.json"
 AUTONOMOUS_GATE_BASELINE_JSON = ".autodev/autonomous_gate_baseline.json"
 AUTONOMOUS_STRATEGY_TRACE_JSON = ".autodev/autonomous_strategy_trace.json"
+AUTONOMOUS_GUARD_DECISIONS_JSON = ".autodev/autonomous_guard_decisions.json"
 _AUTONOMOUS_GATE_BASELINE_HISTORY_LIMIT = 20
+
+_AUTONOMOUS_STOP_GUARD_DEFAULT_MAX_CONSECUTIVE_GATE_FAILURES = 3
+_AUTONOMOUS_STOP_GUARD_DEFAULT_MAX_CONSECUTIVE_NO_IMPROVEMENT = 2
 
 _AUTONOMOUS_FIX_STRATEGY_ORDER = [
     "tests-focused",
@@ -94,6 +98,13 @@ class AutonomousQualityGatePolicy:
     tests: AutonomousTestsGateThresholds | None = None
     security: AutonomousSecurityGateThresholds | None = None
     performance: AutonomousPerformanceGateThresholds | None = None
+
+
+@dataclass(frozen=True)
+class AutonomousStopGuardPolicy:
+    max_consecutive_gate_failures: int = _AUTONOMOUS_STOP_GUARD_DEFAULT_MAX_CONSECUTIVE_GATE_FAILURES
+    max_consecutive_no_improvement: int = _AUTONOMOUS_STOP_GUARD_DEFAULT_MAX_CONSECUTIVE_NO_IMPROVEMENT
+    rollback_recommendation_enabled: bool = True
 
 
 def _as_float(value: Any) -> float | None:
@@ -731,6 +742,112 @@ def _write_strategy_trace_artifact(ws: Workspace, attempts: list[dict[str, Any]]
     ws.write_text(AUTONOMOUS_STRATEGY_TRACE_JSON, json_dumps(payload))
 
 
+def _evaluate_stop_guard_decision(
+    attempts: list[dict[str, Any]],
+    policy: AutonomousStopGuardPolicy,
+) -> dict[str, Any] | None:
+    gate_attempts = [
+        item
+        for item in attempts
+        if isinstance(item, dict) and isinstance(item.get("gate_results"), dict)
+    ]
+    if not gate_attempts:
+        return None
+
+    latest = gate_attempts[-1]
+    latest_gate_results = latest.get("gate_results")
+    if not isinstance(latest_gate_results, dict):
+        return None
+    if latest_gate_results.get("passed") is True:
+        return None
+
+    consecutive_failed_gate_attempts: list[dict[str, Any]] = []
+    for item in reversed(gate_attempts):
+        gate_results = item.get("gate_results")
+        if not isinstance(gate_results, dict):
+            break
+        if gate_results.get("passed") is True:
+            break
+        consecutive_failed_gate_attempts.append(item)
+    consecutive_failed_gate_attempts.reverse()
+
+    if len(consecutive_failed_gate_attempts) >= policy.max_consecutive_gate_failures:
+        return {
+            "type": "autonomous_stop_guard",
+            "taxonomy_version": "av2-007",
+            "decision": "stop",
+            "reason_code": "autonomous_guard.repeated_gate_failure_limit_reached",
+            "reason": "stop guard triggered by repeated consecutive gate failures",
+            "triggered_at": _utc_now(),
+            "iteration": latest.get("iteration"),
+            "consecutive_failed_gate_attempts": len(consecutive_failed_gate_attempts),
+            "threshold": policy.max_consecutive_gate_failures,
+            "rollback_recommended": bool(policy.rollback_recommendation_enabled),
+            "rollback_recommendation_marker": (
+                "recommended" if policy.rollback_recommendation_enabled else "disabled"
+            ),
+        }
+
+    no_improvement_streak = 0
+    for idx in range(1, len(consecutive_failed_gate_attempts)):
+        previous = consecutive_failed_gate_attempts[idx - 1]
+        current = consecutive_failed_gate_attempts[idx]
+        if not _has_measurable_gate_improvement(previous.get("gate_results"), current.get("gate_results")):
+            no_improvement_streak += 1
+        else:
+            no_improvement_streak = 0
+
+    if no_improvement_streak >= policy.max_consecutive_no_improvement:
+        return {
+            "type": "autonomous_stop_guard",
+            "taxonomy_version": "av2-007",
+            "decision": "stop",
+            "reason_code": "autonomous_guard.no_measurable_gate_improvement_limit_reached",
+            "reason": "stop guard triggered by repeated no-improvement gate outcomes",
+            "triggered_at": _utc_now(),
+            "iteration": latest.get("iteration"),
+            "consecutive_no_improvement": no_improvement_streak,
+            "threshold": policy.max_consecutive_no_improvement,
+            "consecutive_failed_gate_attempts": len(consecutive_failed_gate_attempts),
+            "rollback_recommended": bool(policy.rollback_recommendation_enabled),
+            "rollback_recommendation_marker": (
+                "recommended" if policy.rollback_recommendation_enabled else "disabled"
+            ),
+        }
+
+    return None
+
+
+def _write_guard_decisions_artifact(
+    ws: Workspace,
+    *,
+    policy: AutonomousStopGuardPolicy,
+    attempts: list[dict[str, Any]],
+) -> None:
+    decisions: list[dict[str, Any]] = []
+    for item in attempts:
+        if not isinstance(item, dict):
+            continue
+        guard_decision = item.get("guard_decision")
+        if isinstance(guard_decision, dict):
+            decisions.append(
+                {
+                    "iteration": item.get("iteration"),
+                    "ok": bool(item.get("ok")),
+                    "reason": item.get("reason"),
+                    "guard_decision": guard_decision,
+                }
+            )
+
+    payload = {
+        "updated_at": _utc_now(),
+        "policy": asdict(policy),
+        "decisions": decisions,
+        "latest": decisions[-1]["guard_decision"] if decisions else None,
+    }
+    ws.write_text(AUTONOMOUS_GUARD_DECISIONS_JSON, json_dumps(payload))
+
+
 def _latest_strategy_from_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
     for item in reversed(attempts):
         if isinstance(item, dict) and isinstance(item.get("strategy"), dict):
@@ -893,6 +1010,48 @@ def _resolve_autonomous_quality_gate_policy(run_cfg: dict[str, Any]) -> Autonomo
     )
 
 
+def _resolve_autonomous_stop_guard_policy(run_cfg: dict[str, Any]) -> AutonomousStopGuardPolicy:
+    auto_cfg = run_cfg.get("autonomous")
+    if auto_cfg is None:
+        return AutonomousStopGuardPolicy()
+    if not isinstance(auto_cfg, dict):
+        raise SystemExit("config.run.autonomous must be an object when set.")
+
+    raw_policy = auto_cfg.get("stop_guard_policy")
+    if raw_policy is None:
+        return AutonomousStopGuardPolicy()
+    if not isinstance(raw_policy, dict):
+        raise SystemExit("config.run.autonomous.stop_guard_policy must be an object when set.")
+
+    repeated = _coerce_optional_int(
+        raw_policy.get("max_consecutive_gate_failures"),
+        "autonomous.stop_guard_policy.max_consecutive_gate_failures",
+    )
+    if repeated is None:
+        repeated = _AUTONOMOUS_STOP_GUARD_DEFAULT_MAX_CONSECUTIVE_GATE_FAILURES
+    if repeated <= 0:
+        raise SystemExit("config.run.autonomous.stop_guard_policy.max_consecutive_gate_failures must be >= 1.")
+
+    no_improvement = _coerce_optional_int(
+        raw_policy.get("max_consecutive_no_improvement"),
+        "autonomous.stop_guard_policy.max_consecutive_no_improvement",
+    )
+    if no_improvement is None:
+        no_improvement = _AUTONOMOUS_STOP_GUARD_DEFAULT_MAX_CONSECUTIVE_NO_IMPROVEMENT
+    if no_improvement <= 0:
+        raise SystemExit("config.run.autonomous.stop_guard_policy.max_consecutive_no_improvement must be >= 1.")
+
+    rollback_enabled_raw = raw_policy.get("rollback_recommendation_enabled", True)
+    if not isinstance(rollback_enabled_raw, bool):
+        raise SystemExit("config.run.autonomous.stop_guard_policy.rollback_recommendation_enabled must be a boolean.")
+
+    return AutonomousStopGuardPolicy(
+        max_consecutive_gate_failures=int(repeated),
+        max_consecutive_no_improvement=int(no_improvement),
+        rollback_recommendation_enabled=rollback_enabled_raw,
+    )
+
+
 def _coerce_role_temperatures(value: Any) -> Dict[str, float]:
     if value is None:
         return {}
@@ -1038,6 +1197,7 @@ def _new_state(
     profile: str,
     policy: AutonomousPolicy,
     quality_gate_policy: AutonomousQualityGatePolicy | None,
+    stop_guard_policy: AutonomousStopGuardPolicy,
     prd_path: str,
     config_path: str,
 ) -> dict[str, Any]:
@@ -1051,6 +1211,7 @@ def _new_state(
     }
     if quality_gate_policy is not None:
         policy_payload["quality_gate_policy"] = asdict(quality_gate_policy)
+    policy_payload["stop_guard_policy"] = asdict(stop_guard_policy)
 
     return {
         "version": 1,
@@ -1125,6 +1286,12 @@ def _render_report(state: dict[str, Any], *, ok: bool, last_validation: Any) -> 
     gate_attempts = [a for a in attempts if isinstance(a, dict) and isinstance(a.get("gate_results"), dict)]
     latest_gate_results = gate_attempts[-1].get("gate_results") if gate_attempts else None
     latest_strategy = _latest_strategy_from_attempts(attempts)
+    guard_decisions = [
+        a.get("guard_decision")
+        for a in attempts
+        if isinstance(a, dict) and isinstance(a.get("guard_decision"), dict)
+    ]
+    latest_guard_decision = guard_decisions[-1] if guard_decisions else None
     report = {
         "mode": "autonomous_v1",
         "ok": ok,
@@ -1145,6 +1312,8 @@ def _render_report(state: dict[str, Any], *, ok: bool, last_validation: Any) -> 
         "policy": state.get("policy"),
         "gate_results": latest_gate_results,
         "latest_strategy": latest_strategy,
+        "guard_decision": latest_guard_decision,
+        "guard_decisions_total": len(guard_decisions),
         "last_validation": last_validation,
         "attempts": attempts,
         "completed_at": _utc_now(),
@@ -1179,10 +1348,16 @@ def _render_report(state: dict[str, Any], *, ok: bool, last_validation: Any) -> 
                 codes = [str(r.get("code")) for r in fail_reasons if isinstance(r, dict) and r.get("code")]
                 if codes:
                     gate_text += f", gate_fail_codes={','.join(codes)}"
+        guard_text = ""
+        guard_decision = item.get("guard_decision") if isinstance(item.get("guard_decision"), dict) else None
+        if guard_decision is not None:
+            guard_text = f", guard_decision={guard_decision.get('decision', '-')}, guard_reason_code={guard_decision.get('reason_code', '-')}"
+            if guard_decision.get("rollback_recommended") is True:
+                guard_text += ", rollback_recommended=true"
         md.append(
             f"- Iteration {item.get('iteration')}: "
             f"`{'OK' if item.get('ok') else 'FAILED'}` "
-            f"(resume={item.get('resume')}, reason={item.get('reason', '-')}{strategy_text}{gate_text})"
+            f"(resume={item.get('resume')}, reason={item.get('reason', '-')}{strategy_text}{gate_text}{guard_text})"
         )
 
     if isinstance(report.get("latest_strategy"), dict):
@@ -1197,6 +1372,13 @@ def _render_report(state: dict[str, Any], *, ok: bool, last_validation: Any) -> 
         md.append("## Latest Quality Gate Results")
         md.append("```json")
         md.append(json_dumps(report["gate_results"]))
+        md.append("```")
+
+    if isinstance(report.get("guard_decision"), dict):
+        md.append("")
+        md.append("## Stop Guard Decision")
+        md.append("```json")
+        md.append(json_dumps(report["guard_decision"]))
         md.append("```")
 
     md.append("")
@@ -1270,6 +1452,7 @@ def _start(argv: list[str]) -> None:
 
     policy = _resolve_autonomous_policy(args, run_cfg)
     quality_gate_policy = _resolve_autonomous_quality_gate_policy(run_cfg)
+    stop_guard_policy = _resolve_autonomous_stop_guard_policy(run_cfg)
 
     run_out = str(Path(args.run_dir).expanduser().resolve()) if args.run_dir else _resolve_output_dir(args.prd, args.out)
     ws = Workspace(run_out)
@@ -1291,6 +1474,7 @@ def _start(argv: list[str]) -> None:
             profile=profile_name,
             policy=policy,
             quality_gate_policy=quality_gate_policy,
+            stop_guard_policy=stop_guard_policy,
             prd_path=args.prd,
             config_path=args.config,
         )
@@ -1398,6 +1582,7 @@ def _start(argv: list[str]) -> None:
     }
     if quality_gate_policy is not None:
         run_metadata["autonomous_quality_gate_policy"] = asdict(quality_gate_policy)
+    run_metadata["autonomous_stop_guard_policy"] = asdict(stop_guard_policy)
     ws.write_text(".autodev/run_metadata.json", json_dumps(run_metadata))
     _write_state(ws, state)
 
@@ -1527,11 +1712,30 @@ def _start(argv: list[str]) -> None:
             state["last_gate_results"] = gate_results
             _write_gate_results_artifact(ws, policy=quality_gate_policy, attempts=attempts)
 
+        guard_decision = _evaluate_stop_guard_decision(attempts, stop_guard_policy)
+        if isinstance(guard_decision, dict):
+            ok = False
+            attempt_record["ok"] = False
+            if not attempt_record.get("reason"):
+                attempt_record["reason"] = "autonomous_guard_stop"
+            attempt_record["guard_decision"] = guard_decision
+            state["guard_decision"] = guard_decision
+            state["failure_reason"] = "autonomous_guard_stop"
+            _write_guard_decisions_artifact(ws, policy=stop_guard_policy, attempts=attempts)
+        elif any(isinstance(a, dict) and isinstance(a.get("guard_decision"), dict) for a in attempts):
+            _write_guard_decisions_artifact(ws, policy=stop_guard_policy, attempts=attempts)
+
         _write_state(ws, state)
 
         if ok:
             state["status"] = "completed"
             state["phase"] = "completed"
+            _write_state(ws, state)
+            break
+
+        if isinstance(attempt_record.get("guard_decision"), dict):
+            state["status"] = "failed"
+            state["phase"] = "failed"
             _write_state(ws, state)
             break
 
@@ -1551,7 +1755,12 @@ def _start(argv: list[str]) -> None:
     run_metadata["run_completed_at"] = _utc_now()
     run_metadata["autonomous_latest_strategy"] = state.get("last_strategy")
     run_metadata["autonomous_strategy_trace_path"] = AUTONOMOUS_STRATEGY_TRACE_JSON
+    run_metadata["autonomous_guard_decisions_path"] = AUTONOMOUS_GUARD_DECISIONS_JSON
+    run_metadata["autonomous_guard_decision"] = state.get("guard_decision")
     ws.write_text(".autodev/run_metadata.json", json_dumps(run_metadata))
+
+    attempts_for_artifact = state.get("attempts") if isinstance(state.get("attempts"), list) else []
+    _write_guard_decisions_artifact(ws, policy=stop_guard_policy, attempts=attempts_for_artifact)
 
     report_json, report_md = _render_report(state, ok=ok, last_validation=last_validation)
     ws.write_text(AUTONOMOUS_REPORT_JSON, json_dumps(report_json))
@@ -1601,19 +1810,27 @@ def extract_autonomous_summary(run_dir: str) -> dict[str, Any]:
     report_path = artifacts_dir / "autonomous_report.json"
     gate_path = artifacts_dir / "autonomous_gate_results.json"
     strategy_path = artifacts_dir / "autonomous_strategy_trace.json"
+    guard_path = artifacts_dir / "autonomous_guard_decisions.json"
 
     report_payload, report_error = _safe_load_json(report_path)
     gate_payload, gate_error = _safe_load_json(gate_path)
     strategy_payload, strategy_error = _safe_load_json(strategy_path)
+    guard_payload, guard_error = _safe_load_json(guard_path)
 
     warnings: list[str] = []
     artifact_status = {
         "report": {"path": str(report_path), "status": "ok" if report_error is None else report_error},
         "gate_results": {"path": str(gate_path), "status": "ok" if gate_error is None else gate_error},
         "strategy_trace": {"path": str(strategy_path), "status": "ok" if strategy_error is None else strategy_error},
+        "guard_decisions": {"path": str(guard_path), "status": "ok" if guard_error is None else guard_error},
     }
 
-    for name, err in (("report", report_error), ("gate_results", gate_error), ("strategy_trace", strategy_error)):
+    for name, err in (
+        ("report", report_error),
+        ("gate_results", gate_error),
+        ("strategy_trace", strategy_error),
+        ("guard_decisions", guard_error),
+    ):
         if err is not None:
             warnings.append(f"{name}: {err}")
 
@@ -1673,6 +1890,21 @@ def extract_autonomous_summary(run_dir: str) -> dict[str, Any]:
         for code, count in fail_code_counter.most_common()
     ]
 
+    latest_guard_decision = None
+    guard_source = "none"
+    guard_decisions_total = 0
+    if isinstance(guard_payload, dict):
+        decisions = guard_payload.get("decisions")
+        if isinstance(decisions, list):
+            guard_decisions_total = len([d for d in decisions if isinstance(d, dict)])
+        if isinstance(guard_payload.get("latest"), dict):
+            latest_guard_decision = guard_payload.get("latest")
+            guard_source = "guard_decisions"
+    if latest_guard_decision is None and isinstance(report_payload, dict) and isinstance(report_payload.get("guard_decision"), dict):
+        latest_guard_decision = report_payload.get("guard_decision")
+        guard_source = "report"
+        guard_decisions_total = int(report_payload.get("guard_decisions_total") or 0)
+
     return {
         "mode": "autonomous_v1_summary",
         "run_dir": str(run_path),
@@ -1692,6 +1924,9 @@ def extract_autonomous_summary(run_dir: str) -> dict[str, Any]:
         "dominant_fail_codes": dominant_fail_codes,
         "latest_strategy": latest_strategy,
         "latest_strategy_source": strategy_source,
+        "guard_decision": latest_guard_decision,
+        "guard_decision_source": guard_source,
+        "guard_decisions_total": guard_decisions_total,
         "warnings": warnings,
     }
 
@@ -1700,6 +1935,7 @@ def _render_autonomous_summary_text(summary: dict[str, Any]) -> str:
     gate_counts = summary.get("gate_counts") if isinstance(summary.get("gate_counts"), dict) else {}
     dominant_codes = summary.get("dominant_fail_codes") if isinstance(summary.get("dominant_fail_codes"), list) else []
     latest_strategy = summary.get("latest_strategy") if isinstance(summary.get("latest_strategy"), dict) else None
+    guard_decision = summary.get("guard_decision") if isinstance(summary.get("guard_decision"), dict) else None
     artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
 
     lines = [
@@ -1722,9 +1958,19 @@ def _render_autonomous_summary_text(summary: dict[str, Any]) -> str:
     else:
         lines.append("- latest_strategy: -")
 
+    if guard_decision is not None:
+        lines.append(
+            "- guard_decision: "
+            f"{guard_decision.get('decision', '-')}"
+            f" ({guard_decision.get('reason_code', '-')})"
+        )
+    else:
+        lines.append("- guard_decision: -")
+    lines.append(f"- guard_decisions_total: {summary.get('guard_decisions_total', 0)}")
+
     lines.append("")
     lines.append("Artifacts:")
-    for name in ("report", "gate_results", "strategy_trace"):
+    for name in ("report", "gate_results", "strategy_trace", "guard_decisions"):
         item = artifacts.get(name) if isinstance(artifacts.get(name), dict) else {}
         lines.append(f"- {name}: {item.get('status', 'missing')} ({item.get('path', '-')})")
 
