@@ -445,6 +445,7 @@ Autonomous artifacts are written under the run directory:
 See `docs/AUTONOMOUS_MODE.md` for detailed policy and operational behavior.
 For release gate steps and rollout guardrails, see `docs/ops/AUTONOMOUS_V2_RELEASE_CHECKLIST.md`.
 For commercial-grade autonomous delivery strategy and rollout governance, see `docs/AUTONOMOUS_COMMERCIAL_PLAN.md`.
+For AV2 completion summary and AV3 handoff priorities, see `docs/AUTONOMOUS_V2_WAVE_CLOSURE.md`.
 
 Update (v1b, 2026-03-07): autonomous commercial rollout references were refreshed across README/onboarding/autonomous-mode docs for easier operator discovery.
 
@@ -539,6 +540,7 @@ Stabilization handoff bundle (active):
 Next-wave planning/governance docs:
 - `docs/PLAN_NEXT_WEEK.md`
 - `docs/BACKLOG_NEXT_WEEK.md`
+- `docs/AUTONOMOUS_V2_WAVE_CLOSURE.md` (AV2 closure + AV3 candidate priorities)
 - `docs/AUTONOMOUS_COMMERCIAL_PLAN.md` (commercial autonomous rollout strategy)
 
 Legacy showoff planning docs (reference/archive):
