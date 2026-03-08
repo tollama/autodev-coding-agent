@@ -24,6 +24,8 @@ Update (v1d, 2026-03-08): autonomous outputs now expose `incident_routing` (owne
 
 Update (v1e, 2026-03-08): autonomous incident packet delivery now supports pluggable send hooks (`incident-send`) with default safe posture (`enabled=false`, `dry_run=true`) and persisted send-attempt artifacts.
 
+Update (v1f, 2026-03-08): failed autonomous runs now auto-generate ticket draft artifacts (`.autodev/autonomous_ticket_draft.md|json`) and add CLI regeneration helper (`ticket-draft`).
+
 ---
 
 ## Command
@@ -79,6 +81,17 @@ autodev autonomous incident-export --run-dir ./generated_runs/<run_id> --format 
 Exports `.autodev/autonomous_incident_packet.json` into operator-ready channel formats. If the incident
 packet is missing (for example, successful/non-incident runs), CLI exits with a clear diagnostic and a
 pointer to `autodev autonomous summary`.
+
+### Ticket draft helper (AV3-012)
+
+```bash
+autodev autonomous ticket-draft --run-dir ./generated_runs/<run_id> --format markdown
+autodev autonomous ticket-draft --run-dir ./generated_runs/<run_id> --format json
+```
+
+Generates issue/ticket-ready draft content from autonomous failure artifacts (incident packet + report fallback),
+including concise title, severity/owner/SLA triage fields, repro steps, evidence paths, suggested next actions,
+and clear diagnostics if source artifacts are missing.
 
 ### Incident send helper (AV3-009)
 
@@ -208,6 +221,7 @@ Notes:
 - Report/summary artifacts expose `operator_guidance` resolved from typed gate/guard/preflight/budget reason codes with links into `docs/AUTONOMOUS_FAILURE_PLAYBOOK.md`.
 - Report/summary artifacts also expose `incident_routing` derived from typed reason codes (owner/team, severity, target SLA, escalation class), including summary top fields (`incident_owner_team`, `incident_severity`, `incident_target_sla`, `incident_escalation_class`).
 - Failed outcomes now emit `.autodev/autonomous_incident_packet.json` with structured run summary, typed/root-cause codes, routing, reproduction pointers, and top operator actions. Successful outcomes keep no-op behavior (incident packet is not generated).
+- Failed outcomes also emit `.autodev/autonomous_ticket_draft.md` and `.autodev/autonomous_ticket_draft.json` for operator handoff; missing-source cases degrade gracefully with diagnostics and fallback triage guidance.
 - Optional incident-send hooks can be enabled via `run.autonomous.incident_send.enabled`; default remains disabled with `dry_run=true` for side-effect-safe behavior.
 - AV3-009 adds optional incident-send dedupe/rate-limit controls (`dedupe_window_sec`, `rate_limit_window_sec`, `rate_limit_global_max`, `rate_limit_per_target_max`) with safe default values that preserve prior behavior when unset/zero.
 - Incident-send suppression/throttle decisions are persisted with typed reason codes (`incident_send.dedupe_window_active`, `incident_send.rate_limit_global`, `incident_send.rate_limit_target`) and exposed in report/summary artifacts; operators can explicitly override suppression with `force_send` / `--force-send true`.
@@ -229,6 +243,7 @@ Each autonomous run writes:
 - `.autodev/autonomous_strategy_trace.json` — per-iteration strategy routing/rotation trace with latest selected strategy
 - `.autodev/autonomous_guard_decisions.json` — stop-guard decision history with typed reason codes and rollback recommendation markers
 - `.autodev/autonomous_incident_packet.json` — structured incident packet emitted for failed outcomes
+- `.autodev/autonomous_ticket_draft.md` / `.autodev/autonomous_ticket_draft.json` — operator-ready issue/ticket draft artifacts
 - `.autodev/autonomous_incident_send.json` — incident send-attempt history (`latest` + attempt records per target)
 - `.autodev/autonomous_incident_send_audit.jsonl` — append-only delivery audit trail (timestamped entry per target attempt/event)
 - `AUTONOMOUS_REPORT.md` — quick human summary (includes incident packet/send sections)

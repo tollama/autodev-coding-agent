@@ -230,6 +230,16 @@ def test_autonomous_summary_cli_outputs_json_and_text(tmp_path: Path, capsys) ->
             "run_summary": {"run_id": "run-cli"},
         },
     )
+    (artifacts / "autonomous_ticket_draft.md").write_text("# draft", encoding="utf-8")
+    _write_json(
+        artifacts / "autonomous_ticket_draft.json",
+        {
+            "title": "[AutoDev][high] tests.min_pass_rate_not_met on run-cli",
+            "severity": "high",
+            "owner_team": "Feature Engineering",
+            "target_sla": "4h",
+        },
+    )
 
     autonomous_mode.cli(["summary", "--run-dir", str(run_dir)])
     json_out = capsys.readouterr().out
@@ -238,6 +248,8 @@ def test_autonomous_summary_cli_outputs_json_and_text(tmp_path: Path, capsys) ->
     assert payload["gate_counts"]["fail"] == 1
     assert payload["guard_decision"]["reason_code"] == "autonomous_guard.repeated_gate_failure_limit_reached"
     assert payload["incident_packet"]["status"] == "ok"
+    assert payload["ticket_draft"]["markdown"]["status"] == "ok"
+    assert payload["ticket_draft"]["json"]["status"] == "ok"
     assert payload["operator_guidance"]["top"]
 
     autonomous_mode.cli(["summary", "--run-dir", str(run_dir), "--format", "text"])
@@ -247,6 +259,8 @@ def test_autonomous_summary_cli_outputs_json_and_text(tmp_path: Path, capsys) ->
     assert "incident_owner_team: Feature Engineering" in text_out
     assert "incident_target_sla: 4h" in text_out
     assert "incident_packet: ok" in text_out
+    assert "ticket_draft_markdown: ok" in text_out
+    assert "ticket_draft_json: ok" in text_out
     assert "dominant_fail_codes: tests.min_pass_rate_not_met(1)" in text_out
     assert "guard_decision: stop (autonomous_guard.repeated_gate_failure_limit_reached)" in text_out
     assert "operator_guidance_top:" in text_out

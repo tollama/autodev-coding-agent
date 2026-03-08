@@ -774,12 +774,17 @@ def test_render_report_includes_operator_guidance_payload_and_markdown_section()
 
     assert report["incident_packet_generated"] is True
     assert report["incident_packet_path"] == ".autodev/autonomous_incident_packet.json"
+    assert report["ticket_draft_generated"] is True
+    assert report["ticket_draft_markdown_path"] == ".autodev/autonomous_ticket_draft.md"
+    assert report["ticket_draft_json_path"] == ".autodev/autonomous_ticket_draft.json"
 
     assert "## Incident Routing" in report_md
     assert "owner/team=" in report_md
     assert "## Operator Guidance" in report_md
     assert "## Incident Packet" in report_md
+    assert "## Ticket Draft" in report_md
     assert ".autodev/autonomous_incident_packet.json" in report_md
+    assert ".autodev/autonomous_ticket_draft.md" in report_md
     assert "docs/AUTONOMOUS_FAILURE_PLAYBOOK.md#gate-failures" in report_md
 
 
