@@ -20,6 +20,11 @@ from .autonomous_gate_signals import (
     make_gate_failure_reason,
     normalize_validation_signals,
 )
+from .autonomous_incident_export import (
+    SUPPORTED_EXPORT_FORMATS,
+    load_incident_packet,
+    render_incident_export,
+)
 from .cli_progress import make_cli_progress_callback
 from .config import load_config
 from .json_utils import json_dumps
@@ -2608,6 +2613,10 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     summary.add_argument("--run-dir", required=True)
     summary.add_argument("--format", choices=["json", "text"], default="json")
 
+    incident_export = sub.add_parser("incident-export", help="export autonomous incident packet for operator channels")
+    incident_export.add_argument("--run-dir", required=True)
+    incident_export.add_argument("--format", choices=list(SUPPORTED_EXPORT_FORMATS), required=True)
+
     return ap
 
 
@@ -3561,9 +3570,20 @@ def _status(argv: list[str]) -> None:
     print(json_dumps(state))
 
 
+def _incident_export(argv: list[str]) -> None:
+    parser = _build_cli_parser()
+    args = parser.parse_args(["incident-export", *argv])
+    try:
+        packet = load_incident_packet(args.run_dir)
+    except (FileNotFoundError, ValueError) as e:
+        raise SystemExit(str(e)) from e
+
+    print(render_incident_export(packet, args.format))
+
+
 def cli(argv: list[str]) -> None:
     if not argv:
-        raise SystemExit("Usage: autodev autonomous <start|status|summary> ...")
+        raise SystemExit("Usage: autodev autonomous <start|status|summary|incident-export> ...")
     action = argv[0]
     if action == "start":
         _start(argv[1:])
@@ -3573,5 +3593,8 @@ def cli(argv: list[str]) -> None:
         return
     if action == "summary":
         _summary(argv[1:])
+        return
+    if action == "incident-export":
+        _incident_export(argv[1:])
         return
     raise SystemExit(f"Unknown autonomous subcommand: {action}")
