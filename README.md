@@ -434,6 +434,13 @@ autodev autonomous summary --run-dir ./generated_runs/<run_dir>
 autodev autonomous summary --run-dir ./generated_runs/<run_dir> --format text
 ```
 
+Export autonomous incident packet for Slack/Markdown/email escalation:
+```bash
+autodev autonomous incident-export --run-dir ./generated_runs/<run_dir> --format slack
+autodev autonomous incident-export --run-dir ./generated_runs/<run_dir> --format markdown
+autodev autonomous incident-export --run-dir ./generated_runs/<run_dir> --format email
+```
+
 Autonomous artifacts are written under the run directory:
 - `.autodev/autonomous_state.json`
 - `.autodev/autonomous_report.json` (includes latest `gate_results` when configured)

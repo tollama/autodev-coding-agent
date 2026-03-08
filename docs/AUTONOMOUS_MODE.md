@@ -66,6 +66,18 @@ Default output is machine-readable JSON with latest run status, preflight status
 budget-guard outcome/reason codes, gate pass/fail counts, dominant gate fail codes, latest auto-fix
 strategy, stop-guard decision fields, and `operator_guidance` (playbook-linked top actions with graceful fallback for unmapped codes).
 
+### Incident export helper
+
+```bash
+autodev autonomous incident-export --run-dir ./generated_runs/<run_id> --format slack
+autodev autonomous incident-export --run-dir ./generated_runs/<run_id> --format markdown
+autodev autonomous incident-export --run-dir ./generated_runs/<run_id> --format email
+```
+
+Exports `.autodev/autonomous_incident_packet.json` into operator-ready channel formats. If the incident
+packet is missing (for example, successful/non-incident runs), CLI exits with a clear diagnostic and a
+pointer to `autodev autonomous summary`.
+
 GUI/API parity: `GET /api/autonomous/quality-gate/latest` returns the latest run's autonomous summary snapshot
 (including gate/guard/preflight/operator guidance) and degrades gracefully when some artifacts are missing.
 
