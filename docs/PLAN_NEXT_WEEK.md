@@ -1,84 +1,60 @@
-# PLAN — Next Week (Operator Reliability)
+# PLAN — Next Wave (AV3 Candidates)
 
 ## Scope
 
-This plan reflects `main` after merges through **NXT-014** and marks the current NXT wave (**NXT-001 ~ NXT-014**) as closed.
-Primary objective now shifts to stabilization readiness: keep local-simple operator workflow reliable, demoable, and RC handoff-ready on a single laptop.
+This plan reflects `main` after AV2 closure and marks the autonomous v2 wave (`AV2-001` ~ `AV2-014`) as complete and merged.
+Primary objective now shifts to AV3 candidate execution with a reliability-first rollout.
 
-## Current baseline (already merged)
+## AV2 baseline (already merged)
 
-- NXT-001: Quick-run payload validation hardening
-- NXT-002: Process polling backoff + stale indicator
-- NXT-003: Artifact viewer large-JSON responsiveness
-- NXT-004: Timeline taxonomy normalization
-- NXT-005: Scorecard API + Overview widget
-- NXT-006: Correlation-id tracing for run controls
-- NXT-007: Local-simple E2E smoke lane
-- NXT-008: Fixture expansion + typed artifact errors
-- NXT-009: Stop/retry race hardening + idempotency
-- NXT-010: One-command demo bootstrap (`make demo-bootstrap*`)
-- NXT-011: Local-simple operator runbook refresh
-- NXT-012: Overview/Validation/Processes empty/error/loading UX pass
-- NXT-013: Next-cut RC checklist + changelog draft
-- NXT-014: Backlog grooming + priority re-rank
+- AV2-001: Quality-gate policy loader
+- AV2-002: Quality-gate evaluation engine
+- AV2-003: Gate signal normalization taxonomy
+- AV2-004: Gate baseline trend persistence
+- AV2-005: Auto-fix strategy routing
+- AV2-006: Autonomous summary surfacing
+- AV2-007: Stop/rollback decision guard
+- AV2-008: Resume/restart reliability hardening
+- AV2-009: Preflight safety gate
+- AV2-010: Budget guard diagnostics
+- AV2-011: Operator playbook guidance linking
+- AV2-012: Latest quality-gate snapshot API
+- AV2-013: Deterministic autonomous E2E smoke lane
+- AV2-014: Release evidence checklist guardrails
 
-## NXT wave closure status (NXT-001 ~ NXT-014)
+## AV2 closure status
 
-All tickets in the current NXT wave are complete on `main`.
+- Wave: `AV2-001` → `AV2-014`
+- Completion: ✅ **14/14 done**
+- Source of truth: PR merges **#32 through #45**
+- Closure summary: `docs/AUTONOMOUS_V2_WAVE_CLOSURE.md`
 
-- Wave start: NXT-001
-- Wave end: NXT-014
-- Completion state: ✅ **14/14 done**
-- Tracking source of truth: PR merges #7 through #21
+## AV3 prioritized stack (proposed)
 
-## NXT-014 outcome (this ticket)
+1. **AV3-001 (P0)** — CI-enforced autonomous release evidence gate
+2. **AV3-002 (P0)** — Autonomous observability stream (state/attempt timeline UI parity)
+3. **AV3-003 (P1)** — Operator pause/resume/cancel control surface
+4. **AV3-004 (P1)** — External side-effect policy hardening + audit trail
 
-- Groomed backlog using demo-day findings and runbook failure branches.
-- Re-ranked carry-over follow-ups by operator impact and demo risk.
-- Converted carry-over work into actionable tickets with explicit metadata:
-  - priority
-  - owner role
-  - effort
-  - acceptance criteria
-  - recommended PR split
-
-## Next-wave priority stack (post NXT-014)
-
-1. **NXT-015 (P0)** — RC evidence completeness preflight
-   - Why first: removes cut-time risk by preventing incomplete RC evidence bundles.
-2. **NXT-016 (P0)** — Local-simple startup diagnostics quick-check lane
-   - Why second: fastest way to reduce demo interruption when GUI/API boot path fails.
-3. **NXT-017 (P1)** — Processes triage UX follow-up (filtering + stale hints)
-   - Why third: improves operator recovery speed during stop/retry troubleshooting.
-4. **NXT-018 (P1)** — Artifact Viewer triage exports + docs consistency lint
-   - Why fourth: strengthens incident handoff and avoids docs drift across runbooks.
-
-Detailed ticket specs live in `docs/BACKLOG_NEXT_WEEK.md`.
+Detailed acceptance criteria and split guidance live in `docs/BACKLOG_NEXT_WEEK.md`.
 
 ## Workflow confidence checks
 
-- Continue using `make smoke-local-simple-e2e` for operator-path smoke validation.
-- Keep `make check-docs` mandatory for docs-only planning/process changes.
-- Keep RC dry-run command examples copy-paste ready from repo root.
-
-## Handoff clarity
-
-- Keep local-simple (single-user) vs hardened mode (`autodev gui`) boundaries explicit.
-- Keep planning docs synced with README and demo playbook known limits.
+- Keep `make smoke-autonomous-e2e` as deterministic gate smoke.
+- Keep `make check-release-autonomous` in release-readiness flow.
+- Keep `make check-docs` mandatory for docs/process updates.
 
 ## Definition of done (planning/workflow)
 
-- Plan and backlog are aligned on priority order and ownership.
-- Carry-over tickets have concrete acceptance + PR split guidance.
-- Active planning links point to this file and `docs/BACKLOG_NEXT_WEEK.md`.
+- AV2 closure is clearly recorded across status/plan/backlog docs.
+- AV3 candidates include priority, owner role, effort, and acceptance criteria.
+- README/docs navigation includes AV2 closure summary entry.
 - Docs validation remains green (`make check-docs`).
 
 ## Related docs
 
 - `docs/BACKLOG_NEXT_WEEK.md`
-- `docs/RELEASE_NOTES_SHOWOFF_LOCAL_V2.md`
-- `docs/STABILIZATION_MODE.md`
-- `docs/LOCAL_SIMPLE_MODE.md`
-- `docs/DEMO_PLAYBOOK.md`
-- `docs/RC_NEXT_CUT_CHECKLIST.md`
-- `docs/CHANGELOG_DRAFT_NEXT_CUT.md`
+- `docs/AUTONOMOUS_V2_WAVE_CLOSURE.md`
+- `docs/AUTONOMOUS_MODE.md`
+- `docs/ops/AUTONOMOUS_V2_RELEASE_CHECKLIST.md`
+- `docs/AUTONOMOUS_FAILURE_PLAYBOOK.md`

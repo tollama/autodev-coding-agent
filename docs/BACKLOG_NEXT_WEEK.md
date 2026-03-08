@@ -1,121 +1,100 @@
-# BACKLOG — Next Week (Operator Reliability)
+# BACKLOG — Next Wave (AV3 Candidates)
 
 This backlog is the execution companion for `docs/PLAN_NEXT_WEEK.md`.
 
-## NXT wave closure snapshot (NXT-001 ~ NXT-014)
+## AV2 wave closure snapshot (`AV2-001` ~ `AV2-014`)
 
 - Closure state: ✅ **complete**
 - Ticket count: **14 / 14 done**
-- Mainline merge span: PR **#7 → #21**
-- Post-closure operating mode: stabilization window + hotfix-only unless blocker emerges
+- Mainline merge span: PR **#32 → #45**
+- Closure summary: `docs/AUTONOMOUS_V2_WAVE_CLOSURE.md`
 
-## Newly completed
+## AV2 completed baseline
 
-### NXT-013 — Next-cut RC checklist + changelog draft ✅ done
+- AV2-001 ✅ quality-gate policy loader
+- AV2-002 ✅ quality-gate evaluation engine
+- AV2-003 ✅ gate signal normalization taxonomy
+- AV2-004 ✅ gate baseline trend persistence
+- AV2-005 ✅ auto-fix strategy routing
+- AV2-006 ✅ autonomous summary surfacing
+- AV2-007 ✅ stop/rollback decision guard
+- AV2-008 ✅ resume/restart reliability hardening
+- AV2-009 ✅ preflight safety gate
+- AV2-010 ✅ budget guard diagnostics
+- AV2-011 ✅ operator playbook guidance linking
+- AV2-012 ✅ latest quality-gate snapshot API
+- AV2-013 ✅ deterministic autonomous E2E smoke lane
+- AV2-014 ✅ release evidence checklist guardrails
 
-- **Goal:** Prepare docs/process artifacts for release-candidate dry-run and cut handoff.
-- **Scope:** docs-only updates (no product code changes).
-- **Completion evidence:**
-  - `docs/RC_NEXT_CUT_CHECKLIST.md`
-  - `docs/CHANGELOG_DRAFT_NEXT_CUT.md`
+## Priority-ranked AV3 candidates
 
-### NXT-014 — Backlog grooming from demo findings + priority re-rank ✅ done
-
-- **Goal:** Convert demo follow-up work into prioritized, implementation-ready next-wave tickets.
-- **Scope:** docs/planning only (no product code changes).
-- **Completion evidence:**
-  - `docs/PLAN_NEXT_WEEK.md` (priority stack update)
-  - `docs/BACKLOG_NEXT_WEEK.md` (actionable ticket metadata)
-
-## Priority-ranked carry-over tickets (actionable)
-
-> Ticket format for all carry-over items
+> Ticket format
 > - **Priority:** P0 / P1 / P2
 > - **Owner role:** backend / frontend / platform / docs
 > - **Effort:** S / M / L
 > - **Acceptance criteria:** testable outcomes
 > - **PR split:** recommended patch boundaries for reviewability
 
-### NXT-015 — RC evidence completeness preflight
-
-- **Priority:** P0
-- **Owner role:** platform
-- **Effort:** S
-- **Scope:** Add a lightweight preflight script/check that blocks RC GO when checklist evidence fields remain placeholders.
-- **Acceptance criteria:**
-  - Preflight flags unresolved placeholder markers (`TODO`, empty paths, unchecked pass/fail blocks) in `docs/RC_NEXT_CUT_CHECKLIST.md`.
-  - Command returns non-zero on missing required evidence and prints actionable fix hints.
-  - Preflight usage is documented in RC checklist and README release flow section.
-- **PR split:**
-  1) Script + unit test/smoke check
-  2) RC checklist/README docs wiring
-
-### NXT-016 — Local-simple startup diagnostics quick-check lane
+### AV3-001 — CI-enforced autonomous release evidence gate
 
 - **Priority:** P0
 - **Owner role:** platform
 - **Effort:** M
-- **Scope:** Reduce demo-time startup failures by adding a one-command diagnostics lane for host/port/dependency/API sanity.
+- **Scope:** Run `check_release_autonomous` in CI and block merge/release when required evidence is missing.
 - **Acceptance criteria:**
-  - One command validates Python/make/curl, port availability, and essential endpoints (`/healthz`, `/api/runs`, `/api/gui/context`).
-  - Failures map to short recovery guidance (port conflict, missing fixtures, server not up).
-  - `docs/DEMO_PLAYBOOK.md` pre-demo checklist points to this lane.
+  - CI job executes deterministic autonomous evidence check and uploads artifacts on fail.
+  - Branch protection treats gate failure as blocking.
+  - README/release docs describe CI evidence workflow.
 - **PR split:**
-  1) Diagnostics command/script
-  2) Demo playbook + local-simple docs integration
+  1) CI workflow + artifact upload
+  2) docs wiring and release checklist references
 
-### NXT-017 — Processes triage UX follow-up (filtering + stale hints)
+### AV3-002 — Autonomous observability stream + GUI parity hardening
 
-- **Priority:** P1
+- **Priority:** P0
 - **Owner role:** frontend
 - **Effort:** M
-- **Scope:** Improve operator recovery speed in the Processes tab during stop/retry troubleshooting.
+- **Scope:** Improve operator visibility of autonomous iteration lifecycle beyond periodic snapshots.
 - **Acceptance criteria:**
-  - Processes list supports failed/running/stale quick filters without full page reload.
-  - Detail view highlights most recent transition + stale-age hint when updates are old.
-  - Empty/error states remain explicit and include next action hints.
+  - Operator can inspect recent autonomous attempt timeline with clear phase/status transitions.
+  - API/GUI parity tests cover state, gate, guard, and summary views.
+  - Failure states include actionable operator next-step hints.
 - **PR split:**
-  1) Frontend state/filter UX
-  2) Copy/docs updates for process troubleshooting flow
+  1) API/state timeline surfacing
+  2) GUI presentation + parity tests
 
-### NXT-018 — Artifact Viewer triage exports + docs consistency lint
+### AV3-003 — Operator pause/resume/cancel control surface
 
 - **Priority:** P1
 - **Owner role:** backend
-- **Effort:** M
-- **Scope:** Strengthen triage handoff by making artifact exports easier and keeping known-limits statements in sync across docs.
+- **Effort:** L
+- **Scope:** Add safe run-control semantics for long autonomous loops.
 - **Acceptance criteria:**
-  - Artifact Viewer API/UX supports reliable copy/download path for failed-validator payload handoff.
-  - Add docs consistency check for known-limits statements between README and local-simple/runbook docs.
-  - `make check-docs` (or companion docs check) fails on drift with clear diff/hint output.
+  - Commands support pause/resume/cancel with persisted state transition records.
+  - Guardrails prevent unsafe transitions (e.g., resume after terminal fail without explicit restart).
+  - Operator runbook and failure playbook include recovery branches.
 - **PR split:**
-  1) Artifact handoff improvement
-  2) Docs consistency checker + docs updates
+  1) state machine + API control endpoints
+  2) CLI/GUI bindings + docs
 
-## Completed baseline (for context)
+### AV3-004 — External side-effect policy hardening + audit trail
 
-- NXT-001 ✅ quick-run payload validation hardening
-- NXT-002 ✅ process polling backoff + stale indicator
-- NXT-003 ✅ artifact viewer large-JSON responsiveness
-- NXT-004 ✅ timeline taxonomy normalization
-- NXT-005 ✅ scorecard API + Overview widget
-- NXT-006 ✅ correlation-id tracing for run controls
-- NXT-007 ✅ local-simple E2E smoke lane
-- NXT-008 ✅ fixture expansion + typed artifact errors
-- NXT-009 ✅ stop/retry race hardening + idempotent retry
-- NXT-010 ✅ one-command demo bootstrap lane
-- NXT-011 ✅ local-simple operator runbook refresh
-- NXT-012 ✅ explicit empty/error/loading UX pass for Overview/Validation/Processes
-- NXT-013 ✅ next-cut RC checklist + changelog draft
-- NXT-014 ✅ backlog grooming + priority re-rank from demo findings
+- **Priority:** P1
+- **Owner role:** platform
+- **Effort:** M
+- **Scope:** Tighten policy and visibility for network/publish/git-like side-effect operations.
+- **Acceptance criteria:**
+  - Policy config supports explicit allow/deny classes with typed reason codes.
+  - Side-effect decisions are persisted to audit artifacts.
+  - Summary/report surfaces latest side-effect policy decisions for operators.
+- **PR split:**
+  1) policy engine + reason-code persistence
+  2) summary/report + docs updates
 
 ## Related docs
 
 - `docs/PLAN_NEXT_WEEK.md`
-- `docs/RELEASE_NOTES_SHOWOFF_LOCAL_V2.md`
-- `docs/STABILIZATION_MODE.md`
-- `docs/LOCAL_SIMPLE_MODE.md`
-- `docs/DEMO_PLAYBOOK.md`
-- `docs/RC_NEXT_CUT_CHECKLIST.md`
-- `docs/CHANGELOG_DRAFT_NEXT_CUT.md`
+- `docs/AUTONOMOUS_V2_WAVE_CLOSURE.md`
+- `docs/AUTONOMOUS_MODE.md`
+- `docs/ops/AUTONOMOUS_V2_RELEASE_CHECKLIST.md`
 - `README.md`
