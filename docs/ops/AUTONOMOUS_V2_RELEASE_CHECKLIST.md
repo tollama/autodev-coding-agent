@@ -33,6 +33,9 @@ Required evidence signals (must all be present):
 Schema behavior:
 - Default mode is tolerant for legacy AV2 artifacts (missing `schema_version` emits explicit warnings).
 - Use `python scripts/check_release_autonomous.py --strict-schema ...` to enforce declared AV3 schema on all evidence artifacts.
+- CI rollout policy (AV3-003):
+  - Pull request lane keeps tolerant mode (`make check-release-autonomous`) for developer-friendly iteration.
+  - `main` push lane and nightly scheduled lane enforce strict schema mode (`make check-release-autonomous-strict`, equivalent to `--strict-schema`) and fail on schema drift.
 
 If check fails, fix the missing evidence and rerun smoke/check before release.
 
