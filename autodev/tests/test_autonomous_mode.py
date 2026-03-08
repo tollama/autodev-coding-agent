@@ -21,7 +21,12 @@ class _FakeClient:
         return {"total_calls": 0, "total_input_tokens": 0, "total_output_tokens": 0}
 
 
-def _write_cfg(tmp_path: Path, *, include_quality_gate_policy: bool = False) -> Path:
+def _write_cfg(
+    tmp_path: Path,
+    *,
+    include_quality_gate_policy: bool = False,
+    stop_guard_policy_yaml: str = "",
+) -> Path:
     gate_policy = """
     quality_gate_policy:
       tests:
@@ -31,6 +36,10 @@ def _write_cfg(tmp_path: Path, *, include_quality_gate_policy: bool = False) -> 
       performance:
         max_regression_pct: 5
 """ if include_quality_gate_policy else ""
+
+    stop_guard_policy = ""
+    if stop_guard_policy_yaml.strip():
+        stop_guard_policy = f"\n    stop_guard_policy:\n{stop_guard_policy_yaml.rstrip()}"
 
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
@@ -49,7 +58,7 @@ profiles:
 run:
   autonomous:
     max_iterations: 3
-    time_budget_sec: 600{gate_policy}
+    time_budget_sec: 600{gate_policy}{stop_guard_policy}
 """,
         encoding="utf-8",
     )
@@ -483,8 +492,169 @@ def test_resolve_retry_strategy_rotates_after_no_improvement_on_same_strategy() 
     assert routed["rotation_reason"] == "prior_same_strategy_no_measurable_gate_improvement"
 
 
+def test_autonomous_stop_guard_repeated_gate_failure_triggers_early_stop_and_persists_artifacts(tmp_path, monkeypatch):
+    cfg = _write_cfg(
+        tmp_path,
+        include_quality_gate_policy=True,
+        stop_guard_policy_yaml="""
+      max_consecutive_gate_failures: 2
+      max_consecutive_no_improvement: 5
+      rollback_recommendation_enabled: true
+""",
+    )
+    prd = _write_prd(tmp_path)
+    out_root = tmp_path / "runs"
+
+    monkeypatch.setattr(autonomous_mode, "LLMClient", _FakeClient)
+
+    calls = 0
+
+    async def _fake_run(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return (
+            True,
+            {"project": {}},
+            {"tasks": []},
+            [
+                {
+                    "name": "pytest",
+                    "ok": False,
+                    "status": "failed",
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "tests failed",
+                    "diagnostics": {},
+                }
+            ],
+        )
+
+    monkeypatch.setattr(autonomous_mode, "run_autodev_enterprise", _fake_run)
+
+    with pytest.raises(SystemExit) as exc:
+        autonomous_mode.cli(
+            [
+                "start",
+                "--prd",
+                str(prd),
+                "--out",
+                str(out_root),
+                "--config",
+                str(cfg),
+                "--profile",
+                "minimal",
+                "--max-iterations",
+                "5",
+                "--workspace-allowlist",
+                str(tmp_path),
+            ]
+        )
+
+    assert exc.value.code == 1
+    assert calls == 2
+
+    run_dir = sorted(out_root.iterdir())[0]
+    state = json.loads((run_dir / ".autodev" / "autonomous_state.json").read_text(encoding="utf-8"))
+    report = json.loads((run_dir / ".autodev" / "autonomous_report.json").read_text(encoding="utf-8"))
+    guard_artifact = json.loads((run_dir / ".autodev" / "autonomous_guard_decisions.json").read_text(encoding="utf-8"))
+
+    assert state["status"] == "failed"
+    assert state["failure_reason"] == "autonomous_guard_stop"
+    assert state["current_iteration"] == 2
+    assert len(state["attempts"]) == 2
+
+    guard_decision = state["attempts"][1]["guard_decision"]
+    assert guard_decision["decision"] == "stop"
+    assert guard_decision["reason_code"] == "autonomous_guard.repeated_gate_failure_limit_reached"
+    assert guard_decision["rollback_recommended"] is True
+
+    assert report["guard_decision"]["reason_code"] == "autonomous_guard.repeated_gate_failure_limit_reached"
+    assert report["guard_decisions_total"] == 1
+
+    assert guard_artifact["latest"]["reason_code"] == "autonomous_guard.repeated_gate_failure_limit_reached"
+    assert len(guard_artifact["decisions"]) == 1
+
+
+def test_evaluate_stop_guard_decision_triggers_on_no_improvement_pattern() -> None:
+    fail_reasons = [{"code": "tests.min_pass_rate_not_met"}]
+    gate_results = {
+        "passed": False,
+        "gates": {"tests": {"status": "failed"}},
+        "fail_reasons": fail_reasons,
+    }
+    attempts = [
+        {"iteration": 1, "gate_results": gate_results},
+        {"iteration": 2, "gate_results": gate_results},
+        {"iteration": 3, "gate_results": gate_results},
+    ]
+
+    decision = autonomous_mode._evaluate_stop_guard_decision(
+        attempts,
+        autonomous_mode.AutonomousStopGuardPolicy(
+            max_consecutive_gate_failures=5,
+            max_consecutive_no_improvement=2,
+            rollback_recommendation_enabled=True,
+        ),
+    )
+
+    assert isinstance(decision, dict)
+    assert decision["decision"] == "stop"
+    assert decision["reason_code"] == "autonomous_guard.no_measurable_gate_improvement_limit_reached"
+    assert decision["rollback_recommended"] is True
+
+
+def test_evaluate_stop_guard_decision_non_trigger_when_gate_improves() -> None:
+    attempts = [
+        {
+            "iteration": 1,
+            "gate_results": {
+                "passed": False,
+                "gates": {"tests": {"status": "failed"}, "security": {"status": "failed"}},
+                "fail_reasons": [
+                    {"code": "tests.min_pass_rate_not_met"},
+                    {"code": "security.max_high_findings_exceeded"},
+                ],
+            },
+        },
+        {
+            "iteration": 2,
+            "gate_results": {
+                "passed": False,
+                "gates": {"tests": {"status": "failed"}},
+                "fail_reasons": [{"code": "tests.min_pass_rate_not_met"}],
+            },
+        },
+        {
+            "iteration": 3,
+            "gate_results": {
+                "passed": False,
+                "gates": {"tests": {"status": "failed"}},
+                "fail_reasons": [{"code": "tests.min_pass_rate_not_met"}],
+            },
+        },
+    ]
+
+    decision = autonomous_mode._evaluate_stop_guard_decision(
+        attempts,
+        autonomous_mode.AutonomousStopGuardPolicy(
+            max_consecutive_gate_failures=5,
+            max_consecutive_no_improvement=2,
+            rollback_recommendation_enabled=True,
+        ),
+    )
+
+    assert decision is None
+
+
 def test_autonomous_strategy_trace_artifact_persisted_and_report_state_include_latest_strategy(tmp_path, monkeypatch):
-    cfg = _write_cfg(tmp_path, include_quality_gate_policy=True)
+    cfg = _write_cfg(
+        tmp_path,
+        include_quality_gate_policy=True,
+        stop_guard_policy_yaml="""
+      max_consecutive_gate_failures: 10
+      max_consecutive_no_improvement: 10
+""",
+    )
     prd = _write_prd(tmp_path)
     out_root = tmp_path / "runs"
 
