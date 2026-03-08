@@ -2,6 +2,8 @@
 
 This backlog is the execution companion for `docs/PLAN_NEXT_WEEK.md`.
 
+> Note: AV3 kickoff has started. The primary execution backlog is now `docs/AUTONOMOUS_V3_BACKLOG.md`; this file is kept as candidate-reference history.
+
 ## AV2 wave closure snapshot (`AV2-001` ~ `AV2-014`)
 
 - Closure state: ✅ **complete**

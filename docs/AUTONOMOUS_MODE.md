@@ -13,7 +13,8 @@ This is a **v1 practical slice**: stable CLI loop + policy boundaries + resumabl
 
 For commercial rollout governance (quality/release gates, recovery playbooks, KPI/roadmap), see `docs/AUTONOMOUS_COMMERCIAL_PLAN.md`.
 For release checklist + rollout guardrails used in Go/No-Go decisions, see `docs/ops/AUTONOMOUS_V2_RELEASE_CHECKLIST.md`.
-For AV2 closure status and AV3 next-wave priorities, see `docs/AUTONOMOUS_V2_WAVE_CLOSURE.md`.
+For AV2 closure status, see `docs/AUTONOMOUS_V2_WAVE_CLOSURE.md`.
+For AV3 kickoff execution planning, see `docs/AUTONOMOUS_V3_WAVE_PLAN.md` and `docs/AUTONOMOUS_V3_BACKLOG.md`.
 
 Update (v1b, 2026-03-07): link and rollout-governance references were refreshed to keep autonomous-mode operators aligned with the commercial delivery plan.
 
