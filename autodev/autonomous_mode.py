@@ -431,6 +431,11 @@ class AutonomousIncidentSendPolicy:
     dry_run: bool = True
     targets: list[str] | None = None
     webhook: dict[str, Any] | None = None
+    dedupe_window_sec: int = 0
+    rate_limit_window_sec: int = 0
+    rate_limit_global_max: int | None = None
+    rate_limit_per_target_max: int | None = None
+    force_send: bool = False
 
 
 def _as_float(value: Any) -> float | None:
@@ -1432,6 +1437,11 @@ def _resolve_autonomous_incident_send_policy(
     dry_run_raw = send_cfg.get("dry_run", True)
     targets_raw = send_cfg.get("targets", ["stdout"])
     webhook_raw = send_cfg.get("webhook")
+    dedupe_window_sec_raw = send_cfg.get("dedupe_window_sec", 0)
+    rate_limit_window_sec_raw = send_cfg.get("rate_limit_window_sec", 0)
+    rate_limit_global_max_raw = send_cfg.get("rate_limit_global_max")
+    rate_limit_per_target_max_raw = send_cfg.get("rate_limit_per_target_max")
+    force_send_raw = send_cfg.get("force_send", False)
 
     if not isinstance(enabled_raw, bool):
         raise SystemExit("config.run.autonomous.incident_send.enabled must be a boolean.")
@@ -1442,6 +1452,33 @@ def _resolve_autonomous_incident_send_policy(
     if webhook_raw is not None and not isinstance(webhook_raw, dict):
         raise SystemExit("config.run.autonomous.incident_send.webhook must be an object when set.")
 
+    dedupe_window_sec = _coerce_optional_int(dedupe_window_sec_raw, "autonomous.incident_send.dedupe_window_sec")
+    if dedupe_window_sec is None:
+        dedupe_window_sec = 0
+    if dedupe_window_sec < 0:
+        raise SystemExit("config.run.autonomous.incident_send.dedupe_window_sec must be >= 0.")
+
+    rate_limit_window_sec = _coerce_optional_int(rate_limit_window_sec_raw, "autonomous.incident_send.rate_limit_window_sec")
+    if rate_limit_window_sec is None:
+        rate_limit_window_sec = 0
+    if rate_limit_window_sec < 0:
+        raise SystemExit("config.run.autonomous.incident_send.rate_limit_window_sec must be >= 0.")
+
+    rate_limit_global_max = _coerce_optional_int(rate_limit_global_max_raw, "autonomous.incident_send.rate_limit_global_max")
+    if rate_limit_global_max is not None and rate_limit_global_max <= 0:
+        raise SystemExit("config.run.autonomous.incident_send.rate_limit_global_max must be >= 1 when set.")
+
+    rate_limit_per_target_max = _coerce_optional_int(rate_limit_per_target_max_raw, "autonomous.incident_send.rate_limit_per_target_max")
+    if rate_limit_per_target_max is not None and rate_limit_per_target_max <= 0:
+        raise SystemExit("config.run.autonomous.incident_send.rate_limit_per_target_max must be >= 1 when set.")
+
+    if rate_limit_window_sec == 0:
+        rate_limit_global_max = None
+        rate_limit_per_target_max = None
+
+    if not isinstance(force_send_raw, bool):
+        raise SystemExit("config.run.autonomous.incident_send.force_send must be a boolean.")
+
     targets = [str(item).strip() for item in targets_raw if str(item).strip()]
     if not targets:
         targets = ["stdout"]
@@ -1450,11 +1487,20 @@ def _resolve_autonomous_incident_send_policy(
     if getattr(args, "incident_send_enabled", None) is not None:
         enabled = bool(args.incident_send_enabled)
 
+    force_send = force_send_raw
+    if getattr(args, "incident_send_force", None) is not None:
+        force_send = bool(args.incident_send_force)
+
     return AutonomousIncidentSendPolicy(
         enabled=enabled,
         dry_run=dry_run_raw,
         targets=targets,
         webhook=dict(webhook_raw) if isinstance(webhook_raw, dict) else None,
+        dedupe_window_sec=int(dedupe_window_sec),
+        rate_limit_window_sec=int(rate_limit_window_sec),
+        rate_limit_global_max=rate_limit_global_max,
+        rate_limit_per_target_max=rate_limit_per_target_max,
+        force_send=force_send,
     )
 
 
@@ -1873,14 +1919,14 @@ def _persist_incident_send_attempt(
     existing = _safe_json_read(ws, AUTONOMOUS_INCIDENT_SEND_JSON)
     if not isinstance(existing, dict):
         existing = {
-            "schema_version": send_result.get("schema_version") or "av3-008-v1",
+            "schema_version": send_result.get("schema_version") or "av3-009-v1",
             "attempts": [],
         }
 
     attempts = existing.get("attempts") if isinstance(existing.get("attempts"), list) else []
     attempts.append(send_result)
     payload = {
-        "schema_version": existing.get("schema_version") or send_result.get("schema_version") or "av3-008-v1",
+        "schema_version": existing.get("schema_version") or send_result.get("schema_version") or "av3-009-v1",
         "updated_at": _utc_now(),
         "latest": send_result,
         "attempts": attempts,
@@ -1899,12 +1945,23 @@ def _maybe_send_incident_packet(
     if not policy.enabled:
         return None
 
+    existing = _safe_json_read(ws, AUTONOMOUS_INCIDENT_SEND_JSON)
+    history_attempts = existing.get("attempts") if isinstance(existing, dict) and isinstance(existing.get("attempts"), list) else []
+
     result = send_incident_packet(
         run_dir=run_dir,
         targets=list(policy.targets or ["stdout"]),
         dry_run=bool(policy.dry_run),
         trigger=trigger,
         target_configs={"webhook": dict(policy.webhook or {})},
+        send_policy={
+            "dedupe_window_sec": int(policy.dedupe_window_sec),
+            "rate_limit_window_sec": int(policy.rate_limit_window_sec),
+            "rate_limit_global_max": policy.rate_limit_global_max,
+            "rate_limit_per_target_max": policy.rate_limit_per_target_max,
+            "force_send": bool(policy.force_send),
+        },
+        history_attempts=[item for item in history_attempts if isinstance(item, dict)],
     )
     persisted = _persist_incident_send_attempt(ws, send_result=result)
     latest = persisted.get("latest")
@@ -2533,6 +2590,12 @@ def _render_report(
         "incident_send_path": AUTONOMOUS_INCIDENT_SEND_JSON,
         "incident_send": incident_send,
         "incident_send_attempted": isinstance(incident_send, dict),
+        "incident_send_suppressed": bool(incident_send.get("suppressed")) if isinstance(incident_send, dict) else False,
+        "incident_send_reason_codes": (
+            [str(code) for code in incident_send.get("suppression_reason_codes", []) if code]
+            if isinstance(incident_send, dict) and isinstance(incident_send.get("suppression_reason_codes"), list)
+            else []
+        ),
         "resume_diagnostics": resume_diagnostics,
         "resume_warning_count": len(resume_diagnostics),
         "last_validation": last_validation,
@@ -2674,8 +2737,17 @@ def _render_report(
         )
         md.append(
             f"- Result: {'OK' if incident_send.get('ok') else 'FAILED'} "
-            f"(success={incident_send.get('success_count', 0)}, failure={incident_send.get('failure_count', 0)})"
+            f"(success={incident_send.get('success_count', 0)}, failure={incident_send.get('failure_count', 0)}, suppressed={incident_send.get('suppressed_count', 0)})"
         )
+        suppression_codes = incident_send.get("suppression_reason_codes") if isinstance(incident_send.get("suppression_reason_codes"), list) else []
+        suppression_text = ",".join([str(code) for code in suppression_codes if code]) or "-"
+        md.append(f"- Suppression reason codes: {suppression_text}")
+        force_override = incident_send.get("force_send_override") if isinstance(incident_send.get("force_send_override"), dict) else None
+        if isinstance(force_override, dict):
+            md.append(
+                f"- Force override: applied={force_override.get('applied')} "
+                f"(code={force_override.get('code') or '-'})"
+            )
         md.append(f"- Artifact: `{AUTONOMOUS_INCIDENT_SEND_JSON}`")
     else:
         md.append("- Attempted: no")
@@ -2745,6 +2817,12 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         help="Override config.run.autonomous.incident_send.enabled (true|false).",
     )
     start.add_argument(
+        "--incident-send-force",
+        default=None,
+        type=_parse_cli_bool,
+        help="Override config.run.autonomous.incident_send.force_send (true|false).",
+    )
+    start.add_argument(
         "--preflight-check-artifact-writable",
         action="store_true",
         default=None,
@@ -2766,6 +2844,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     incident_send.add_argument("--run-dir", required=True)
     incident_send.add_argument("--target", action="append", default=None, help="Target spec, e.g. stdout or log:markdown")
     incident_send.add_argument("--dry-run", default="true", type=_parse_cli_bool)
+    incident_send.add_argument("--force-send", default="false", type=_parse_cli_bool)
 
     return ap
 
@@ -3440,6 +3519,14 @@ def extract_autonomous_summary(run_dir: str) -> dict[str, Any]:
         )
     artifact_status["incident_send"]["status"] = incident_send_status
 
+    incident_send_latest = incident_send_payload.get("latest") if isinstance(incident_send_payload, dict) and isinstance(incident_send_payload.get("latest"), dict) else None
+    incident_send_reason_codes = (
+        [str(code) for code in incident_send_latest.get("suppression_reason_codes", []) if code]
+        if isinstance(incident_send_latest, dict) and isinstance(incident_send_latest.get("suppression_reason_codes"), list)
+        else []
+    )
+    incident_send_suppressed = bool(incident_send_latest.get("suppressed")) if isinstance(incident_send_latest, dict) else False
+
     preflight = report_payload.get("preflight") if isinstance(report_payload, dict) and isinstance(report_payload.get("preflight"), dict) else None
     preflight_status = str(preflight.get("status") or "unknown") if isinstance(preflight, dict) else "unknown"
     preflight_reason_codes = (
@@ -3609,6 +3696,8 @@ def extract_autonomous_summary(run_dir: str) -> dict[str, Any]:
             "payload": incident_send_payload,
         },
         "incident_send_status": incident_send_status,
+        "incident_send_suppressed": incident_send_suppressed,
+        "incident_send_reason_codes": incident_send_reason_codes,
         "resume_diagnostics": resume_diagnostics,
         "preflight_diagnostics": preflight_diagnostics,
         "warnings": warnings,
@@ -3640,6 +3729,7 @@ def _render_autonomous_summary_text(summary: dict[str, Any]) -> str:
         f"- incident_escalation_class: {summary.get('incident_escalation_class', '-')}",
         f"- incident_packet: {incident_packet.get('status', '-') } ({incident_packet.get('path', '-')})",
         f"- incident_send: {incident_send.get('status', '-') } ({incident_send.get('path', '-')})",
+        f"- incident_send_suppressed: {summary.get('incident_send_suppressed', False)}",
         f"- gate_counts: pass={gate_counts.get('pass', 0)}, fail={gate_counts.get('fail', 0)}, total={gate_counts.get('total', 0)}",
     ]
 
@@ -3662,6 +3752,12 @@ def _render_autonomous_summary_text(summary: dict[str, Any]) -> str:
         lines.append(f"- budget_guard_reason_codes: {','.join(str(code) for code in budget_guard_reason_codes)}")
     else:
         lines.append("- budget_guard_reason_codes: -")
+
+    incident_send_reason_codes = summary.get("incident_send_reason_codes") if isinstance(summary.get("incident_send_reason_codes"), list) else []
+    if incident_send_reason_codes:
+        lines.append(f"- incident_send_reason_codes: {','.join(str(code) for code in incident_send_reason_codes)}")
+    else:
+        lines.append("- incident_send_reason_codes: -")
 
     if dominant_codes:
         codes_text = ", ".join(
@@ -3802,12 +3898,18 @@ def _incident_send(argv: list[str]) -> None:
     parser = _build_cli_parser()
     args = parser.parse_args(["incident-send", *argv])
     ws = Workspace(str(Path(args.run_dir).expanduser().resolve()))
+
+    existing = _safe_json_read(ws, AUTONOMOUS_INCIDENT_SEND_JSON)
+    history_attempts = existing.get("attempts") if isinstance(existing, dict) and isinstance(existing.get("attempts"), list) else []
+
     try:
         send_result = send_incident_packet(
             run_dir=args.run_dir,
             targets=args.target,
             dry_run=bool(args.dry_run),
             trigger="autonomous.cli.incident_send",
+            send_policy={"force_send": bool(args.force_send)},
+            history_attempts=[item for item in history_attempts if isinstance(item, dict)],
         )
     except (FileNotFoundError, ValueError) as e:
         raise SystemExit(str(e)) from e

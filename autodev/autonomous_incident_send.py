@@ -7,6 +7,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib import error as urllib_error
@@ -16,7 +17,7 @@ from .autonomous_incident_export import SUPPORTED_EXPORT_FORMATS, load_incident_
 
 logger = logging.getLogger("autodev")
 
-AUTONOMOUS_INCIDENT_SEND_VERSION = "av3-008-v1"
+AUTONOMOUS_INCIDENT_SEND_VERSION = "av3-009-v1"
 AUTONOMOUS_INCIDENT_SEND_JSON = ".autodev/autonomous_incident_send.json"
 _DEFAULT_TARGET_FORMAT = "markdown"
 _DEFAULT_WEBHOOK_TIMEOUT_SEC = 10.0
@@ -27,6 +28,11 @@ _DEFAULT_WEBHOOK_BACKOFF_MAX_SEC = 5.0
 _DEFAULT_WEBHOOK_SIGNATURE_HEADER = "X-Autodev-Signature"
 _DEFAULT_WEBHOOK_SECRET_ENV = "AUTODEV_INCIDENT_WEBHOOK_SECRET"
 _DEFAULT_WEBHOOK_URL_ENV = "AUTODEV_INCIDENT_WEBHOOK_URL"
+
+_REASON_DEDUPE_WINDOW = "incident_send.dedupe_window_active"
+_REASON_RATE_LIMIT_GLOBAL = "incident_send.rate_limit_global"
+_REASON_RATE_LIMIT_TARGET = "incident_send.rate_limit_target"
+_REASON_FORCE_SEND_OVERRIDE = "incident_send.force_send_override"
 
 
 @dataclass(frozen=True)
@@ -92,6 +98,145 @@ def parse_incident_send_target_specs(targets: list[str] | None) -> list[Incident
     return specs
 
 
+def _utc_now_iso(now_ts: float | None = None) -> str:
+    dt = datetime.fromtimestamp(now_ts if now_ts is not None else time.time(), tz=timezone.utc)
+    return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _parse_iso_ts(value: Any) -> float | None:
+    token = str(value or "").strip()
+    if not token:
+        return None
+    if token.endswith("Z"):
+        token = token[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(token)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _coerce_non_negative_int(value: Any, default: int, *, name: str) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise ValueError(f"incident send policy '{name}' must be a non-negative integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"incident send policy '{name}' must be a non-negative integer") from e
+    if parsed < 0:
+        raise ValueError(f"incident send policy '{name}' must be >= 0")
+    return parsed
+
+
+def _coerce_optional_positive_int(value: Any, *, name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"incident send policy '{name}' must be a positive integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"incident send policy '{name}' must be a positive integer") from e
+    if parsed <= 0:
+        raise ValueError(f"incident send policy '{name}' must be > 0")
+    return parsed
+
+
+def _normalize_send_policy(raw_policy: dict[str, Any] | None) -> dict[str, Any]:
+    cfg = raw_policy if isinstance(raw_policy, dict) else {}
+    dedupe_window_sec = _coerce_non_negative_int(cfg.get("dedupe_window_sec"), 0, name="dedupe_window_sec")
+    rate_limit_window_sec = _coerce_non_negative_int(cfg.get("rate_limit_window_sec"), 0, name="rate_limit_window_sec")
+    global_max = _coerce_optional_positive_int(cfg.get("rate_limit_global_max"), name="rate_limit_global_max")
+    per_target_max = _coerce_optional_positive_int(cfg.get("rate_limit_per_target_max"), name="rate_limit_per_target_max")
+    force_send = bool(cfg.get("force_send", False))
+
+    if rate_limit_window_sec == 0:
+        global_max = None
+        per_target_max = None
+
+    return {
+        "dedupe_window_sec": dedupe_window_sec,
+        "rate_limit_window_sec": rate_limit_window_sec,
+        "rate_limit_global_max": global_max,
+        "rate_limit_per_target_max": per_target_max,
+        "force_send": force_send,
+    }
+
+
+def _incident_fingerprint(packet: dict[str, Any]) -> str:
+    canonical = json.dumps(packet, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _count_historical_sent_attempts(
+    history_attempts: list[dict[str, Any]],
+    *,
+    now_ts: float,
+    window_sec: int,
+) -> tuple[int, dict[str, int]]:
+    if window_sec <= 0:
+        return 0, {}
+
+    cutoff = now_ts - float(window_sec)
+    global_count = 0
+    per_target: dict[str, int] = {}
+
+    for item in history_attempts:
+        if not isinstance(item, dict):
+            continue
+        if bool(item.get("dry_run")):
+            continue
+        decided_at_ts = _parse_iso_ts(item.get("decided_at"))
+        if decided_at_ts is None or decided_at_ts < cutoff:
+            continue
+        attempts = item.get("attempts")
+        if not isinstance(attempts, list):
+            continue
+        for row in attempts:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("status") or "") != "sent":
+                continue
+            target = str(row.get("target") or "").strip().lower() or "unknown"
+            global_count += 1
+            per_target[target] = per_target.get(target, 0) + 1
+
+    return global_count, per_target
+
+
+def _has_dedupe_hit(
+    history_attempts: list[dict[str, Any]],
+    *,
+    fingerprint: str,
+    now_ts: float,
+    dedupe_window_sec: int,
+) -> bool:
+    if dedupe_window_sec <= 0:
+        return False
+
+    cutoff = now_ts - float(dedupe_window_sec)
+    for item in history_attempts:
+        if not isinstance(item, dict):
+            continue
+        if bool(item.get("dry_run")):
+            continue
+        if str(item.get("incident_fingerprint") or "") != fingerprint:
+            continue
+        decided_at_ts = _parse_iso_ts(item.get("decided_at"))
+        if decided_at_ts is None or decided_at_ts < cutoff:
+            continue
+        attempts = item.get("attempts")
+        if not isinstance(attempts, list):
+            continue
+        if any(isinstance(row, dict) and str(row.get("status") or "") == "sent" for row in attempts):
+            return True
+    return False
+
+
 def send_incident_packet(
     *,
     run_dir: str | Path,
@@ -99,23 +244,85 @@ def send_incident_packet(
     dry_run: bool,
     trigger: str,
     target_configs: dict[str, Any] | None = None,
+    send_policy: dict[str, Any] | None = None,
+    history_attempts: list[dict[str, Any]] | None = None,
+    now_ts: float | None = None,
 ) -> dict[str, Any]:
     run_path = Path(run_dir).expanduser().resolve()
     packet = load_incident_packet(run_path)
     specs = parse_incident_send_target_specs(targets)
 
+    policy = _normalize_send_policy(send_policy)
+    force_send = bool(policy.get("force_send"))
+    now_epoch = float(now_ts if now_ts is not None else time.time())
+    decided_at = _utc_now_iso(now_epoch)
+    fingerprint = _incident_fingerprint(packet)
+
+    history = [item for item in (history_attempts or []) if isinstance(item, dict)]
+    suppression_events: list[dict[str, Any]] = []
+    force_send_override_reasons: list[str] = []
+
+    dedupe_hit = _has_dedupe_hit(
+        history,
+        fingerprint=fingerprint,
+        now_ts=now_epoch,
+        dedupe_window_sec=int(policy["dedupe_window_sec"]),
+    )
+    if dedupe_hit:
+        suppression_events.append({"scope": "global", "reason_code": _REASON_DEDUPE_WINDOW})
+        if force_send:
+            force_send_override_reasons.append(_REASON_DEDUPE_WINDOW)
+
+    historical_global_count, historical_per_target = _count_historical_sent_attempts(
+        history,
+        now_ts=now_epoch,
+        window_sec=int(policy["rate_limit_window_sec"]),
+    )
+    projected_global_count = historical_global_count
+    projected_per_target = dict(historical_per_target)
+
     attempts: list[dict[str, Any]] = []
+
     for spec in specs:
-        handler = _INCIDENT_SEND_TARGETS[spec.target]
         rendered = render_incident_export(packet, spec.export_format)
         target_config = None
         if isinstance(target_configs, dict):
             target_config = target_configs.get(spec.target)
+
         attempt: dict[str, Any] = {
             "target": spec.target,
             "format": spec.export_format,
             "dry_run": dry_run,
         }
+
+        suppress_reason_code = None
+        if dedupe_hit:
+            suppress_reason_code = _REASON_DEDUPE_WINDOW
+        elif policy["rate_limit_global_max"] is not None and projected_global_count >= int(policy["rate_limit_global_max"]):
+            suppress_reason_code = _REASON_RATE_LIMIT_GLOBAL
+        elif policy["rate_limit_per_target_max"] is not None and projected_per_target.get(spec.target, 0) >= int(policy["rate_limit_per_target_max"]):
+            suppress_reason_code = _REASON_RATE_LIMIT_TARGET
+
+        if suppress_reason_code is not None:
+            suppression_events.append({"scope": spec.target, "reason_code": suppress_reason_code})
+            if force_send:
+                force_send_override_reasons.append(suppress_reason_code)
+            else:
+                attempt["ok"] = True
+                attempt["status"] = "suppressed"
+                attempt["reason_code"] = suppress_reason_code
+                attempt["details"] = {
+                    "code": suppress_reason_code,
+                    "decision": "suppressed",
+                }
+                attempts.append(attempt)
+                continue
+
+        handler = _INCIDENT_SEND_TARGETS[spec.target]
+        if not dry_run:
+            projected_global_count += 1
+            projected_per_target[spec.target] = projected_per_target.get(spec.target, 0) + 1
+
         try:
             details = handler(
                 packet,
@@ -127,6 +334,8 @@ def send_incident_packet(
                     "target": spec.target,
                     "format": spec.export_format,
                     "target_config": target_config,
+                    "incident_fingerprint": fingerprint,
+                    "force_send": force_send,
                 },
             )
             attempt["ok"] = True
@@ -142,19 +351,51 @@ def send_incident_packet(
                 attempt["details"] = details
         attempts.append(attempt)
 
-    ok = all(bool(item.get("ok")) for item in attempts)
+    suppressed_count = len([item for item in attempts if item.get("status") == "suppressed"])
+    dry_run_count = len([item for item in attempts if item.get("status") == "dry_run"])
+    sent_count = len([item for item in attempts if item.get("status") == "sent"])
+    failure_count = len([item for item in attempts if item.get("status") == "failed"])
+
+    ok = failure_count == 0
+    suppression_reason_codes = sorted(
+        {
+            str(item.get("reason_code"))
+            for item in attempts
+            if isinstance(item, dict) and item.get("reason_code")
+        }
+    )
+
+    forced_override_applied = bool(force_send_override_reasons)
+    if forced_override_applied:
+        suppression_reason_codes = sorted(set(suppression_reason_codes).union(set(force_send_override_reasons)))
+
     return {
         "schema_version": AUTONOMOUS_INCIDENT_SEND_VERSION,
         "trigger": trigger,
         "run_dir": str(run_path),
         "packet_status": str(packet.get("status") or "unknown"),
         "packet_run_id": str((packet.get("run_summary") or {}).get("run_id") or "-"),
+        "incident_fingerprint": fingerprint,
+        "decided_at": decided_at,
         "dry_run": dry_run,
         "targets": [f"{item.target}:{item.export_format}" for item in specs],
         "ok": ok,
         "attempt_count": len(attempts),
         "success_count": len([item for item in attempts if item.get("ok") is True]),
-        "failure_count": len([item for item in attempts if item.get("ok") is not True]),
+        "failure_count": failure_count,
+        "sent_count": sent_count,
+        "dry_run_count": dry_run_count,
+        "suppressed_count": suppressed_count,
+        "suppressed": suppressed_count > 0,
+        "suppression_reason_codes": suppression_reason_codes,
+        "suppression_events": suppression_events,
+        "send_policy": policy,
+        "force_send": force_send,
+        "force_send_override": {
+            "applied": forced_override_applied,
+            "reason_codes": sorted(set(force_send_override_reasons)),
+            "code": _REASON_FORCE_SEND_OVERRIDE if forced_override_applied else None,
+        },
         "attempts": attempts,
     }
 
@@ -353,7 +594,7 @@ def _webhook_target(packet: dict[str, Any], rendered: str, dry_run: bool, contex
     signature_value = f"sha256={digest}"
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "autodev-incident-send/av3-008",
+        "User-Agent": "autodev-incident-send/av3-009",
         cfg["signature_header"]: signature_value,
     }
 
