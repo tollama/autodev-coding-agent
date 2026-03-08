@@ -95,14 +95,18 @@ def _make_valid_smoke_run(run_dir: Path, *, include_schema: bool = True, include
     _write_json(run_dir / "snapshots.json", snapshots_payload)
 
 
-def _run_checker(artifacts_root: Path) -> subprocess.CompletedProcess[str]:
+def _run_checker(artifacts_root: Path, *, strict_schema: bool = False) -> subprocess.CompletedProcess[str]:
+    cmd = [
+        sys.executable,
+        "scripts/check_release_autonomous.py",
+        "--artifacts-dir",
+        str(artifacts_root),
+    ]
+    if strict_schema:
+        cmd.append("--strict-schema")
+
     return subprocess.run(  # noqa: S603
-        [
-            sys.executable,
-            "scripts/check_release_autonomous.py",
-            "--artifacts-dir",
-            str(artifacts_root),
-        ],
+        cmd,
         cwd=str(ROOT),
         capture_output=True,
         text=True,
@@ -148,3 +152,26 @@ def test_check_release_autonomous_accepts_legacy_av2_artifacts_with_warning(tmp_
     assert proc.returncode == 0, proc.stdout + "\n" + proc.stderr
     assert "[AV3-002 release check] PASS" in proc.stdout
     assert "legacy compatibility mode" in proc.stdout
+
+
+def test_check_release_autonomous_strict_schema_fails_for_legacy_artifacts(tmp_path: Path) -> None:
+    artifacts_root = tmp_path / "artifacts" / "autonomous-e2e-smoke"
+    run_dir = artifacts_root / "20260308-120003"
+    _make_valid_smoke_run(run_dir, include_schema=False, include_v3_extras=False)
+
+    proc = _run_checker(artifacts_root, strict_schema=True)
+
+    assert proc.returncode == 1
+    assert "[AV3-002 release check] FAIL" in proc.stdout
+    assert "schema_version is required" in proc.stdout
+
+
+def test_check_release_autonomous_strict_schema_passes_for_v3_artifacts(tmp_path: Path) -> None:
+    artifacts_root = tmp_path / "artifacts" / "autonomous-e2e-smoke"
+    run_dir = artifacts_root / "20260308-120004"
+    _make_valid_smoke_run(run_dir, include_schema=True, include_v3_extras=True)
+
+    proc = _run_checker(artifacts_root, strict_schema=True)
+
+    assert proc.returncode == 0, proc.stdout + "\n" + proc.stderr
+    assert "[AV3-002 release check] PASS" in proc.stdout

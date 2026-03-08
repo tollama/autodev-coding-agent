@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: compile check check-fast check-strict tests tests-fast tests-strict ci ci-fast ci-strict fast strict release-check check-release-gates check-release-autonomous check-template check-locks check-docs benchmark-generate perf-smoke perf-strict perf-compare perf-compare-smoke untyped-check test-backend demo-scorecard demo-bootstrap demo-bootstrap-serve smoke-autonomous-e2e
+.PHONY: compile check check-fast check-strict tests tests-fast tests-strict ci ci-fast ci-strict fast strict release-check check-release-gates check-release-autonomous check-release-autonomous-strict check-template check-locks check-docs benchmark-generate perf-smoke perf-strict perf-compare perf-compare-smoke untyped-check test-backend demo-scorecard demo-bootstrap demo-bootstrap-serve smoke-autonomous-e2e
 
 # Reusable Python interpreter for consistency
 PYTHON ?= python3
@@ -120,9 +120,13 @@ check-release-gates:
 	@test -f CHANGELOG.md || { echo "[FAIL] Missing CHANGELOG.md"; exit 1; }
 	@test -z "$$(git status --porcelain)" || { echo "[FAIL] Working tree is dirty; commit or stash changes first."; exit 1; }
 
-# Autonomous v2 release evidence gate (AV2-014).
+# Autonomous v2/v3 release evidence gate (default tolerant mode for developer lanes).
 check-release-autonomous:
 	$(PYTHON) scripts/check_release_autonomous.py --artifacts-dir ./artifacts/autonomous-e2e-smoke
+
+# Strict schema gate for protected lanes (main/nightly).
+check-release-autonomous-strict:
+	$(PYTHON) scripts/check_release_autonomous.py --strict-schema --artifacts-dir ./artifacts/autonomous-e2e-smoke
 
 release-check: ci-strict check-untyped-defs check-release-gates check-release-autonomous
 check-release: release-check

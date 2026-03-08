@@ -3,10 +3,14 @@ name: Quality Gates
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "17 2 * * *"
 
 jobs:
   code-and-docs:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_EVIDENCE_STRICT_SCHEMA: ${{ github.event_name == 'schedule' || github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,8 +26,15 @@ jobs:
         run: make smoke-local-simple-e2e
       - name: Autonomous release-evidence smoke lane (AV3-001)
         run: make smoke-autonomous-e2e
-      - name: Autonomous release-evidence gate (AV3-001)
-        run: make check-release-autonomous
+      - name: Autonomous release-evidence gate (AV3-001/AV3-003)
+        run: |
+          if [ "${RELEASE_EVIDENCE_STRICT_SCHEMA}" = "true" ]; then
+            echo "[AV3-003] strict schema mode enabled (--strict-schema)"
+            make check-release-autonomous-strict
+          else
+            echo "[AV3-003] tolerant schema mode enabled (developer-friendly PR lane)"
+            make check-release-autonomous
+          fi
       - name: Docs-as-code sanity (markdown local links)
         run: make check-docs
       - name: Upload autonomous evidence artifacts on failure
