@@ -1,42 +1,26 @@
-# PLAN — Next Wave (AV3 Candidates)
+# PLAN — Next Wave (AV3 Kickoff)
 
 ## Scope
 
-This plan reflects `main` after AV2 closure and marks the autonomous v2 wave (`AV2-001` ~ `AV2-014`) as complete and merged.
-Primary objective now shifts to AV3 candidate execution with a reliability-first rollout.
+This plan reflects `main` after AV2 closure and marks AV3 kickoff as started.
+Primary objective is to move from AV3 candidate listing to an execution-ready wave package with milestone slices and PR-splittable backlog.
 
-## AV2 baseline (already merged)
+## Current state snapshot
 
-- AV2-001: Quality-gate policy loader
-- AV2-002: Quality-gate evaluation engine
-- AV2-003: Gate signal normalization taxonomy
-- AV2-004: Gate baseline trend persistence
-- AV2-005: Auto-fix strategy routing
-- AV2-006: Autonomous summary surfacing
-- AV2-007: Stop/rollback decision guard
-- AV2-008: Resume/restart reliability hardening
-- AV2-009: Preflight safety gate
-- AV2-010: Budget guard diagnostics
-- AV2-011: Operator playbook guidance linking
-- AV2-012: Latest quality-gate snapshot API
-- AV2-013: Deterministic autonomous E2E smoke lane
-- AV2-014: Release evidence checklist guardrails
+- AV2 wave (`AV2-001` ~ `AV2-014`) is complete and merged (PR `#32` → `#45`).
+- AV3 kickoff docs are now published:
+  - `docs/AUTONOMOUS_V3_WAVE_PLAN.md`
+  - `docs/AUTONOMOUS_V3_BACKLOG.md`
 
-## AV2 closure status
+## AV3 kickoff execution plan
 
-- Wave: `AV2-001` → `AV2-014`
-- Completion: ✅ **14/14 done**
-- Source of truth: PR merges **#32 through #45**
-- Closure summary: `docs/AUTONOMOUS_V2_WAVE_CLOSURE.md`
+1. **Milestone slicing (2 weeks):** week-1 foundation/enforcement, week-2 control-surface/policy hardening.
+2. **Architecture transition:** AV2 snapshot-centric flow → AV3 timeline/control/policy model.
+3. **Risk-managed rollout:** prioritized tickets with explicit PR split guidance.
+4. **Gate discipline:** keep smoke/release/docs checks deterministic and green while AV3 lands.
 
-## AV3 prioritized stack (proposed)
-
-1. **AV3-001 (P0)** — CI-enforced autonomous release evidence gate
-2. **AV3-002 (P0)** — Autonomous observability stream (state/attempt timeline UI parity)
-3. **AV3-003 (P1)** — Operator pause/resume/cancel control surface
-4. **AV3-004 (P1)** — External side-effect policy hardening + audit trail
-
-Detailed acceptance criteria and split guidance live in `docs/BACKLOG_NEXT_WEEK.md`.
+Detailed milestone and architecture deltas are defined in `docs/AUTONOMOUS_V3_WAVE_PLAN.md`.
+Detailed ticket-level DoD/test/PR splits are defined in `docs/AUTONOMOUS_V3_BACKLOG.md`.
 
 ## Workflow confidence checks
 
@@ -44,16 +28,19 @@ Detailed acceptance criteria and split guidance live in `docs/BACKLOG_NEXT_WEEK.
 - Keep `make check-release-autonomous` in release-readiness flow.
 - Keep `make check-docs` mandatory for docs/process updates.
 
-## Definition of done (planning/workflow)
+## Definition of done (kickoff package)
 
-- AV2 closure is clearly recorded across status/plan/backlog docs.
-- AV3 candidates include priority, owner role, effort, and acceptance criteria.
-- README/docs navigation includes AV2 closure summary entry.
+- AV3 kickoff status is reflected in status/plan docs.
+- AV3 wave plan includes goals, milestones, architecture deltas, and risk mitigations.
+- AV3 backlog includes prioritized executable tickets with DoD/test/PR split guidance.
+- README/docs navigation includes AV3 plan/backlog links.
 - Docs validation remains green (`make check-docs`).
 
 ## Related docs
 
-- `docs/BACKLOG_NEXT_WEEK.md`
+- `docs/AUTONOMOUS_V3_WAVE_PLAN.md`
+- `docs/AUTONOMOUS_V3_BACKLOG.md`
+- `docs/STATUS_BOARD_CURRENT.md`
 - `docs/AUTONOMOUS_V2_WAVE_CLOSURE.md`
 - `docs/AUTONOMOUS_MODE.md`
 - `docs/ops/AUTONOMOUS_V2_RELEASE_CHECKLIST.md`

@@ -7,7 +7,9 @@ It is designed for quick iteration with safe localhost defaults, while keeping h
 
 Planning references:
 - `docs/PLAN_NEXT_WEEK.md`
-- `docs/BACKLOG_NEXT_WEEK.md`
+- `docs/AUTONOMOUS_V3_WAVE_PLAN.md`
+- `docs/AUTONOMOUS_V3_BACKLOG.md`
+- `docs/BACKLOG_NEXT_WEEK.md` (legacy candidate reference)
 - `docs/DEMO_PLAYBOOK.md`
 
 ## Quickstart
