@@ -23,6 +23,10 @@ Primary objective is to start AV4 delivery with compact PR slices while preservi
 - `make smoke-autonomous-e2e`
 - `make check-release-autonomous`
 - `make check-docs`
+- `python3 scripts/status_board_automation.py av4.kickoff.started --dry-run`
+
+Manual fallback for AV4-001 hook:
+- If event integration is unavailable, run `python3 scripts/status_board_automation.py av4.kickoff.started` to sync status/plan/backlog docs from the canonical event map.
 
 ## Definition of done (AV4 kickoff package)
 
