@@ -1,0 +1,84 @@
+{
+  "policy_id": "autonomous.retry-strategy.v2",
+  "version": "v1",
+  "retry_classes": [
+    {
+      "name": "retryable",
+      "retry_budget": 3,
+      "stop_after_failures": 3,
+      "escalate_after_no_progress": 4,
+      "hard_stop_on_non_retryable_failure": true
+    },
+    {
+      "name": "conditional",
+      "retry_budget": 2,
+      "stop_after_failures": 2,
+      "escalate_after_no_progress": 2,
+      "hard_stop_on_non_retryable_failure": true
+    },
+    {
+      "name": "non_retryable",
+      "retry_budget": 0,
+      "stop_after_failures": 1,
+      "escalate_after_no_progress": 1,
+      "hard_stop_on_non_retryable_failure": true
+    }
+  ],
+  "deterministic_examples": [
+    {
+      "id": "RTRY-INGEST-01",
+      "stage": "ingest",
+      "retry_class": "retryable",
+      "replay_attempt": 1,
+      "consecutive_failures": 1,
+      "no_progress_streak": 0,
+      "non_retryable_failure": false,
+      "expected_decision": "retry",
+      "expected_reason_code": "retry_policy.retryable_within_budget"
+    },
+    {
+      "id": "STOP-EXEC-02",
+      "stage": "execute",
+      "retry_class": "retryable",
+      "replay_attempt": 3,
+      "consecutive_failures": 3,
+      "no_progress_streak": 2,
+      "non_retryable_failure": false,
+      "expected_decision": "stop",
+      "expected_reason_code": "autonomous_guard.repeated_gate_failure_limit_reached"
+    },
+    {
+      "id": "ESC-PLAN-03",
+      "stage": "plan",
+      "retry_class": "conditional",
+      "replay_attempt": 2,
+      "consecutive_failures": 1,
+      "no_progress_streak": 2,
+      "non_retryable_failure": false,
+      "expected_decision": "escalate",
+      "expected_reason_code": "retry_policy.no_progress_escalation"
+    },
+    {
+      "id": "STOP-EXEC-04",
+      "stage": "execute",
+      "retry_class": "conditional",
+      "replay_attempt": 1,
+      "consecutive_failures": 1,
+      "no_progress_streak": 0,
+      "non_retryable_failure": true,
+      "expected_decision": "stop",
+      "expected_reason_code": "retry_policy.non_retryable_failure"
+    },
+    {
+      "id": "ESC-VERIFY-05",
+      "stage": "verify",
+      "retry_class": "non_retryable",
+      "replay_attempt": 1,
+      "consecutive_failures": 1,
+      "no_progress_streak": 0,
+      "non_retryable_failure": false,
+      "expected_decision": "escalate",
+      "expected_reason_code": "retry_policy.non_retryable_class"
+    }
+  ]
+}

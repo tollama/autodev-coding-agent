@@ -87,7 +87,7 @@ A run **must not skip or reorder** stages.
 
 - Stage output fields are the next stage's admissible input source.
 - `approval_token` is mandatory for `execute`; missing token is a hard stop.
-- `verify.decision=retry` is only valid when retry policy allows deterministic replay.
+- `verify.decision=retry` is only valid when retry policy allows deterministic replay (`docs/AUTONOMOUS_RETRY_STRATEGY_V2.md`).
 - `verify.decision=escalate` must include evidence pointers in `operator_summary`.
 
 ## Validation gates

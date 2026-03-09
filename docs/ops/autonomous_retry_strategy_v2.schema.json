@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coding-agent.local/schemas/autonomous_retry_strategy_v2.schema.json",
+  "title": "Autonomous Retry Strategy Semantics v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["policy_id", "version", "retry_classes", "deterministic_examples"],
+  "properties": {
+    "policy_id": {
+      "type": "string",
+      "const": "autonomous.retry-strategy.v2"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^v\\d+$"
+    },
+    "retry_classes": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "$ref": "#/$defs/retryClass"
+      }
+    },
+    "deterministic_examples": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "$ref": "#/$defs/deterministicExample"
+      }
+    }
+  },
+  "$defs": {
+    "retryClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "retry_budget",
+        "stop_after_failures",
+        "escalate_after_no_progress",
+        "hard_stop_on_non_retryable_failure"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": ["retryable", "conditional", "non_retryable"]
+        },
+        "retry_budget": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stop_after_failures": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "escalate_after_no_progress": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hard_stop_on_non_retryable_failure": {
+          "type": "boolean"
+        }
+      }
+    },
+    "deterministicExample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "stage",
+        "retry_class",
+        "replay_attempt",
+        "consecutive_failures",
+        "no_progress_streak",
+        "non_retryable_failure",
+        "expected_decision",
+        "expected_reason_code"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stage": {
+          "type": "string",
+          "enum": ["ingest", "plan", "execute", "verify"]
+        },
+        "retry_class": {
+          "type": "string",
+          "enum": ["retryable", "conditional", "non_retryable"]
+        },
+        "replay_attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "consecutive_failures": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "no_progress_streak": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "non_retryable_failure": {
+          "type": "boolean"
+        },
+        "expected_decision": {
+          "type": "string",
+          "enum": ["retry", "stop", "escalate"]
+        },
+        "expected_reason_code": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

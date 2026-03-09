@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: compile check check-fast check-strict tests tests-fast tests-strict ci ci-fast ci-strict fast strict release-check check-release-gates check-release-autonomous check-release-autonomous-strict check-template check-locks check-docs check-status-hooks benchmark-generate perf-smoke perf-strict perf-compare perf-compare-smoke untyped-check test-backend demo-scorecard demo-bootstrap demo-bootstrap-serve smoke-autonomous-e2e
+.PHONY: compile check check-fast check-strict tests tests-fast tests-strict ci ci-fast ci-strict fast strict release-check check-release-gates check-release-autonomous check-release-autonomous-strict check-template check-locks check-docs check-status-hooks benchmark-generate perf-smoke perf-strict perf-compare perf-compare-smoke untyped-check test-backend demo-scorecard demo-bootstrap demo-bootstrap-serve smoke-autonomous-e2e smoke-retry-replay
 
 # Reusable Python interpreter for consistency
 PYTHON ?= python3
@@ -68,6 +68,10 @@ smoke-local-simple-e2e:
 smoke-autonomous-e2e:
 	$(PYTHON) scripts/autonomous_e2e_smoke.py --artifacts-dir ./artifacts/autonomous-e2e-smoke
 
+# Retry strategy replay smoke lane (AV5-004).
+smoke-retry-replay:
+	$(PYTHON) scripts/retry_strategy_replay_smoke.py --artifacts-dir ./artifacts/retry-strategy-replay-smoke
+
 # Fast local CI-equivalent pass for quick iteration.
 ci-fast: compile check-fast tests-fast check-status-hooks
 
@@ -76,6 +80,7 @@ check-docs:
 	$(PYTHON) scripts/check_markdown_links.py
 	$(PYTHON) scripts/check_av4_backlog_schema.py
 	$(PYTHON) scripts/check_stage_boundary_contract.py
+	$(PYTHON) scripts/check_retry_strategy_v2.py
 
 # Status-hook docs drift gate (AV4-002/AV4-003).
 check-status-hooks:

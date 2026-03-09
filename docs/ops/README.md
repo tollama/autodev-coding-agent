@@ -13,6 +13,7 @@ This folder contains SDLC/운영 governance scripts and checks used by `coding-a
 - `perf_validation.py` (validator timing extraction + regression comparison)
 - `perf_smoke.py` (collect current run perf to `.autodev/perf.json`)
 - `perf_strict.py` (perf regression gate against previous `.autodev/perf.json`)
+- `autonomous_retry_strategy_v2.schema.json` + `autonomous_retry_strategy_v2.example.json` (AV5 deterministic retry semantics contract)
 
 Use `make` for standard lanes:
 
