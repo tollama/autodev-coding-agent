@@ -1,0 +1,80 @@
+{
+  "policy_id": "autonomous.autoresearch-hard-blocker.v1",
+  "version": "v1",
+  "severity_levels": [
+    "high",
+    "critical"
+  ],
+  "blocker_classes": [
+    {
+      "id": "policy_scope_violation",
+      "severity": "critical",
+      "mandatory_lane": "stop",
+      "typed_code_families": [
+        "autonomous_preflight.*",
+        "policy.scope.*"
+      ],
+      "operator_intent": "Stop autonomous execution immediately and require scope correction.",
+      "rationale": "Out-of-scope mutations violate declared policy boundaries and cannot continue safely."
+    },
+    {
+      "id": "unapproved_external_side_effect",
+      "severity": "critical",
+      "mandatory_lane": "stop",
+      "typed_code_families": [
+        "autonomous_execute.external_*",
+        "approval.missing.*"
+      ],
+      "operator_intent": "Block any external side effect until explicit approval token exists.",
+      "rationale": "Unapproved writes/notifications/deploy actions are irreversible and need explicit operator intent."
+    },
+    {
+      "id": "evidence_integrity_failure",
+      "severity": "high",
+      "mandatory_lane": "escalate",
+      "typed_code_families": [
+        "autonomous_verify.*",
+        "evidence.integrity.*"
+      ],
+      "operator_intent": "Escalate for manual evidence triage before allowing resume.",
+      "rationale": "Missing or corrupted evidence removes reproducibility, so trust must be restored by an operator."
+    },
+    {
+      "id": "high_risk_surface_without_guard",
+      "severity": "high",
+      "mandatory_lane": "escalate",
+      "typed_code_families": [
+        "autonomous_execute.high_risk_surface.*",
+        "guard.required.*"
+      ],
+      "operator_intent": "Require operator review and guard completion before continuation.",
+      "rationale": "High-impact surfaces need predefined guardrails to avoid silent policy regressions."
+    }
+  ],
+  "canonical_examples": [
+    {
+      "id": "HB-01",
+      "typed_code": "autonomous_preflight.scope_policy_mismatch",
+      "blocker_class": "policy_scope_violation",
+      "expected_decision": "stop"
+    },
+    {
+      "id": "HB-02",
+      "typed_code": "autonomous_execute.external_write_without_approval",
+      "blocker_class": "unapproved_external_side_effect",
+      "expected_decision": "stop"
+    },
+    {
+      "id": "HB-03",
+      "typed_code": "autonomous_verify.operator_summary_missing_evidence",
+      "blocker_class": "evidence_integrity_failure",
+      "expected_decision": "escalate"
+    },
+    {
+      "id": "HB-04",
+      "typed_code": "autonomous_execute.production_surface_without_guardrail",
+      "blocker_class": "high_risk_surface_without_guard",
+      "expected_decision": "escalate"
+    }
+  ]
+}

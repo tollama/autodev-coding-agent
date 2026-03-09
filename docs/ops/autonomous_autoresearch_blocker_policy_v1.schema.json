@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autodev.local/schemas/autonomous_autoresearch_blocker_policy_v1.schema.json",
+  "title": "Autonomous Autoresearch Hard-Blocker Policy v1",
+  "type": "object",
+  "required": [
+    "policy_id",
+    "version",
+    "severity_levels",
+    "blocker_classes",
+    "canonical_examples"
+  ],
+  "properties": {
+    "policy_id": {
+      "type": "string",
+      "const": "autonomous.autoresearch-hard-blocker.v1"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^v\\d+$"
+    },
+    "severity_levels": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/severity"
+      },
+      "minItems": 2,
+      "uniqueItems": true
+    },
+    "blocker_classes": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "$ref": "#/$defs/blockerClass"
+      }
+    },
+    "canonical_examples": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "$ref": "#/$defs/canonicalExample"
+      }
+    }
+  },
+  "$defs": {
+    "severity": {
+      "type": "string",
+      "enum": [
+        "high",
+        "critical"
+      ]
+    },
+    "decisionLane": {
+      "type": "string",
+      "enum": [
+        "stop",
+        "escalate"
+      ]
+    },
+    "blockerClass": {
+      "type": "object",
+      "required": [
+        "id",
+        "severity",
+        "mandatory_lane",
+        "typed_code_families",
+        "operator_intent",
+        "rationale"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$"
+        },
+        "severity": {
+          "$ref": "#/$defs/severity"
+        },
+        "mandatory_lane": {
+          "$ref": "#/$defs/decisionLane"
+        },
+        "typed_code_families": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 8
+          }
+        },
+        "operator_intent": {
+          "type": "string",
+          "minLength": 10
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 16
+        }
+      },
+      "additionalProperties": false
+    },
+    "canonicalExample": {
+      "type": "object",
+      "required": [
+        "id",
+        "typed_code",
+        "blocker_class",
+        "expected_decision"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^HB-\\d{2}$"
+        },
+        "typed_code": {
+          "type": "string",
+          "minLength": 8
+        },
+        "blocker_class": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$"
+        },
+        "expected_decision": {
+          "$ref": "#/$defs/decisionLane"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

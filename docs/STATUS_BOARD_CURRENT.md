@@ -15,7 +15,7 @@ Status timestamp: 2026-03-09 23:12 KST (Asia/Seoul)
 - **AV3:** ✅ Closed (`AV3-001` ~ `AV3-013`)
 - **AV4:** ✅ Closed (execution + stabilization complete)
 - **AV5:** ✅ Checkpoint captured (`docs/AUTONOMOUS_V5_WAVE_CHECKPOINT.md`)
-- **AV6:** 🚧 Kickoff started (plan + backlog published)
+- **AV6:** 🚧 Kickoff in progress (`AV6-001` merged; `AV6-002` ~ `AV6-006` pending)
 
 ## Current tracking focus
 
