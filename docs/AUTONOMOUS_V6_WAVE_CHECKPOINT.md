@@ -9,6 +9,11 @@ Checkpoint scaffold for AV6 kickoff backlog items `AV6-001` ~ `AV6-006`.
 
 ## Merged tickets (`main`)
 
+- `AV6-002` scoring threshold matrix (`docs/AUTONOMOUS_V6_SCORING_THRESHOLD_MATRIX.md`)
+
+## Deferred / not started
+
+- `AV6-001` autoresearch hard-blocker policy contract
 - `AV6-001` autoresearch hard-blocker policy contract (`docs/AUTONOMOUS_AUTORESEARCH_BLOCKER_POLICY.md`)
 
 ## Deferred / not started
@@ -21,12 +26,13 @@ Checkpoint scaffold for AV6 kickoff backlog items `AV6-001` ~ `AV6-006`.
 
 ## Known risks / open issues
 
-1. **Threshold ambiguity risk:** kickoff docs exist but threshold values are not yet locked.
+1. **Blocker-policy dependency risk:** scoring thresholds are defined, but AV6 hard-blocker contract (`AV6-001`) is not yet finalized.
 2. **Budget policy gap:** stage and run timeout defaults are not yet standardized.
 3. **Observability parity gap:** operator summaries need canonical AV6 guard-decision fields.
 
 ## Next actions
 
+- Land `AV6-001` next to complete blocker + scoring guard pairing.
 - Land `AV6-002` next to complete deterministic scoring semantics on top of merged blocker policy (`AV6-001`).
 - Land `AV6-003` immediately after to prevent unbounded runtime behavior.
 - Keep docs/status-hook checks green on every kickoff PR.
@@ -35,6 +41,7 @@ Checkpoint scaffold for AV6 kickoff backlog items `AV6-001` ~ `AV6-006`.
 
 - `docs/AUTONOMOUS_V6_WAVE_PLAN.md`
 - `docs/AUTONOMOUS_V6_BACKLOG.md`
+- `docs/AUTONOMOUS_V6_SCORING_THRESHOLD_MATRIX.md`
 - `docs/PLAN_NEXT_WEEK.md`
 - `docs/BACKLOG_NEXT_WEEK.md`
 - `docs/STATUS_BOARD_CURRENT.md`
