@@ -69,7 +69,7 @@ Status timestamp: 2026-01-01 00:00 KST (Asia/Seoul)
     (docs_root / "AUTONOMOUS_V4_WAVE_CLOSURE.md").write_text(
         """# Autonomous v4 Wave Closure
 
-Status: 🚧 Open (kickoff active; closure pending)
+Status: 🚧 Open — closure blocked (pending merge/completion evidence)
 
 ## Completed tickets (`AV4-001` ~ `AV4-014`)
 
