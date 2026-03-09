@@ -14,6 +14,11 @@ Checkpoint scaffold for AV6 kickoff backlog items `AV6-001` ~ `AV6-006`.
 ## Deferred / not started
 
 - `AV6-001` autoresearch hard-blocker policy contract
+- `AV6-001` autoresearch hard-blocker policy contract (`docs/AUTONOMOUS_AUTORESEARCH_BLOCKER_POLICY.md`)
+
+## Deferred / not started
+
+- `AV6-002` scoring threshold matrix
 - `AV6-003` time-budget guardrails
 - `AV6-004` observability baseline for guard decisions
 - `AV6-005` status-hook transition draft for AV6
@@ -28,6 +33,7 @@ Checkpoint scaffold for AV6 kickoff backlog items `AV6-001` ~ `AV6-006`.
 ## Next actions
 
 - Land `AV6-001` next to complete blocker + scoring guard pairing.
+- Land `AV6-002` next to complete deterministic scoring semantics on top of merged blocker policy (`AV6-001`).
 - Land `AV6-003` immediately after to prevent unbounded runtime behavior.
 - Keep docs/status-hook checks green on every kickoff PR.
 
