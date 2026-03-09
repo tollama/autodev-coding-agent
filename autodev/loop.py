@@ -29,6 +29,8 @@ from .failure_analyzer import (
     fingerprint_failures,
     RepairHistory,
 )
+from .quality_score import compute_quality_score
+from .experiment_log import ExperimentLog, ExperimentEntry, make_decision
 from .progress import ProgressEmitter
 from .run_trace import RunTrace, EventType
 
@@ -930,6 +932,7 @@ async def run_autodev_enterprise(
     task_failures = 0
     last_validation = None
     unresolved: List[str] = []
+    _experiment_log = ExperimentLog(ws.root)
     failed_task_ids: Set[str] = set()
     skipped_task_ids: Set[str] = set()
     repair_history = RepairHistory()
@@ -1408,6 +1411,27 @@ async def run_autodev_enterprise(
             )
             attempt_records.append(row)
 
+            # -- Experiment log: compute quality score + record decision (Phase 1, read-only) --
+            try:
+                _qs = compute_quality_score(
+                    task_last_validation,
+                    soft_validators=_effective_soft,
+                )
+                _prev_qs = _experiment_log.last_score_for_task(task["id"])
+                _decision = make_decision(_qs, _prev_qs)
+                _experiment_log.append(ExperimentEntry(
+                    task_id=task["id"],
+                    iteration=iteration,
+                    attempt=loops + 1,
+                    quality_score=_qs,
+                    decision=_decision,
+                    validators_passed=[v["name"] for v in task_last_validation if v["ok"]],
+                    validators_failed=[v["name"] for v in task_last_validation if not v["ok"]],
+                    wall_clock_ms=duration_ms,
+                ))
+            except Exception:
+                logger.debug("experiment_log: score computation failed", exc_info=True)
+
             failures = [
                 {"name": v["name"], "status": v["status"], "error": v.get("error_classification")}
                 for v in task_last_validation
@@ -1430,6 +1454,43 @@ async def run_autodev_enterprise(
                 soft_failures=row["soft_failures"],
                 repair_used=repair_used,
             )
+
+            # -- Phase 2: Revert-on-regression with tolerance bands --
+            # If the experiment log recorded a regression decision and we have
+            # snapshots enabled, rollback to the pre-fix state and signal the
+            # fixer to try a different approach on the next iteration.
+            _regression_reverted = False
+            try:
+                _last_entries = _experiment_log.entries
+                if (
+                    enable_snapshots
+                    and len(_last_entries) >= 2
+                    and _last_entries[-1].task_id == task["id"]
+                    and _last_entries[-1].decision.decision == "reverted"
+                    and _last_entries[-1].decision.reason_code == "regression"
+                ):
+                    ws.rollback(snapshot_name)
+                    _regression_reverted = True
+                    _log_event(
+                        "experiment.regression_reverted",
+                        run_id=run_id,
+                        request_id=request_id,
+                        profile=profile,
+                        task_id=task["id"],
+                        attempt=loops + 1,
+                        score_delta=_last_entries[-1].decision.score_delta,
+                    )
+                    trace.record(
+                        EventType.EXPERIMENT_DECISION,
+                        task_id=task["id"],
+                        decision="reverted",
+                        reason="regression",
+                        score_delta=_last_entries[-1].decision.score_delta,
+                    )
+                    # Re-snapshot so fixer starts from the known-good state
+                    ws.snapshot(snapshot_name)
+            except Exception:
+                logger.debug("experiment: regression revert failed", exc_info=True)
 
             if row["status"] == "passed":
                 consecutive_failures = 0
@@ -1644,6 +1705,14 @@ async def run_autodev_enterprise(
             if incremental_mode:
                 from .roles import INCREMENTAL_FIXER_ADDENDUM
                 _fixer_system += "\n" + INCREMENTAL_FIXER_ADDENDUM
+
+            # Add regression context if last attempt was reverted
+            if _regression_reverted:
+                _fixer_system += (
+                    "\n\nREGRESSION REVERTED: Your previous fix attempt made the quality score worse. "
+                    "The workspace has been rolled back. Try a DIFFERENT approach — do not repeat "
+                    "the same strategy. Prefer minimal, surgical changes over broad refactoring."
+                )
 
             # -- Helper: build a repair payload for a set of analyses/rows -----
             def _build_repair_payload_for(
@@ -2384,6 +2453,14 @@ async def run_autodev_enterprise(
         "quality_resolution": QUALITY_RESOLUTION_FILE,
         "final_last_validation": QUALITY_TASK_LAST_FILE_TMPL.format(task_id="final"),
     }
+
+    # -- Experiment log summary (Phase 1, read-only telemetry) -----------------
+    try:
+        _exp_summary = _experiment_log.summary()
+        if _exp_summary["entry_count"] > 0:
+            quality_summary["experiment_log"] = _exp_summary
+    except Exception:
+        logger.debug("experiment_log: summary generation failed", exc_info=True)
 
     _write_json(ws, QUALITY_SUMMARY_FILE, quality_summary)
     _write_json(ws, QUALITY_RESOLUTION_FILE, {
