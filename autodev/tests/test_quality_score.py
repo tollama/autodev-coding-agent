@@ -6,9 +6,6 @@ import pytest
 
 from autodev.quality_score import (
     DEFAULT_WEIGHTS,
-    HARD_BLOCKER_CLASSIFICATIONS,
-    HARD_BLOCKER_VALIDATORS,
-    QualityScore,
     ScoreWeights,
     compute_quality_score,
     _check_hard_blockers,

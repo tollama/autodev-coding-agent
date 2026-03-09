@@ -6,9 +6,7 @@ import asyncio
 import json
 import os
 import tempfile
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import pytest
 
@@ -523,9 +521,6 @@ class TestExploreStrategies:
 
         def mock_rollback():
             pass
-
-        # We need to track which strategy is being evaluated
-        original_explore = explore_strategies
 
         async def run():
             result = await explore_strategies(

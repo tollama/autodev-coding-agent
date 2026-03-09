@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
-
-import pytest
 
 from autodev.config import _validate_run_autonomous_quality_gate_policy, _validate_run_section
 

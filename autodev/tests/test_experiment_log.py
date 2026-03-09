@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 
 import pytest
 
@@ -14,7 +13,7 @@ from autodev.experiment_log import (
     ExperimentLog,
     make_decision,
 )
-from autodev.quality_score import QualityScore, ScoreWeights
+from autodev.quality_score import QualityScore
 
 
 # ---------------------------------------------------------------------------
