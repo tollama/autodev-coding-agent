@@ -69,7 +69,7 @@ Status timestamp: 2026-01-01 00:00 KST (Asia/Seoul)
     (docs_root / "AUTONOMOUS_V4_WAVE_CLOSURE.md").write_text(
         """# Autonomous v4 Wave Closure
 
-Status: 🚧 Open (kickoff active; closure pending)
+Status: 🚧 Open — closure blocked (pending merge/completion evidence)
 
 ## Completed tickets (`AV4-001` ~ `AV4-014`)
 
@@ -168,6 +168,59 @@ def test_detect_matching_event_resolves_single_canonical_match(tmp_path: Path) -
 
     mod.apply_event("av4.closed", docs_root=docs_root, timestamp="2026-03-09 10:10 KST (Asia/Seoul)")
     assert mod.detect_matching_event(docs_root=docs_root) == "av4.closed"
+
+
+def test_drift_check_passes_for_current_closed_docs_shape(tmp_path: Path) -> None:
+    mod = _load_module()
+    docs_root = tmp_path / "docs"
+    _seed_docs(docs_root)
+
+    (docs_root / "STATUS_BOARD_CURRENT.md").write_text(
+        """# STATUS BOARD — CURRENT
+
+Status timestamp: 2026-03-09 09:58 KST (Asia/Seoul)
+
+## Current phase
+
+- **Mode:** AV4 Closed
+- **Scope:** AV5 handoff and next-wave intake planning
+- **State:** AV4 is closed on `main`; post-AV4 planning is active
+- **Status-hook event/state:** `av4.closed`
+
+## Wave status snapshot
+
+- **AV2:** ✅ Closed (`AV2-001` ~ `AV2-014`)
+- **AV3:** ✅ Closed (`AV3-001` ~ `AV3-013`)
+- **AV4:** ✅ Closed (execution + stabilization complete)
+""",
+        encoding="utf-8",
+    )
+    (docs_root / "PLAN_NEXT_WEEK.md").write_text(
+        """# PLAN — Next Wave (Post-AV4 Planning)
+
+## Current state snapshot
+- AV4 wave (`AV4-001` ~ `AV4-014`) is complete and closed on `main`.
+""",
+        encoding="utf-8",
+    )
+    (docs_root / "BACKLOG_NEXT_WEEK.md").write_text(
+        """# BACKLOG — Next Wave (Post-AV4 Intake Queue)
+
+## Wave baseline
+- AV4 closure: ✅ complete (`AV4-001` ~ `AV4-014`)
+""",
+        encoding="utf-8",
+    )
+    (docs_root / "AUTONOMOUS_V4_WAVE_CLOSURE.md").write_text(
+        """# Autonomous v4 Wave Closure
+
+Status: ✅ Closed on `main`
+""",
+        encoding="utf-8",
+    )
+
+    assert mod.detect_matching_event(docs_root=docs_root) == "av4.closed"
+    assert mod.drift_check_event("av4.closed", docs_root=docs_root) == []
 
 
 def test_detect_matching_event_errors_on_unknown_status_mode(tmp_path: Path) -> None:
