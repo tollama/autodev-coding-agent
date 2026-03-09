@@ -76,6 +76,10 @@ class EventType(str, Enum):
     # Validator dependency graph
     VALIDATOR_DEP_SKIPPED = "validator_dep.skipped"
 
+    # Quality score (autoresearch-inspired experiment tracking)
+    QUALITY_SCORE_COMPUTED = "quality_score.computed"
+    EXPERIMENT_DECISION = "experiment.decision"
+
 
 # ---------------------------------------------------------------------------
 # Data classes

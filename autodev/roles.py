@@ -259,6 +259,13 @@ Execution rules:
 - Keep changes minimal; prefer patch for small edits.
 - Include regression/error-path tests when behavior changes.
 - Return a CHANGESET JSON that satisfies core.output_format.
+
+SIMPLICITY PRINCIPLE:
+- A small improvement that adds ugly complexity is NOT worth it.
+- Removing code and getting equal or better results is a GREAT outcome.
+- Prefer deleting dead code over wrapping it in conditionals.
+- Do NOT add workarounds, excessive try/except blocks, or defensive code unless the failure specifically demands it.
+- When multiple fixes are possible, choose the one with the smallest diff.
 """,
     )
 

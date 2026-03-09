@@ -845,6 +845,26 @@ def _evaluate_quality_gates(
 
     _write_gate_baseline_payload(ws, baseline_payload)
 
+    # -- Composite quality score gate (autoresearch-inspired) --
+    try:
+        from .quality_score import compute_quality_score
+        _raw_rows = last_validation if isinstance(last_validation, list) else []
+        _qs = compute_quality_score(_raw_rows)
+        gates["composite_quality"] = {
+            "status": "info",
+            "composite_score": round(_qs.composite, 2),
+            "hard_blocked": _qs.hard_blocked,
+            "components": {
+                "tests": round(_qs.tests_score, 2),
+                "lint": round(_qs.lint_score, 2),
+                "type_health": round(_qs.type_health_score, 2),
+                "security": round(_qs.security_score, 2),
+                "simplicity": round(_qs.simplicity_score, 2),
+            },
+        }
+    except Exception:
+        logger.debug("quality_score: gate computation failed", exc_info=True)
+
     passed = len(fail_reasons) == 0
     return {
         "evaluated_at": _utc_now(),
