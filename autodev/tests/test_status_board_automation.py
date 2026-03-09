@@ -89,6 +89,7 @@ def test_event_registry_valid_default_passes_schema_validation() -> None:
         "av4.stabilization.started",
         "av4.closed",
         "av5.kickoff.started",
+        "av6.kickoff.started",
     }
     assert set(mod.CANONICAL_EVENT_MAP) == expected_events
 
