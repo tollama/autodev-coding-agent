@@ -79,6 +79,7 @@ PLAN_SNAPSHOT_PREFIXES = (
     "- AV4 stabilization is",
     "- AV4 wave (",
     "- AV5 kickoff package",
+    "- AV6 kickoff package",
 )
 BACKLOG_TITLE_PREFIX = "# BACKLOG — Next Wave ("
 BACKLOG_SNAPSHOT_PREFIXES = (
@@ -87,6 +88,7 @@ BACKLOG_SNAPSHOT_PREFIXES = (
     "- AV4 stabilization:",
     "- AV4 closure:",
     "- AV5 kickoff:",
+    "- AV6 kickoff:",
 )
 CLOSURE_STATUS_PREFIX = "Status: "
 ACTIVE_EVENT_LINE_PREFIX = "- Active status-hook event/state:"
@@ -180,6 +182,22 @@ EVENT_REGISTRY: tuple[EventRegistryEntry, ...] = (
             plan_av4_snapshot="- AV5 kickoff package is started (`docs/AUTONOMOUS_V5_WAVE_PLAN.md`, `docs/AUTONOMOUS_V5_BACKLOG.md`).",
             backlog_title="# BACKLOG — Next Wave (AV5 Kickoff Queue)",
             backlog_av4_snapshot="- AV5 kickoff: 🚧 started (`docs/AUTONOMOUS_V5_WAVE_PLAN.md`, `docs/AUTONOMOUS_V5_BACKLOG.md`)",
+            closure_status="✅ Closed on `main`",
+        ),
+    ),
+    EventRegistryEntry(
+        event_id="av6.kickoff.started",
+        description="Initialize AV6 kickoff docs baseline while preserving AV4 closure ledger state.",
+        expected_doc_transitions=EXPECTED_DOC_TRANSITIONS,
+        spec=CanonicalEventSpec(
+            mode="AV6 Kickoff Active",
+            scope="AV6 kickoff package execution (autoresearch guardrails + observability baseline)",
+            state="AV6 kickoff is started; AV5 checkpoint captured; AV4 remains closed on `main`",
+            av4_snapshot="✅ Closed (execution + stabilization complete)",
+            plan_title="# PLAN — Next Wave (AV6 Kickoff Active)",
+            plan_av4_snapshot="- AV6 kickoff package is started (`docs/AUTONOMOUS_V6_WAVE_PLAN.md`, `docs/AUTONOMOUS_V6_BACKLOG.md`).",
+            backlog_title="# BACKLOG — Next Wave (AV6 Kickoff Queue)",
+            backlog_av4_snapshot="- AV6 kickoff: 🚧 started (`docs/AUTONOMOUS_V6_WAVE_PLAN.md`, `docs/AUTONOMOUS_V6_BACKLOG.md`)",
             closure_status="✅ Closed on `main`",
         ),
     ),
