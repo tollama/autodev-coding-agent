@@ -1,24 +1,25 @@
-# PLAN — Next Wave (AV5 Kickoff Active)
+# PLAN — Next Wave (AV6 Kickoff Active)
 
 ## Scope
 
-This plan tracks active AV5 kickoff after AV4 closure.
-Primary objective is to execute AV5 kickoff foundations while preserving AV4 reliability and documentation discipline.
+This plan tracks active AV6 kickoff after AV5 checkpoint capture.
+Primary objective is to operationalize existing autoresearch integration safely with deterministic blockers, thresholding, and runtime budgets.
 
 ## Current state snapshot
 
 - AV2 wave (`AV2-001` ~ `AV2-014`) is complete and merged.
 - AV3 wave (`AV3-001` ~ `AV3-013`) is complete and merged.
 - AV4 wave (`AV4-001` ~ `AV4-014`) is complete and closed on `main`.
-- AV5 kickoff package is started (`docs/AUTONOMOUS_V5_WAVE_PLAN.md`, `docs/AUTONOMOUS_V5_BACKLOG.md`).
-- Active status-hook event/state: `av5.kickoff.started`.
+- AV5 wave is checkpointed on `main` (`docs/AUTONOMOUS_V5_WAVE_PLAN.md`, `docs/AUTONOMOUS_V5_WAVE_CHECKPOINT.md`).
+- AV6 kickoff package is started (`docs/AUTONOMOUS_V6_WAVE_PLAN.md`, `docs/AUTONOMOUS_V6_BACKLOG.md`).
+- Active status-hook event/state: `av6.kickoff.started`.
 
-## AV5 kickoff execution plan
+## AV6 kickoff execution plan
 
-1. **Publish canonical AV5 wave docs:** keep plan/backlog/status/README links in sync.
-2. **Lock deterministic kickoff boundaries:** define first P0 slices with strict DoD/test lanes.
-3. **Preserve quality baseline:** keep smoke/release/docs/status-hook drift checks continuously green.
-4. **Prepare week-2 rollout:** sequence operator-facing and governance slices without enlarging PR scope.
+1. **Publish canonical AV6 wave docs:** keep plan/backlog/status/README links in sync.
+2. **Lock hard safety blockers:** document non-negotiable stop/escalate lanes for autoresearch-triggered actions.
+3. **Define deterministic scoring and budget gates:** establish threshold matrix + stage/run time-budget contracts.
+4. **Attach observability baseline:** ensure blocker/threshold/budget decisions are traceable in operator evidence.
 
 ## Workflow confidence checks
 
@@ -32,18 +33,19 @@ Manual status-hook fallback:
 - CI drift check equivalent: `python3 scripts/status_board_automation.py <event_id> --drift-check`.
 - Event-to-transition reference: `docs/STATUS_HOOK_TRANSITION_MATRIX.md`.
 
-## Definition of done (AV5 kickoff)
+## Definition of done (AV6 kickoff)
 
-- AV5 kickoff state is visible across status/plan/backlog/README docs.
-- AV5 plan and prioritized backlog are published with explicit DoD/test/PR-split fields.
+- AV6 kickoff state is visible across status/plan/backlog/README docs.
+- AV6 plan and prioritized backlog are published with explicit DoD/test/PR-split fields.
 - Docs/status automation stays drift-free (`make check-status-hooks`, `make check-docs`).
 
 ## Related docs
 
-- `docs/AUTONOMOUS_V5_WAVE_PLAN.md`
-- `docs/AUTONOMOUS_V5_BACKLOG.md`
+- `docs/AUTONOMOUS_V6_WAVE_PLAN.md`
+- `docs/AUTONOMOUS_V6_BACKLOG.md`
+- `docs/AUTONOMOUS_V6_WAVE_CHECKPOINT.md`
 - `docs/STATUS_BOARD_CURRENT.md`
 - `docs/BACKLOG_NEXT_WEEK.md`
-- `docs/AUTONOMOUS_V4_WAVE_CLOSURE.md`
+- `docs/AUTONOMOUS_V5_WAVE_PLAN.md`
+- `docs/AUTONOMOUS_V5_WAVE_CHECKPOINT.md`
 - `docs/STATUS_HOOK_TRANSITION_MATRIX.md`
-- `docs/AUTONOMOUS_FAILURE_PLAYBOOK.md`
