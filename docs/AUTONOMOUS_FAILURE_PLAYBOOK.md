@@ -68,6 +68,46 @@ Operator actions:
 2. Re-scope objective before increasing budgets.
 3. Increase guard limits only with explicit operator approval and rationale.
 
+## Retention / compaction operations runbook (AV4-013)
+
+Use this path when retention/compaction decisions appear in incident artifacts and an operator must recover safely without losing forensics.
+
+Primary evidence surfaces:
+- `.autodev/autonomous_incident_packet.json` → `retention_compaction.decisions[]`
+- `AUTONOMOUS_REPORT.md` → Retention / Compaction Decisions section
+- `autodev autonomous summary --run-dir <run_dir>` for current run status before any cleanup actions
+
+### Recovery path checklist
+
+1. **Freeze destructive actions**
+   - Pause automated compaction/cleanup jobs for the affected run scope.
+   - Keep the failed run directory and `.autodev/` artifacts immutable until triage completes.
+2. **Capture decision evidence**
+   - Record each retention/compaction decision + rationale link from incident packet/report.
+   - Confirm whether compaction was deferred (`defer_compaction_until_recovery`) or already applied.
+3. **Stabilize and validate**
+   - Resolve the primary failure branch first (gate/guard/preflight/budget sections above).
+   - Re-run targeted validation for the affected run and verify summary status is stable.
+4. **Resume retention flow deliberately**
+   - Resume compaction only after recovery validation succeeds.
+   - Keep an operator note with timestamp, approver, and affected run IDs.
+
+### Rollback steps (if retention/compaction change caused risk)
+
+1. Stop further retention/compaction writes for the affected scope.
+2. Restore archived/raw artifacts from the last known-good snapshot or backup.
+3. Rebuild canonical run evidence files if needed (`autonomous_state.json`, report/summary artifacts) from restored data.
+4. Re-run `autodev autonomous summary --run-dir <run_dir>` and confirm required diagnostics are present.
+5. Document rollback cause, restored scope, and follow-up policy adjustment before re-enabling compaction.
+
+### Walk-through quick check (operator dry run)
+
+- [ ] Locate retention/compaction decisions in incident packet/report.
+- [ ] Confirm compaction is paused/deferred during recovery.
+- [ ] Validate recovery branch is complete and summary output is healthy.
+- [ ] Execute rollback steps on paper/tabletop (or staging) for one sample run.
+- [ ] Record operator sign-off before re-enabling automated compaction.
+
 ## Unknown or unmapped codes
 
 If a code appears without an exact playbook mapping:
