@@ -419,10 +419,16 @@ class AutonomousPerformanceGateThresholds:
 
 
 @dataclass(frozen=True)
+class AutonomousCompositeGateThresholds:
+    min_composite_score: float | None = None
+
+
+@dataclass(frozen=True)
 class AutonomousQualityGatePolicy:
     tests: AutonomousTestsGateThresholds | None = None
     security: AutonomousSecurityGateThresholds | None = None
     performance: AutonomousPerformanceGateThresholds | None = None
+    composite: AutonomousCompositeGateThresholds | None = None
 
 
 @dataclass(frozen=True)
@@ -850,10 +856,21 @@ def _evaluate_quality_gates(
         from .quality_score import compute_quality_score
         _raw_rows = last_validation if isinstance(last_validation, list) else []
         _qs = compute_quality_score(_raw_rows)
+
+        _composite_cfg = policy.composite
+        _min_threshold = _composite_cfg.min_composite_score if _composite_cfg else None
+
+        if _min_threshold is not None:
+            _gate_ok = _qs.composite >= _min_threshold and not _qs.hard_blocked
+            _status = "passed" if _gate_ok else "advisory_warning"
+        else:
+            _status = "info"
+
         gates["composite_quality"] = {
-            "status": "info",
+            "status": _status,
             "composite_score": round(_qs.composite, 2),
             "hard_blocked": _qs.hard_blocked,
+            "threshold": {"min_composite_score": _min_threshold} if _min_threshold is not None else None,
             "components": {
                 "tests": round(_qs.tests_score, 2),
                 "lint": round(_qs.lint_score, 2),
@@ -1370,10 +1387,24 @@ def _resolve_autonomous_quality_gate_policy(run_cfg: dict[str, Any]) -> Autonomo
             raise SystemExit("config.run.autonomous.quality_gate_policy.performance.max_regression_pct must be >= 0.")
         performance_thresholds = AutonomousPerformanceGateThresholds(max_regression_pct=max_regression_pct)
 
+    composite_thresholds = None
+    raw_composite = raw_policy.get("composite")
+    if raw_composite is not None:
+        if not isinstance(raw_composite, dict):
+            raise SystemExit("config.run.autonomous.quality_gate_policy.composite must be an object.")
+        min_composite_score = _coerce_optional_float(
+            raw_composite.get("min_composite_score"),
+            "autonomous.quality_gate_policy.composite.min_composite_score",
+        )
+        if min_composite_score is not None and (min_composite_score < 0 or min_composite_score > 100):
+            raise SystemExit("config.run.autonomous.quality_gate_policy.composite.min_composite_score must be between 0 and 100.")
+        composite_thresholds = AutonomousCompositeGateThresholds(min_composite_score=min_composite_score)
+
     return AutonomousQualityGatePolicy(
         tests=tests_thresholds,
         security=security_thresholds,
         performance=performance_thresholds,
+        composite=composite_thresholds,
     )
 
 

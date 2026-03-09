@@ -856,6 +856,66 @@ def _latest_quality_gate_snapshot(runs_root: Path) -> dict[str, Any]:
     }
 
 
+def _read_experiment_log(run_dir: Path, *, task_id: str | None = None) -> dict[str, Any]:
+    """Read and parse experiment log JSONL from a run directory."""
+    log_path = run_dir / ".autodev" / "experiment_log.jsonl"
+    if not log_path.exists():
+        return {"entries": [], "summary": {"entry_count": 0, "tasks": {}}, "run_id": run_dir.name}
+
+    entries: list[dict[str, Any]] = []
+    tasks: dict[str, dict[str, Any]] = {}
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        tid = entry.get("task_id", "")
+        if task_id and tid != task_id:
+            continue
+        entries.append(entry)
+
+        if tid not in tasks:
+            tasks[tid] = {"attempts": 0, "decisions": {"accepted": 0, "reverted": 0, "neutral": 0}, "best_score": 0.0, "final_score": 0.0}
+        t = tasks[tid]
+        t["attempts"] += 1
+        decision = entry.get("decision", {}).get("decision", "")
+        if decision in t["decisions"]:
+            t["decisions"][decision] += 1
+        composite = entry.get("composite_score", 0.0)
+        t["best_score"] = max(t["best_score"], composite)
+        t["final_score"] = composite
+
+    return {
+        "entries": entries,
+        "summary": {"entry_count": len(entries), "tasks": tasks},
+        "run_id": run_dir.name,
+    }
+
+
+def _experiment_log_for_latest_or_run(
+    runs_root: Path,
+    run_id: str | None = None,
+    task_id: str | None = None,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    """Return experiment log for a specific run or the latest run."""
+    if not runs_root.exists() or not runs_root.is_dir():
+        return {"entries": [], "summary": {"entry_count": 0, "tasks": {}}, "error": "no runs root"}, HTTPStatus.OK
+
+    if run_id:
+        run_dir = runs_root / run_id
+        if not run_dir.exists() or not run_dir.is_dir():
+            return {"error": "run not found", "run_id": run_id}, HTTPStatus.NOT_FOUND
+        return _read_experiment_log(run_dir, task_id=task_id), HTTPStatus.OK
+
+    run_dirs = sorted((p for p in runs_root.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not run_dirs:
+        return {"entries": [], "summary": {"entry_count": 0, "tasks": {}}, "error": "no runs found"}, HTTPStatus.OK
+    return _read_experiment_log(run_dirs[0], task_id=task_id), HTTPStatus.OK
+
+
 def _quality_trends(runs_root: Path, window: int, *, allow_partial: bool = False) -> dict[str, Any]:
     trend_window = max(1, min(int(window), MAX_TREND_WINDOW))
     if not runs_root.exists():
@@ -1077,6 +1137,7 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                         "trends": True,
                         "scorecard": True,
                         "autonomous_quality_gate_snapshot": True,
+                        "experiment_log": True,
                     },
                 }
             )
@@ -1183,6 +1244,25 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                 return
 
             self._json_response(payload)
+            return
+
+        if path == "/api/experiment-log":
+            query = parse_qs(parsed.query)
+            task_id = str((query.get("task_id") or [""])[0]).strip() or None
+            run_id_filter = str((query.get("run_id") or [""])[0]).strip() or None
+            payload, status = _experiment_log_for_latest_or_run(self.config.runs_root, run_id=run_id_filter, task_id=task_id)
+            self._json_response(payload, status=status)
+            return
+
+        if path.startswith("/api/runs/") and path.endswith("/experiment-log"):
+            run_id = unquote(path.removeprefix("/api/runs/").removesuffix("/experiment-log")).strip("/")
+            if not run_id:
+                self._json_response({"error": "run id is required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            query = parse_qs(parsed.query)
+            task_id = str((query.get("task_id") or [""])[0]).strip() or None
+            payload, status = _experiment_log_for_latest_or_run(self.config.runs_root, run_id=run_id, task_id=task_id)
+            self._json_response(payload, status=status)
             return
 
         if path.startswith("/api/runs/"):

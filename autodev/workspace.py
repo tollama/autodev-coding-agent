@@ -313,6 +313,45 @@ class Workspace:
 
         return manifest
 
+    def compute_loc_delta(self, snapshot_name: str) -> int:
+        """Compute net LOC change between a snapshot and the current workspace.
+
+        Returns ``current_total_loc - snapshot_total_loc``.  Positive means
+        lines were added; negative means lines were removed.  Returns ``0``
+        if the snapshot does not exist or on any I/O error.
+        """
+        snapshot_base = os.path.join(self.SNAPSHOT_DIR, snapshot_name)
+        manifest_path = os.path.join(snapshot_base, "manifest.json")
+        abs_manifest = os.path.join(self.root, manifest_path)
+        if not os.path.isfile(abs_manifest):
+            return 0
+
+        try:
+            manifest: Dict[str, Any] = json.loads(self.read_text(manifest_path))
+        except Exception:
+            return 0
+
+        # Count LOC in snapshot (from backed-up files)
+        snapshot_loc = 0
+        for _rel, info in manifest.get("files", {}).items():
+            backup_rel = os.path.join(snapshot_base, info["backup_path"])
+            try:
+                content = self.read_text(backup_rel)
+                snapshot_loc += content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+            except Exception:
+                pass
+
+        # Count LOC in current workspace
+        current_loc = 0
+        for rel_path in self.list_context_files(max_files=None):
+            try:
+                content = self.read_text(rel_path)
+                current_loc += content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+            except Exception:
+                pass
+
+        return current_loc - snapshot_loc
+
     def list_snapshots(self) -> List[str]:
         """Return sorted list of available snapshot names."""
         snapshots_dir = os.path.join(self.root, self.SNAPSHOT_DIR)

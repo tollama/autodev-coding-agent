@@ -331,3 +331,58 @@ def test_snapshot_sha256_manifest(ws):
     manifest = ws.snapshot("hash_check")
     expected_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
     assert manifest["files"]["hello.py"]["sha256"] == expected_hash
+
+
+# ---------------------------------------------------------------------------
+# compute_loc_delta
+# ---------------------------------------------------------------------------
+
+
+def test_compute_loc_delta_no_change(ws):
+    """LOC delta should be 0 when workspace matches snapshot."""
+    ws.write_text("main.py", "line1\nline2\nline3\n")
+    ws.snapshot("base")
+    assert ws.compute_loc_delta("base") == 0
+
+
+def test_compute_loc_delta_addition(ws):
+    """LOC delta should be positive when lines are added."""
+    ws.write_text("main.py", "line1\nline2\n")
+    ws.snapshot("base")
+    ws.write_text("main.py", "line1\nline2\nline3\nline4\n")
+    delta = ws.compute_loc_delta("base")
+    assert delta == 2
+
+
+def test_compute_loc_delta_removal(ws):
+    """LOC delta should be negative when lines are removed."""
+    ws.write_text("main.py", "line1\nline2\nline3\nline4\n")
+    ws.snapshot("base")
+    ws.write_text("main.py", "line1\n")
+    delta = ws.compute_loc_delta("base")
+    assert delta == -3
+
+
+def test_compute_loc_delta_new_file(ws):
+    """LOC delta should include lines from newly added files."""
+    ws.write_text("main.py", "line1\n")
+    ws.snapshot("base")
+    ws.write_text("extra.py", "a\nb\nc\n")
+    delta = ws.compute_loc_delta("base")
+    assert delta == 3
+
+
+def test_compute_loc_delta_missing_snapshot(ws):
+    """Missing snapshot should return 0 (safe fallback)."""
+    ws.write_text("main.py", "line1\n")
+    assert ws.compute_loc_delta("nonexistent") == 0
+
+
+def test_compute_loc_delta_deleted_file(ws):
+    """LOC delta should be negative when files are deleted."""
+    ws.write_text("main.py", "line1\nline2\n")
+    ws.write_text("extra.py", "a\nb\n")
+    ws.snapshot("base")
+    ws.delete("extra.py")
+    delta = ws.compute_loc_delta("base")
+    assert delta == -2

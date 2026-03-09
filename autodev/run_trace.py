@@ -80,6 +80,9 @@ class EventType(str, Enum):
     QUALITY_SCORE_COMPUTED = "quality_score.computed"
     EXPERIMENT_DECISION = "experiment.decision"
 
+    # Time budget
+    TASK_TIME_BUDGET_EXCEEDED = "task.time_budget_exceeded"
+
 
 # ---------------------------------------------------------------------------
 # Data classes

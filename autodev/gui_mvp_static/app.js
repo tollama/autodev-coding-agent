@@ -3058,6 +3058,9 @@ function initTabs() {
       if (tab === 'processes') {
         await loadProcesses({ silent: true });
       }
+      if (tab === 'experiment-log') {
+        await loadExperimentLog();
+      }
     });
   });
 }
@@ -3532,6 +3535,111 @@ function initLiveUpdateControls() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Experiment Log tab
+// ---------------------------------------------------------------------------
+async function loadExperimentLog(taskIdFilter) {
+  const statusLine = el('expLogStatusLine');
+  statusLine.textContent = 'Loading…';
+  try {
+    const params = new URLSearchParams();
+    if (taskIdFilter) params.set('task_id', taskIdFilter);
+    const res = await fetch(`/api/experiment-log?${params}`);
+    const data = await res.json();
+    renderExperimentLog(data);
+    statusLine.textContent = `${data.entries?.length || 0} entries`;
+  } catch (e) {
+    statusLine.textContent = `Error: ${e.message}`;
+  }
+}
+
+function renderExperimentLog(data) {
+  const body = el('expLogBody');
+  const empty = el('expLogEmpty');
+  const tableWrap = el('expLogTableWrap');
+  const summaryNode = el('expLogSummary');
+  const filterSelect = el('expLogTaskFilter');
+
+  const entries = data.entries || [];
+  const summary = data.summary || {};
+
+  // Populate task filter dropdown
+  const tasks = Object.keys(summary.tasks || {});
+  const currentFilter = filterSelect.value;
+  filterSelect.innerHTML = '<option value="">All tasks</option>';
+  tasks.forEach((tid) => {
+    const opt = document.createElement('option');
+    opt.value = tid;
+    opt.textContent = tid;
+    filterSelect.appendChild(opt);
+  });
+  filterSelect.value = currentFilter;
+
+  // Render summary
+  summaryNode.innerHTML = '';
+  if (summary.entry_count > 0) {
+    const pairs = [
+      ['Total entries', summary.entry_count],
+      ['Tasks', tasks.length],
+    ];
+    tasks.forEach((tid) => {
+      const t = summary.tasks[tid];
+      pairs.push([`${tid} best`, t.best_score?.toFixed(1) || '-']);
+      pairs.push([`${tid} decisions`, `A:${t.decisions?.accepted || 0} R:${t.decisions?.reverted || 0} N:${t.decisions?.neutral || 0}`]);
+    });
+    pairs.forEach(([label, value]) => {
+      const dt = document.createElement('dt');
+      dt.textContent = label;
+      const dd = document.createElement('dd');
+      dd.textContent = String(value);
+      summaryNode.appendChild(dt);
+      summaryNode.appendChild(dd);
+    });
+  }
+
+  if (entries.length === 0) {
+    tableWrap.classList.add('hidden');
+    empty.classList.remove('hidden');
+    return;
+  }
+  tableWrap.classList.remove('hidden');
+  empty.classList.add('hidden');
+
+  body.innerHTML = '';
+  entries.forEach((e) => {
+    const tr = document.createElement('tr');
+    const decision = e.decision?.decision || '';
+    tr.className = decision === 'accepted' ? 'exp-accepted' : decision === 'reverted' ? 'exp-reverted' : 'exp-neutral';
+
+    const cells = [
+      e.task_id || '',
+      e.iteration ?? '',
+      e.attempt ?? '',
+      e.composite_score?.toFixed(1) || '-',
+      decision,
+      e.decision?.reason_code || '',
+      (e.decision?.score_delta != null ? (e.decision.score_delta > 0 ? '+' : '') + e.decision.score_delta.toFixed(1) : '-'),
+      (e.decision?.hard_blockers || []).join(', ') || '-',
+      e.wall_clock_ms != null ? (e.wall_clock_ms / 1000).toFixed(1) + 's' : '-',
+    ];
+    cells.forEach((text) => {
+      const td = document.createElement('td');
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    body.appendChild(tr);
+  });
+}
+
+function initExperimentLogControls() {
+  el('expLogRefreshBtn').addEventListener('click', () => {
+    loadExperimentLog(el('expLogTaskFilter').value || undefined);
+  });
+  el('expLogTaskFilter').addEventListener('change', () => {
+    loadExperimentLog(el('expLogTaskFilter').value || undefined);
+  });
+}
+
 initTabs();
 initValidationControls();
 initTabRecoveryActions();
@@ -3541,5 +3649,6 @@ initProcessControls();
 initCompareControls();
 initTrendControls();
 initLiveUpdateControls();
+initExperimentLogControls();
 renderScorecardWidget();
 loadRuns();

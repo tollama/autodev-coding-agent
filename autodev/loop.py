@@ -302,6 +302,7 @@ async def run_autodev_enterprise(
     max_fix_loops_total: int,
     max_fix_loops_per_task: int,
     max_json_repair: int,
+    max_fix_time_per_task_sec: int | None = None,
     task_soft_validators: List[str] | None = None,
     final_soft_validators: List[str] | None = None,
     quality_profile: Dict[str, Any] | None = None,
@@ -1099,6 +1100,7 @@ async def run_autodev_enterprise(
 
         files_ctx = _cached_files_context(task["id"], task["files"], goal=task.get("goal", ""))
         attempt_records: List[Dict[str, Any]] = []
+        task_wall_start = time.perf_counter()
         loops = 0
         last_failure_signature: tuple[Any, ...] = tuple()
         repeat_failure_count = 0
@@ -1413,9 +1415,16 @@ async def run_autodev_enterprise(
 
             # -- Experiment log: compute quality score + record decision (Phase 1, read-only) --
             try:
+                _loc_delta = 0
+                if enable_snapshots:
+                    try:
+                        _loc_delta = ws.compute_loc_delta(snapshot_name)
+                    except Exception:
+                        pass
                 _qs = compute_quality_score(
                     task_last_validation,
                     soft_validators=_effective_soft,
+                    loc_delta=_loc_delta,
                 )
                 _prev_qs = _experiment_log.last_score_for_task(task["id"])
                 _decision = make_decision(_qs, _prev_qs)
@@ -1634,6 +1643,80 @@ async def run_autodev_enterprise(
                     "task_entry": task_entry,
                     "last_validation": task_last_validation,
                 }
+
+            # -- Per-task time budget guard --
+            if max_fix_time_per_task_sec is not None:
+                _task_elapsed = time.perf_counter() - task_wall_start
+                if _task_elapsed > max_fix_time_per_task_sec:
+                    task_entry = {
+                        "task_id": task["id"],
+                        "status": "failed",
+                        "attempts": len(attempt_records),
+                        "validator_focus": run_set,
+                        "attempt_trend": _build_task_summary_rows(attempt_records),
+                        "hard_failures": attempt_records[-1]["hard_failures"],
+                        "soft_failures": attempt_records[-1]["soft_failures"],
+                        "last_validation": attempt_records[-1]["validations"],
+                        "quality_trace": quality_trace,
+                        "time_budget_exceeded": True,
+                    }
+                    _write_json(
+                        ws,
+                        QUALITY_TASK_FILE_TMPL.format(task_id=task["id"]),
+                        {
+                            "task_id": task["id"],
+                            "status": "failed",
+                            "attempts": attempt_records,
+                            "attempts_count": len(attempt_records),
+                            "validator_focus": run_set,
+                            "attempt_trend": _build_task_summary_rows(attempt_records),
+                            "last_validation": attempt_records[-1]["validations"],
+                            "quality_trace": quality_trace,
+                            "time_budget_exceeded": True,
+                        },
+                    )
+                    _write_json(
+                        ws,
+                        QUALITY_TASK_LAST_FILE_TMPL.format(task_id=task["id"]),
+                        {
+                            "validator_focus": run_set,
+                            "run_level": "per_task",
+                            "validation": task_last_validation,
+                            "record_count": len(attempt_records),
+                            "time_budget_exceeded": True,
+                        },
+                    )
+                    _log_event(
+                        "task.failed",
+                        run_id=run_id,
+                        request_id=request_id,
+                        profile=profile,
+                        iteration=iteration,
+                        task_id=task["id"],
+                        attempts=len(attempt_records),
+                        reason="task_time_budget_exceeded",
+                        elapsed_sec=round(_task_elapsed, 1),
+                        budget_sec=max_fix_time_per_task_sec,
+                        total_fix_loops=total_fix_loops,
+                    )
+                    trace.record(
+                        EventType.TASK_TIME_BUDGET_EXCEEDED,
+                        task_id=task["id"],
+                        elapsed_sec=round(_task_elapsed, 1),
+                        budget_sec=max_fix_time_per_task_sec,
+                    )
+                    if enable_snapshots:
+                        ws.rollback(snapshot_name)
+                        progress.emit("snapshot.rollback", task_id=task["id"], snapshot_name=snapshot_name)
+                        trace.record(EventType.SNAPSHOT_ROLLBACK, task_id=task["id"], snapshot_name=snapshot_name)
+                    progress.task_end(task["id"], task["title"], ok=False)
+                    return {
+                        "task_id": task["id"],
+                        "iteration": iteration,
+                        "status": "failed",
+                        "task_entry": task_entry,
+                        "last_validation": task_last_validation,
+                    }
 
             files_ctx = _cached_files_context(task["id"], task["files"], goal=task.get("goal", ""))
             same_failure_signature = bool(signature) and signature == last_failure_signature

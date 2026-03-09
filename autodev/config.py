@@ -11,7 +11,7 @@ from .schemas import VALIDATORS
 
 _POLICY_SECTIONS = {"per_task", "final"}
 _POLICY_KEYS = {"soft_fail"}
-_AUTONOMOUS_GATE_SECTIONS = {"tests", "security", "performance"}
+_AUTONOMOUS_GATE_SECTIONS = {"tests", "security", "performance", "composite"}
 _QUALITY_PROFILE_KEYS = {
     "name",
     "validator_policy",
@@ -662,6 +662,27 @@ def _validate_run_autonomous_quality_gate_policy(policy: Any, errors: List[str])
                 else:
                     performance["max_regression_pct"] = max_regression_pct
 
+    composite = policy.get("composite")
+    if composite is not None:
+        if not isinstance(composite, dict):
+            errors.append(f"{base}.composite must be an object.")
+        else:
+            unknown = sorted(set(composite.keys()) - {"min_composite_score"})
+            if unknown:
+                errors.append(
+                    f"{base}.composite has unknown key(s): {unknown}. Allowed keys: ['min_composite_score']."
+                )
+            min_composite_score = _coerce_float(
+                composite.get("min_composite_score"),
+                f"{base}.composite.min_composite_score",
+                errors,
+            )
+            if min_composite_score is not None:
+                if min_composite_score < 0 or min_composite_score > 100:
+                    errors.append(f"{base}.composite.min_composite_score must be between 0 and 100.")
+                else:
+                    composite["min_composite_score"] = min_composite_score
+
 
 def _validate_run_autonomous_section(autonomous: Any, errors: List[str]) -> None:
     if autonomous is None:
@@ -697,6 +718,15 @@ def _validate_run_section(run: Any, errors: List[str]) -> None:
                     errors.append("run.budget.max_tokens must be a positive integer.")
                 else:
                     budget["max_tokens"] = max_tokens
+
+    max_fix_time = run.get("max_fix_time_per_task_sec")
+    if max_fix_time is not None:
+        max_fix_time = _coerce_int(max_fix_time, "run.max_fix_time_per_task_sec", errors, default=None)
+        if max_fix_time is not None:
+            if max_fix_time <= 0:
+                errors.append("run.max_fix_time_per_task_sec must be a positive integer.")
+            else:
+                run["max_fix_time_per_task_sec"] = max_fix_time
 
     _validate_run_autonomous_section(run.get("autonomous"), errors)
 

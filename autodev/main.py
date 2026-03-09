@@ -356,6 +356,7 @@ def _cli_run(argv: list[str]) -> None:
                 max_fix_loops_total=_coerce_int(run_cfg.get("max_fix_loops_total"), "max_fix_loops_total", 10),
                 max_fix_loops_per_task=_coerce_int(run_cfg.get("max_fix_loops_per_task"), "max_fix_loops_per_task", 4),
                 max_json_repair=_coerce_int(run_cfg.get("max_json_repair"), "max_json_repair", 2),
+                max_fix_time_per_task_sec=run_cfg.get("max_fix_time_per_task_sec"),
                 task_soft_validators=per_task_soft,
                 final_soft_validators=final_soft,
                 quality_profile=quality_profile,

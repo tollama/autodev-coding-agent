@@ -791,3 +791,29 @@ section { margin-bottom: 16px; }
     grid-template-columns: 1fr;
   }
 }
+
+/* Experiment Log table */
+.exp-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+.exp-log-table th,
+.exp-log-table td {
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+.exp-log-table th {
+  background: var(--bg);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+tr.exp-accepted td:nth-child(5) { color: var(--ok); font-weight: 600; }
+tr.exp-reverted td:nth-child(5) { color: var(--fail); font-weight: 600; }
+tr.exp-neutral td:nth-child(5) { color: var(--muted); font-weight: 600; }
+#expLogTableWrap { max-height: 500px; overflow-y: auto; }
+#expLogTableWrap.hidden { display: none; }

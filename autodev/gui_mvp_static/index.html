@@ -40,6 +40,7 @@
           <button class="tab" data-tab="validation">Validation</button>
           <button class="tab" data-tab="compare">Compare</button>
           <button class="tab" data-tab="processes">Processes</button>
+          <button class="tab" data-tab="experiment-log">Experiment Log</button>
         </div>
 
         <div id="tab-overview" class="tab-content is-active">
@@ -315,6 +316,39 @@
                 </div>
               </div>
             </div>
+          </section>
+        </div>
+
+        <div id="tab-experiment-log" class="tab-content">
+          <section>
+            <h3>Experiment Log</h3>
+            <div class="compare-controls">
+              <select id="expLogTaskFilter" aria-label="Filter by task">
+                <option value="">All tasks</option>
+              </select>
+              <button id="expLogRefreshBtn" type="button">Refresh</button>
+              <span id="expLogStatusLine" class="muted"></span>
+            </div>
+            <div id="expLogSummary" class="meta-grid"></div>
+            <div id="expLogTableWrap">
+              <table id="expLogTable" class="exp-log-table">
+                <thead>
+                  <tr>
+                    <th>Task ID</th>
+                    <th>Iter</th>
+                    <th>Attempt</th>
+                    <th>Composite</th>
+                    <th>Decision</th>
+                    <th>Reason</th>
+                    <th>Delta</th>
+                    <th>Hard Blockers</th>
+                    <th>Duration</th>
+                  </tr>
+                </thead>
+                <tbody id="expLogBody"></tbody>
+              </table>
+            </div>
+            <div id="expLogEmpty" class="empty">No experiment log entries found.</div>
           </section>
         </div>
       </section>

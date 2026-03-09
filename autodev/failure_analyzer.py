@@ -33,6 +33,7 @@ class FailureCategory(str, Enum):
     TEST_LOGIC_ERROR = "test_logic_error"
     SECURITY_FINDING = "security_finding"
     REGRESSION_DETECTED = "regression_detected"
+    TASK_TIME_BUDGET_EXCEEDED = "task_time_budget_exceeded"
     TOOL_UNAVAILABLE = "tool_unavailable"
     UNKNOWN = "unknown"
 
