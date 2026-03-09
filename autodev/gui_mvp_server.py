@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .autonomous_mode import extract_autonomous_summary
+from .autonomous_mode import build_operator_audit_summary, extract_autonomous_summary
 from .gui_api import (
     GuiApiError,
     get_process_detail,
@@ -837,17 +837,7 @@ def _latest_quality_gate_snapshot(runs_root: Path) -> dict[str, Any]:
 
     warnings = snapshot.get("warnings") if isinstance(snapshot.get("warnings"), list) else []
 
-    summary = {
-        "status": snapshot.get("status"),
-        "preflight_status": snapshot.get("preflight_status"),
-        "gate_counts": snapshot.get("gate_counts"),
-        "guard_decision": snapshot.get("guard_decision"),
-        "operator_guidance_top": (
-            snapshot.get("operator_guidance", {}).get("top")
-            if isinstance(snapshot.get("operator_guidance"), dict)
-            else []
-        ),
-    }
+    summary = build_operator_audit_summary(snapshot)
 
     return {
         "empty": False,

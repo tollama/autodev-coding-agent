@@ -3222,6 +3222,10 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     summary.add_argument("--run-dir", required=True)
     summary.add_argument("--format", choices=["json", "text"], default="json")
 
+    triage_summary = sub.add_parser("triage-summary", help="print canonical operator triage summary fields")
+    triage_summary.add_argument("--run-dir", required=True)
+    triage_summary.add_argument("--format", choices=["json", "text"], default="json")
+
     incident_export = sub.add_parser("incident-export", help="export autonomous incident packet for operator channels")
     incident_export.add_argument("--run-dir", required=True)
     incident_export.add_argument("--format", choices=list(SUPPORTED_EXPORT_FORMATS), required=True)
@@ -4230,6 +4234,20 @@ def extract_autonomous_summary(run_dir: str) -> dict[str, Any]:
     }
 
 
+def build_operator_audit_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Canonical operator triage summary fields shared by API/GUI/CLI."""
+
+    operator_guidance = snapshot.get("operator_guidance") if isinstance(snapshot.get("operator_guidance"), dict) else {}
+    top = operator_guidance.get("top") if isinstance(operator_guidance.get("top"), list) else []
+    return {
+        "status": snapshot.get("status"),
+        "preflight_status": snapshot.get("preflight_status"),
+        "gate_counts": snapshot.get("gate_counts"),
+        "guard_decision": snapshot.get("guard_decision"),
+        "operator_guidance_top": top,
+    }
+
+
 def _render_autonomous_summary_text(summary: dict[str, Any]) -> str:
     gate_counts = summary.get("gate_counts") if isinstance(summary.get("gate_counts"), dict) else {}
     dominant_codes = summary.get("dominant_fail_codes") if isinstance(summary.get("dominant_fail_codes"), list) else []
@@ -4424,6 +4442,49 @@ def _summary(argv: list[str]) -> None:
     print(json_dumps(summary))
 
 
+def _render_operator_audit_summary_text(summary: dict[str, Any]) -> str:
+    gate_counts = summary.get("gate_counts") if isinstance(summary.get("gate_counts"), dict) else {}
+    guard_decision = summary.get("guard_decision") if isinstance(summary.get("guard_decision"), dict) else None
+    operator_guidance_top = summary.get("operator_guidance_top") if isinstance(summary.get("operator_guidance_top"), list) else []
+
+    lines = [
+        "# Autonomous Operator Triage Summary",
+        f"- status: {summary.get('status')}",
+        f"- preflight_status: {summary.get('preflight_status')}",
+        f"- gate_counts: pass={gate_counts.get('pass', 0)}, fail={gate_counts.get('fail', 0)}, total={gate_counts.get('total', 0)}",
+    ]
+
+    if isinstance(guard_decision, dict):
+        lines.append(f"- guard_decision: {guard_decision.get('decision', '-') } ({guard_decision.get('reason_code', '-')})")
+    else:
+        lines.append("- guard_decision: -")
+
+    if operator_guidance_top:
+        lines.append("- operator_guidance_top:")
+        for item in operator_guidance_top:
+            if not isinstance(item, dict):
+                continue
+            code = item.get("code") or "-"
+            actions = item.get("actions") if isinstance(item.get("actions"), list) else []
+            action_text = "; ".join(str(action) for action in actions if action) or "-"
+            lines.append(f"  - {code}: {action_text}")
+    else:
+        lines.append("- operator_guidance_top: -")
+
+    return "\n".join(lines)
+
+
+def _triage_summary(argv: list[str]) -> None:
+    parser = _build_cli_parser()
+    args = parser.parse_args(["triage-summary", *argv])
+    snapshot = extract_autonomous_summary(args.run_dir)
+    summary = build_operator_audit_summary(snapshot)
+    if args.format == "text":
+        print(_render_operator_audit_summary_text(summary))
+        return
+    print(json_dumps(summary))
+
+
 def _status(argv: list[str]) -> None:
     parser = _build_cli_parser()
     args = parser.parse_args(["status", *argv])
@@ -4557,7 +4618,7 @@ def _incident_replay(argv: list[str]) -> None:
 
 def cli(argv: list[str]) -> None:
     if not argv:
-        raise SystemExit("Usage: autodev autonomous <start|status|summary|incident-export|incident-send|ticket-draft|issue-export|incident-replay> ...")
+        raise SystemExit("Usage: autodev autonomous <start|status|summary|triage-summary|incident-export|incident-send|ticket-draft|issue-export|incident-replay> ...")
     action = argv[0]
     if action == "start":
         _start(argv[1:])
@@ -4567,6 +4628,9 @@ def cli(argv: list[str]) -> None:
         return
     if action == "summary":
         _summary(argv[1:])
+        return
+    if action == "triage-summary":
+        _triage_summary(argv[1:])
         return
     if action == "incident-export":
         _incident_export(argv[1:])

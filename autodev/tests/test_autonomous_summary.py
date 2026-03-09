@@ -268,6 +268,85 @@ def test_autonomous_summary_cli_outputs_json_and_text(tmp_path: Path, capsys) ->
     assert "docs/AUTONOMOUS_FAILURE_PLAYBOOK.md" in text_out
 
 
+def test_build_operator_audit_summary_extracts_canonical_fields() -> None:
+    snapshot = {
+        "status": "failed",
+        "preflight_status": "passed",
+        "gate_counts": {"pass": 0, "fail": 1, "total": 1},
+        "guard_decision": {"decision": "stop", "reason_code": "autonomous_guard.repeated_gate_failure_limit_reached"},
+        "operator_guidance": {"top": [{"code": "tests.min_pass_rate_not_met", "actions": ["Fix tests"]}]},
+        "extra": {"ignored": True},
+    }
+
+    summary = autonomous_mode.build_operator_audit_summary(snapshot)
+
+    assert summary == {
+        "status": "failed",
+        "preflight_status": "passed",
+        "gate_counts": {"pass": 0, "fail": 1, "total": 1},
+        "guard_decision": {"decision": "stop", "reason_code": "autonomous_guard.repeated_gate_failure_limit_reached"},
+        "operator_guidance_top": [{"code": "tests.min_pass_rate_not_met", "actions": ["Fix tests"]}],
+    }
+
+
+def test_autonomous_triage_summary_cli_outputs_json_and_text(tmp_path: Path, capsys) -> None:
+    run_dir = tmp_path / "run-triage-cli"
+    artifacts = run_dir / ".autodev"
+
+    _write_json(
+        artifacts / "autonomous_report.json",
+        {
+            "ok": False,
+            "run_id": "run-triage-cli",
+            "preflight": {"status": "passed", "reason_codes": []},
+            "guard_decision": {
+                "decision": "stop",
+                "reason_code": "autonomous_guard.repeated_gate_failure_limit_reached",
+            },
+            "operator_guidance": {
+                "top": [
+                    {
+                        "code": "tests.min_pass_rate_not_met",
+                        "actions": ["Stabilize failing tests before retry."],
+                    }
+                ]
+            },
+        },
+    )
+    _write_json(
+        artifacts / "autonomous_gate_results.json",
+        {
+            "attempts": [
+                {
+                    "iteration": 1,
+                    "gate_results": {
+                        "passed": False,
+                        "fail_reasons": [{"code": "tests.min_pass_rate_not_met"}],
+                    },
+                }
+            ]
+        },
+    )
+
+    autonomous_mode.cli(["triage-summary", "--run-dir", str(run_dir)])
+    json_out = capsys.readouterr().out
+    payload = json.loads(json_out)
+    assert payload["status"] == "failed"
+    assert payload["preflight_status"] == "passed"
+    assert payload["gate_counts"] == {"pass": 0, "fail": 1, "total": 1}
+    assert payload["guard_decision"]["reason_code"] == "autonomous_guard.repeated_gate_failure_limit_reached"
+    assert payload["operator_guidance_top"][0]["code"] == "tests.min_pass_rate_not_met"
+
+    autonomous_mode.cli(["triage-summary", "--run-dir", str(run_dir), "--format", "text"])
+    text_out = capsys.readouterr().out
+    assert "# Autonomous Operator Triage Summary" in text_out
+    assert "status: failed" in text_out
+    assert "preflight_status: passed" in text_out
+    assert "gate_counts: pass=0, fail=1, total=1" in text_out
+    assert "guard_decision: stop (autonomous_guard.repeated_gate_failure_limit_reached)" in text_out
+    assert "tests.min_pass_rate_not_met" in text_out
+
+
 def test_extract_autonomous_summary_builds_operator_guidance_with_fallbacks(tmp_path: Path) -> None:
     run_dir = tmp_path / "run-guidance-fallback"
     artifacts = run_dir / ".autodev"

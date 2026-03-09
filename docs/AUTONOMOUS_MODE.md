@@ -70,6 +70,17 @@ Default output is machine-readable JSON with latest run status, preflight status
 budget-guard outcome/reason codes, gate pass/fail counts, dominant gate fail codes, latest auto-fix
 strategy, stop-guard decision fields, and `operator_guidance` (playbook-linked top actions with graceful fallback for unmapped codes).
 
+For operator triage parity with GUI/API summary surfaces, use:
+
+```bash
+autodev autonomous triage-summary --run-dir ./generated_runs/<run_id>
+# optional human-readable format
+autodev autonomous triage-summary --run-dir ./generated_runs/<run_id> --format text
+```
+
+This command emits the canonical summary fields shared with `/api/autonomous/quality-gate/latest`:
+`status`, `preflight_status`, `gate_counts`, `guard_decision`, `operator_guidance_top`.
+
 ### Incident export helper
 
 ```bash
