@@ -26,6 +26,8 @@ Update (v1e, 2026-03-08): autonomous incident packet delivery now supports plugg
 
 Update (v1f, 2026-03-08): failed autonomous runs now auto-generate ticket draft artifacts (`.autodev/autonomous_ticket_draft.md|json`) and add CLI regeneration helper (`ticket-draft`).
 
+Update (v1g, 2026-03-09): retention/compaction operator runbook now includes explicit recovery path + rollback checklist (`docs/AUTONOMOUS_FAILURE_PLAYBOOK.md#retention--compaction-operations-runbook-av4-013`).
+
 ---
 
 ## Command
