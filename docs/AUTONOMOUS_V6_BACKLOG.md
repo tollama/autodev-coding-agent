@@ -14,6 +14,7 @@ Checkpoint scaffold: `docs/AUTONOMOUS_V6_WAVE_CHECKPOINT.md`
 | AV6-004 | P1 | M | 🚧 Planned | Observability baseline for autoresearch guard decisions | canonical telemetry fields/events for blocker + threshold + budget decisions are documented and linked to operator surfaces | evidence schema review + `make check-docs` | 1 PR |
 | AV6-005 | P1 | S | 🚧 Planned | Status-hook transition draft for AV6 kickoff lifecycle | AV6 kickoff/execution/stabilization/closure transition semantics are reflected in transition matrix/runbook | `make check-status-hooks` + docs diff review | 1 PR |
 | AV6-006 | P2 | S | 🚧 Planned | AV5 carryover intake map | deferred AV5 tickets are mapped to AV6 IDs with traceability annotations per carryover policy | carryover format audit + `make check-docs` | 1 PR |
+| AV6-007 | P2 | S | 🚧 Planned | AV5-010 carryover: Docs cross-link upgrade for AV5 governance set | README + planning docs include AV5 plan/backlog links; no stale “active AV4 kickoff” labels | `make check-docs` + grep audit for stale links | 1 PR |
 
 ## Prioritization notes
 
