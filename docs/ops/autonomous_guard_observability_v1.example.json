@@ -1,0 +1,65 @@
+{
+  "policy_id": "autonomous.guard-observability.v1",
+  "version": "v1",
+  "guard_event_families": [
+    "guard.blocker.decision",
+    "guard.threshold.decision",
+    "guard.budget.decision"
+  ],
+  "required_telemetry_fields": [
+    "event_id",
+    "event_family",
+    "run_id",
+    "attempt_index",
+    "stage",
+    "decision_action",
+    "decision_reason_code",
+    "policy_refs",
+    "timestamp_utc",
+    "operator_surface_refs"
+  ],
+  "operator_surfaces": [
+    {
+      "name": "cli",
+      "reference": "autodev autonomous summary"
+    },
+    {
+      "name": "api",
+      "reference": "GET /api/autonomous/quality-gate/latest"
+    },
+    {
+      "name": "gui",
+      "reference": "quality-gate panel"
+    },
+    {
+      "name": "status_artifacts",
+      "reference": "docs/STATUS_BOARD_CURRENT.md"
+    }
+  ],
+  "sample_events": [
+    {
+      "event_id": "evt-blocker-001",
+      "event_family": "guard.blocker.decision",
+      "decision_action": "stop",
+      "decision_reason_code": "policy_scope_violation",
+      "stage": "execute",
+      "attempt_index": 1
+    },
+    {
+      "event_id": "evt-threshold-001",
+      "event_family": "guard.threshold.decision",
+      "decision_action": "retry",
+      "decision_reason_code": "score_band_retry",
+      "stage": "verify",
+      "attempt_index": 1
+    },
+    {
+      "event_id": "evt-budget-001",
+      "event_family": "guard.budget.decision",
+      "decision_action": "escalate",
+      "decision_reason_code": "stage_budget_exceeded",
+      "stage": "execute",
+      "attempt_index": 2
+    }
+  ]
+}

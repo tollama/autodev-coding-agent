@@ -96,6 +96,7 @@ check-docs:
 	$(PYTHON) scripts/check_retry_strategy_v2.py
 	$(PYTHON) scripts/check_failure_taxonomy_v2.py
 	$(PYTHON) scripts/check_autoresearch_blocker_policy.py
+	$(PYTHON) scripts/check_guard_observability_baseline.py
 
 # Status-hook docs drift gate (AV4-002/AV4-003).
 check-status-hooks:
