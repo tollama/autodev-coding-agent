@@ -13,7 +13,9 @@ Checkpoint scaffold: `docs/AUTONOMOUS_V6_WAVE_CHECKPOINT.md`
 | AV6-003 | P0 | M | 🚧 Planned | Time-budget guardrails (global + stage budget caps) | per-run/per-stage budget defaults and overrun actions are defined with explicit timeout/error contracts | policy dry-run walkthrough + `make check-docs` | 1 PR |
 | AV6-004 | P1 | M | 🚧 Planned | Observability baseline for autoresearch guard decisions | canonical telemetry fields/events for blocker + threshold + budget decisions are documented and linked to operator surfaces | evidence schema review + `make check-docs` | 1 PR |
 | AV6-005 | P1 | S | 🚧 Planned | Status-hook transition draft for AV6 kickoff lifecycle | AV6 kickoff/execution/stabilization/closure transition semantics are reflected in transition matrix/runbook | `make check-status-hooks` + docs diff review | 1 PR |
-| AV6-006 | P2 | S | 🚧 Planned | AV5 carryover intake map | deferred AV5 tickets are mapped to AV6 IDs with traceability annotations per carryover policy | carryover format audit + `make check-docs` | 1 PR |
+| AV6-006 | P2 | S | ✅ Merged | AV5 carryover intake map | deferred AV5 tickets are mapped to AV6 IDs with traceability annotations per carryover policy | carryover format audit + `make check-docs` | 1 PR |
+| AV6-007 | P2 | S | 🚧 Planned | AV5-010 carryover: Docs cross-link upgrade for AV5 governance set | carryover target ticket is registered with AV5 source traceability and closure annotation contract | intake map review + `make check-docs` | 1 PR |
+| AV6-008 | P2 | S | 🚧 Planned | AV5-011 carryover: Transition-runbook update (AV4 closed → AV5 active) | carryover target ticket is registered with AV5 source traceability and closure annotation contract | intake map review + `make check-docs` | 1 PR |
 
 ## Prioritization notes
 
@@ -29,6 +31,7 @@ Checkpoint scaffold: `docs/AUTONOMOUS_V6_WAVE_CHECKPOINT.md`
 - `docs/AUTONOMOUS_V6_GUARD_OBSERVABILITY_BASELINE.md`
 - `docs/AUTONOMOUS_AUTORESEARCH_BLOCKER_POLICY.md`
 - `docs/AUTONOMOUS_V5_CARRYOVER_POLICY.md`
+- `docs/AUTONOMOUS_V6_AV5_CARRYOVER_INTAKE_MAP.md`
 - `docs/PLAN_NEXT_WEEK.md`
 - `docs/BACKLOG_NEXT_WEEK.md`
 - `docs/STATUS_BOARD_CURRENT.md`
