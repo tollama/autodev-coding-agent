@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coding-agent.local/schemas/autonomous_guard_observability_v1.schema.json",
+  "title": "Autonomous Guard Observability Baseline v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "policy_id",
+    "version",
+    "guard_event_families",
+    "required_telemetry_fields",
+    "operator_surfaces",
+    "sample_events"
+  ],
+  "properties": {
+    "policy_id": {
+      "type": "string",
+      "const": "autonomous.guard-observability.v1"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^v\\d+$"
+    },
+    "guard_event_families": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "string",
+        "enum": [
+          "guard.blocker.decision",
+          "guard.threshold.decision",
+          "guard.budget.decision"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "required_telemetry_fields": {
+      "type": "array",
+      "minItems": 10,
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "operator_surfaces": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "$ref": "#/$defs/operatorSurface"
+      },
+      "uniqueItems": true
+    },
+    "sample_events": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "$ref": "#/$defs/sampleEvent"
+      }
+    }
+  },
+  "$defs": {
+    "operatorSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "reference"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": ["cli", "api", "gui", "status_artifacts"]
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "sampleEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "event_family",
+        "decision_action",
+        "decision_reason_code",
+        "stage",
+        "attempt_index"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_family": {
+          "type": "string",
+          "enum": [
+            "guard.blocker.decision",
+            "guard.threshold.decision",
+            "guard.budget.decision"
+          ]
+        },
+        "decision_action": {
+          "type": "string",
+          "enum": ["pass", "retry", "escalate", "stop"]
+        },
+        "decision_reason_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stage": {
+          "type": "string",
+          "enum": ["ingest", "plan", "execute", "verify", "finalize"]
+        },
+        "attempt_index": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}
