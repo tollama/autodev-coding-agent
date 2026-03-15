@@ -597,6 +597,69 @@ function buildMockTrustPayload() {
   };
 }
 
+function buildMockDetailTrust(detail) {
+  const runId = String(detail?.run_id || '');
+  if (runId === 'mock-run-001') {
+    return {
+      trust_summary: {
+        status: 'failed',
+        trust_status: 'moderate',
+        trust_score: 0.58,
+        requires_human_review: true,
+        latest_quality_status: 'advisory_warning',
+        latest_quality_score: 42,
+        incident_owner_team: 'Feature Engineering',
+        incident_severity: 'high',
+        incident_target_sla: '4h',
+        event_count: 12,
+        llm_call_count: 6,
+        experiment_entry_count: 3,
+      },
+      trust_packet: {
+        operator_next: {
+          top_actions: [
+            {
+              code: 'tests.min_pass_rate_not_met',
+              title: 'Tests gate failed',
+              actions: ['Stabilize failing tests before retry.', 'Rerun targeted tests, then full suite.'],
+            },
+          ],
+        },
+      },
+      trust_message: '',
+    };
+  }
+
+  return {
+    trust_summary: {
+      status: 'completed',
+      trust_status: 'high',
+      trust_score: 0.93,
+      requires_human_review: false,
+      latest_quality_status: 'passed',
+      latest_quality_score: 96,
+      incident_owner_team: 'Autonomy On-Call',
+      incident_severity: 'medium',
+      incident_target_sla: '12h',
+      event_count: 8,
+      llm_call_count: 4,
+      experiment_entry_count: 2,
+    },
+    trust_packet: {
+      operator_next: {
+        top_actions: [
+          {
+            code: 'autonomous.unmapped_or_missing_code',
+            title: 'Routine review',
+            actions: ['Review final artifacts and approve closure.'],
+          },
+        ],
+      },
+    },
+    trust_message: '',
+  };
+}
+
 function renderScorecardWidget() {
   const cardsNode = el('scorecardCards');
   const emptyNode = el('scorecardEmpty');
@@ -690,11 +753,34 @@ function renderTrustWidget() {
   errorNode.classList.add('hidden');
   errorNode.textContent = '';
 
-  if (state.trustLoading) {
+  const detailMatchesSelected = Boolean(
+    state.detail?.run_id
+    && state.selectedRunId
+    && String(state.detail.run_id) === String(state.selectedRunId),
+  );
+  const detailTrustSummary = detailMatchesSelected ? (state.detail?.trust_summary || null) : null;
+  const detailTrustPacket = detailMatchesSelected ? (state.detail?.trust_packet || null) : null;
+  const detailTrustMessage = detailMatchesSelected ? (state.detail?.trust_message || '') : '';
+  const hasSelectedTrustContext = Boolean(state.selectedRunId);
+  const payload = detailTrustSummary
+    ? {
+        empty: false,
+        latest: {
+          run_id: state.detail?.run_id || state.selectedRunId || '',
+          completed_at: state.detail?.metadata?.completed_at || '',
+        },
+        summary: detailTrustSummary,
+        packet: detailTrustPacket || {},
+      }
+    : state.trustPayload;
+
+  if ((state.detailLoading && hasSelectedTrustContext && !detailMatchesSelected) || (state.trustLoading && !detailTrustSummary)) {
     cardsNode.classList.add('hidden');
     actionsNode.classList.add('hidden');
     emptyNode.classList.remove('hidden');
-    emptyNode.textContent = 'Loading latest trust intelligence…';
+    emptyNode.textContent = hasSelectedTrustContext
+      ? 'Loading trust intelligence for selected run…'
+      : 'Loading latest trust intelligence…';
     metaNode.textContent = '';
     return;
   }
@@ -709,13 +795,14 @@ function renderTrustWidget() {
     return;
   }
 
-  const payload = state.trustPayload;
   const summary = payload?.summary || null;
   if (!payload || payload.empty || !summary) {
     cardsNode.classList.add('hidden');
     actionsNode.classList.add('hidden');
     emptyNode.classList.remove('hidden');
-    emptyNode.textContent = payload?.message || 'No trust intelligence data available yet.';
+    emptyNode.textContent = hasSelectedTrustContext
+      ? (detailTrustMessage || 'Trust intelligence is not available for the selected run.')
+      : (payload?.message || 'No trust intelligence data available yet.');
     metaNode.textContent = '';
     return;
   }
@@ -3122,7 +3209,8 @@ async function loadRuns() {
     state.selectedRunId = mock.runs[0].run_id;
     state.selectedRun = mock.runs[0];
     renderRuns(state.runs);
-    renderDetail(mock.details[state.selectedRunId] || { run_id: state.selectedRunId, status: 'unknown' });
+    const mockDetail = mock.details[state.selectedRunId] || { run_id: state.selectedRunId, status: 'unknown' };
+    renderDetail({ ...mockDetail, ...buildMockDetailTrust(mockDetail) });
     initComparisonState({ forceLatest: !state.compareManualSelection });
     refreshCompareRunOptions();
     await refreshComparison({ silent: true });
@@ -3202,6 +3290,7 @@ function renderDetail(detail) {
   renderBlockers(detail.blockers || []);
   renderValidationPanels(detail);
   renderArtifactViewer();
+  renderTrustWidget();
   renderOverviewState();
   renderProcessTabState();
   renderHealthBanner({
@@ -3228,7 +3317,10 @@ async function selectRun(runId, options = { rerenderList: true }) {
 
   try {
     const detail = state.useMock
-      ? (mock.details[runId] || { run_id: runId, status: 'unknown', phase_timeline: [], tasks: [], blockers: [] })
+      ? {
+          ...(mock.details[runId] || { run_id: runId, status: 'unknown', phase_timeline: [], tasks: [], blockers: [] }),
+          ...buildMockDetailTrust(mock.details[runId] || { run_id: runId, status: 'unknown' }),
+        }
       : await fetchJson(`/api/runs/${encodeURIComponent(runId)}`);
     state.detailLoading = false;
     state.detailError = '';

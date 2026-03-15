@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .autonomous_mode import build_operator_audit_summary, extract_autonomous_summary
+from .autonomous_mode import (
+    AUTONOMOUS_REPORT_JSON,
+    build_operator_audit_summary,
+    extract_autonomous_summary,
+)
 from .gui_api import (
     GuiApiError,
     get_process_detail,
@@ -551,6 +555,14 @@ def _run_detail(run_dir: Path) -> dict[str, Any]:
             "run_trace": run_trace,
         }
     )
+    trust_summary = None
+    trust_packet = None
+    trust_message = "Trust intelligence is not available for this run."
+    if (run_dir / AUTONOMOUS_REPORT_JSON).exists():
+        autonomous_snapshot = extract_autonomous_summary(str(run_dir))
+        trust_packet = build_trust_intelligence_packet(run_dir, summary=autonomous_snapshot)
+        trust_summary = build_trust_summary(trust_packet)
+        trust_message = ""
     return {
         "run_id": run_dir.name,
         "status": _run_status(quality_dict),
@@ -581,6 +593,9 @@ def _run_detail(run_dir: Path) -> dict[str, Any]:
         "validation": final_dict,
         "validation_normalized": validation_normalized,
         "quality_index": quality_dict,
+        "trust_summary": trust_summary,
+        "trust_packet": trust_packet,
+        "trust_message": trust_message,
         "artifact_errors": artifact_errors,
         "artifact_schema_versions": schema_versions,
         "artifact_schema_warnings": schema_warnings,

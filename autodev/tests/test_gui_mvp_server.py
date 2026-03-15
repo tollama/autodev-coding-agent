@@ -230,6 +230,69 @@ def test_run_detail_normalizes_run_trace_event_only_timeline(tmp_path):
     assert detail["validation_normalized"]["summary"]["passed"] == 1
 
 
+def test_run_detail_includes_selected_run_trust_context_for_autonomous_runs(tmp_path):
+    run_dir = tmp_path / "run-autonomous-trust"
+    _write_json(
+        run_dir / ".autodev" / "task_quality_index.json",
+        {
+            "resolved_quality_profile": {"name": "enterprise"},
+            "final": {"status": "ok"},
+        },
+    )
+    _write_json(run_dir / ".autodev" / "task_final_last_validation.json", {"validation": []})
+    _write_json(
+        run_dir / ".autodev" / "run_trace.json",
+        {
+            "llm": {"model": "openai/gpt-5.3"},
+            "events": [{"event_type": "run.start", "timestamp": "2026-03-05T00:00:00Z"}],
+            "phases": [{"phase": "planning", "duration_ms": 1000}],
+        },
+    )
+    _write_json(
+        run_dir / ".autodev" / "autonomous_report.json",
+        {
+            "ok": True,
+            "run_id": "run-autonomous-trust",
+            "request_id": "req-trust",
+            "profile": "enterprise",
+            "preflight": {"status": "passed", "reason_codes": []},
+            "operator_guidance": {
+                "top": [
+                    {
+                        "code": "autonomous.unmapped_or_missing_code",
+                        "actions": ["Review summary artifacts before approval."],
+                    }
+                ]
+            },
+            "incident_routing": {
+                "primary": {
+                    "owner_team": "Autonomy On-Call",
+                    "severity": "medium",
+                    "target_sla": "12h",
+                    "escalation_class": "manual_triage",
+                }
+            },
+            "gate_results": {
+                "passed": True,
+                "gates": {
+                    "composite_quality": {
+                        "status": "passed",
+                        "composite_score": 96.0,
+                        "hard_blocked": False,
+                        "components": {"tests": 100.0},
+                    }
+                },
+                "fail_reasons": [],
+            },
+        },
+    )
+
+    detail = _run_detail(run_dir)
+    assert detail["trust_summary"]["trust_status"] == "high"
+    assert detail["trust_packet"]["latest_quality"]["composite_score"] == 96.0
+    assert detail["trust_message"] == ""
+
+
 def test_malformed_json_returns_artifact_errors_without_crash(tmp_path):
     run_dir = tmp_path / "run-bad-json"
     (run_dir / ".autodev").mkdir(parents=True, exist_ok=True)
