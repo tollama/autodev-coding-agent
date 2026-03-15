@@ -1221,6 +1221,29 @@ def _sanitize_compare_snapshot_segment(value: Any, fallback: str) -> str:
     return text or fallback
 
 
+def _normalize_compare_snapshot_tags(raw: Any) -> list[str]:
+    values: list[str] = []
+    if isinstance(raw, str):
+        values = [part.strip() for part in raw.split(",")]
+    elif isinstance(raw, list):
+        values = [str(part).strip() for part in raw]
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = re.sub(r"\s+", " ", value).strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(normalized[:40])
+        if len(out) >= 12:
+            break
+    return out
+
+
 def _compare_snapshot_metadata(record: dict[str, Any], json_path: Path) -> dict[str, Any]:
     snapshot = record.get("snapshot") if isinstance(record.get("snapshot"), dict) else {}
     left = snapshot.get("left") if isinstance(snapshot.get("left"), dict) else {}
@@ -1236,6 +1259,8 @@ def _compare_snapshot_metadata(record: dict[str, Any], json_path: Path) -> dict[
         "generated_at": str(snapshot.get("generated_at") or ""),
         "source": str(snapshot.get("source") or ""),
         "display_name": str(record.get("display_name") or default_name),
+        "pinned": bool(record.get("pinned", False)),
+        "tags": _normalize_compare_snapshot_tags(record.get("tags")),
         "left_run_id": left_run_id,
         "right_run_id": right_run_id,
         "json_path": str(json_path),
@@ -1274,6 +1299,8 @@ def _persist_compare_snapshot(runs_root: Path, payload: dict[str, Any]) -> dict[
         "snapshot_id": snapshot_id,
         "persisted_at": persisted_at,
         "display_name": payload.get("display_name") or f"{left.get('run_id') or 'baseline'} vs {right.get('run_id') or 'candidate'}",
+        "pinned": bool(payload.get("pinned", False)),
+        "tags": _normalize_compare_snapshot_tags(payload.get("tags")),
         "snapshot": snapshot,
         "compare_payload": compare_payload,
         "markdown": markdown_text,
@@ -1377,6 +1404,62 @@ def _rename_compare_snapshot(runs_root: Path, snapshot_id: str, display_name: st
     try:
         record = _load_compare_snapshot_record(path)
         record["display_name"] = normalized_name
+        path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return {
+            "error": {
+                "code": "compare_snapshot_update_failed",
+                "message": str(exc),
+                "snapshot_id": normalized_id,
+            }
+        }, HTTPStatus.UNPROCESSABLE_ENTITY
+
+    return {"snapshot": _compare_snapshot_metadata(record, path)}, HTTPStatus.OK
+
+
+def _update_compare_snapshot_metadata(
+    runs_root: Path,
+    snapshot_id: str,
+    *,
+    display_name: Any = None,
+    pinned: Any = None,
+    tags: Any = None,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    normalized_id = snapshot_id.strip()
+    if not normalized_id or not SAFE_COMPARE_SNAPSHOT_ID_RE.fullmatch(normalized_id):
+        return {
+            "error": {
+                "code": "invalid_compare_snapshot_id",
+                "message": "snapshot id is invalid",
+            }
+        }, HTTPStatus.BAD_REQUEST
+
+    path = _compare_snapshots_root(runs_root) / f"{normalized_id}.json"
+    if not path.exists() or not path.is_file():
+        return {
+            "error": {
+                "code": "compare_snapshot_not_found",
+                "message": "compare snapshot not found",
+                "snapshot_id": normalized_id,
+            }
+        }, HTTPStatus.NOT_FOUND
+
+    try:
+        record = _load_compare_snapshot_record(path)
+        if display_name is not None:
+            normalized_name = str(display_name or "").strip()
+            if not normalized_name:
+                return {
+                    "error": {
+                        "code": "invalid_compare_snapshot_name",
+                        "message": "display_name is required",
+                    }
+                }, HTTPStatus.BAD_REQUEST
+            record["display_name"] = normalized_name
+        if pinned is not None:
+            record["pinned"] = bool(pinned)
+        if tags is not None:
+            record["tags"] = _normalize_compare_snapshot_tags(tags)
         path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         return {
@@ -1643,6 +1726,10 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/runs/compare/snapshots":
             self._handle_compare_snapshot_save()
             return
+        if path.startswith("/api/runs/compare/snapshots/") and path.endswith("/metadata"):
+            snapshot_id = unquote(path.removeprefix("/api/runs/compare/snapshots/").removesuffix("/metadata")).strip("/")
+            self._handle_compare_snapshot_metadata(snapshot_id)
+            return
         if path.startswith("/api/runs/compare/snapshots/") and path.endswith("/rename"):
             snapshot_id = unquote(path.removeprefix("/api/runs/compare/snapshots/").removesuffix("/rename")).strip("/")
             self._handle_compare_snapshot_rename(snapshot_id)
@@ -1824,6 +1911,19 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             return
         display_name = str(payload.get("display_name") or "")
         body, status = _rename_compare_snapshot(self.config.runs_root, snapshot_id, display_name)
+        self._json_response(body, status=status)
+
+    def _handle_compare_snapshot_metadata(self, snapshot_id: str) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+        body, status = _update_compare_snapshot_metadata(
+            self.config.runs_root,
+            snapshot_id,
+            display_name=payload.get("display_name"),
+            pinned=payload.get("pinned"),
+            tags=payload.get("tags"),
+        )
         self._json_response(body, status=status)
 
     def _handle_compare_snapshot_delete(self, snapshot_id: str) -> None:

@@ -606,9 +606,19 @@ def test_compare_snapshot_persist_list_and_reload(gui_server):
     assert rename_status == 200
     assert rename_body["snapshot"]["display_name"] == "Release gating compare"
 
+    metadata_status, metadata_body = _post_json(
+        f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/metadata",
+        {"pinned": True, "tags": ["release", "gate", "release"]},
+    )
+    assert metadata_status == 200
+    assert metadata_body["snapshot"]["pinned"] is True
+    assert metadata_body["snapshot"]["tags"] == ["release", "gate"]
+
     renamed_status, renamed_list = _get_json(f"{base_url}/api/runs/compare/snapshots")
     assert renamed_status == 200
     assert renamed_list["snapshots"][0]["display_name"] == "Release gating compare"
+    assert renamed_list["snapshots"][0]["pinned"] is True
+    assert renamed_list["snapshots"][0]["tags"] == ["release", "gate"]
 
     delete_status, delete_body = _post_json(
         f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/delete",
@@ -1148,7 +1158,10 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "function loadCompareSnapshots({ preserveSelection = true, silent = true } = {})" in app_js
     assert "function saveCompareSnapshot()" in app_js
     assert "function openSavedCompareSnapshot(snapshotId)" in app_js
+    assert "function updateCompareSnapshotMetadata(snapshotId, updates)" in app_js
     assert "function renameCompareSnapshot(snapshotId, displayName)" in app_js
+    assert "function saveCompareSnapshotTags(snapshotId, rawTags)" in app_js
+    assert "function toggleCompareSnapshotPin(snapshotId)" in app_js
     assert "function deleteCompareSnapshot(snapshotId)" in app_js
     assert "function downloadTextFile(text, filename, mimeType)" in app_js
     assert "function buildArtifactViewerFocusPreview(payload, focusPath)" in app_js
@@ -1168,7 +1181,7 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'data-compare-trust-diff-side="left"' in app_js
     assert "Focused trust path:" in app_js
     assert "/api/runs/compare/snapshots" in app_js
-    assert "/rename" in app_js
+    assert "/metadata" in app_js
     assert "/delete" in app_js
     assert ".autodev/autonomous_trust_intelligence.json" in app_js
     assert ".autodev/autonomous_trust_intelligence.md" in app_js

@@ -2860,12 +2860,15 @@ function getVisibleCompareSnapshots() {
           row?.right_run_id,
           row?.persisted_at,
           row?.source,
+          ...(Array.isArray(row?.tags) ? row.tags : []),
         ].map((v) => String(v || '').toLowerCase()).join(' ');
         return haystack.includes(filter);
       })
     : snapshots;
 
   filtered.sort((a, b) => {
+    const pinDelta = Number(Boolean(b?.pinned)) - Number(Boolean(a?.pinned));
+    if (pinDelta !== 0) return pinDelta;
     if (sort === 'oldest') {
       return String(a?.persisted_at || '').localeCompare(String(b?.persisted_at || ''));
     }
@@ -2937,18 +2940,23 @@ function renderCompareSnapshotOptions() {
     snapshots.forEach((row) => {
       const article = document.createElement('article');
       const snapshotId = String(row?.snapshot_id || '');
+      const tags = Array.isArray(row?.tags) ? row.tags : [];
       article.className = `compare-saved-card ${snapshotId === state.compareSelectedSnapshotId ? 'is-selected' : ''}`.trim();
       article.innerHTML = `
         <div class="compare-saved-header">
           <div>
-            <div class="compare-saved-title">${escapeHtml(String(row?.display_name || `${row?.left_run_id || 'baseline'} vs ${row?.right_run_id || 'candidate'}`))}</div>
+            <div class="compare-saved-title">${row?.pinned ? 'PINNED • ' : ''}${escapeHtml(String(row?.display_name || `${row?.left_run_id || 'baseline'} vs ${row?.right_run_id || 'candidate'}`))}</div>
             <div class="compare-saved-meta">${escapeHtml(String(row?.left_run_id || 'baseline'))} vs ${escapeHtml(String(row?.right_run_id || 'candidate'))} • ${escapeHtml(String(row?.persisted_at || ''))}</div>
+            <div class="compare-saved-tags">${tags.length ? tags.map((tag) => `<span class="compare-saved-tag">${escapeHtml(String(tag))}</span>`).join('') : '<span class="muted">No tags</span>'}</div>
           </div>
           <div class="muted">${escapeHtml(snapshotId)}</div>
         </div>
         <div class="compare-saved-controls">
           <input type="text" value="${escapeHtml(String(row?.display_name || ''))}" data-compare-snapshot-name="${escapeHtml(snapshotId)}" />
+          <input type="text" value="${escapeHtml(tags.join(', '))}" data-compare-snapshot-tags="${escapeHtml(snapshotId)}" placeholder="tags (comma separated)" />
           <button type="button" data-compare-snapshot-open="${escapeHtml(snapshotId)}">Open</button>
+          <button type="button" data-compare-snapshot-pin="${escapeHtml(snapshotId)}">${row?.pinned ? 'Unpin' : 'Pin'}</button>
+          <button type="button" data-compare-snapshot-tags-save="${escapeHtml(snapshotId)}">Save tags</button>
           <button type="button" data-compare-snapshot-rename="${escapeHtml(snapshotId)}">Rename</button>
           <button type="button" data-compare-snapshot-delete="${escapeHtml(snapshotId)}">Delete</button>
         </div>
@@ -3000,16 +3008,35 @@ async function saveCompareSnapshot() {
   renderCompareSnapshotStatus(`Saved snapshot ${state.compareSelectedSnapshotId || 'compare snapshot'}.`);
 }
 
-async function renameCompareSnapshot(snapshotId, displayName) {
+async function updateCompareSnapshotMetadata(snapshotId, updates) {
   const normalized = String(snapshotId || '').trim();
   if (!normalized) return;
-  const body = await postJson(`/api/runs/compare/snapshots/${encodeURIComponent(normalized)}/rename`, {
-    display_name: displayName,
-  });
+  const body = await postJson(`/api/runs/compare/snapshots/${encodeURIComponent(normalized)}/metadata`, updates);
   const snapshotMeta = body?.snapshot || {};
   state.compareSelectedSnapshotId = String(snapshotMeta.snapshot_id || normalized);
   await loadCompareSnapshots({ preserveSelection: true, silent: true });
+  return snapshotMeta;
+}
+
+async function renameCompareSnapshot(snapshotId, displayName) {
+  const snapshotMeta = await updateCompareSnapshotMetadata(snapshotId, { display_name: displayName });
   renderCompareSnapshotStatus(`Renamed snapshot ${state.compareSelectedSnapshotId}.`);
+  return snapshotMeta;
+}
+
+async function saveCompareSnapshotTags(snapshotId, rawTags) {
+  await updateCompareSnapshotMetadata(snapshotId, { tags: rawTags });
+  renderCompareSnapshotStatus(`Updated tags for snapshot ${state.compareSelectedSnapshotId}.`);
+}
+
+async function toggleCompareSnapshotPin(snapshotId) {
+  const normalized = String(snapshotId || '').trim();
+  if (!normalized) return;
+  const current = (Array.isArray(state.compareSavedSnapshots) ? state.compareSavedSnapshots : [])
+    .find((row) => String(row?.snapshot_id || '') === normalized);
+  const nextPinned = !Boolean(current?.pinned);
+  await updateCompareSnapshotMetadata(normalized, { pinned: nextPinned });
+  renderCompareSnapshotStatus(`${nextPinned ? 'Pinned' : 'Unpinned'} snapshot ${state.compareSelectedSnapshotId}.`);
 }
 
 async function deleteCompareSnapshot(snapshotId) {
@@ -4750,6 +4777,28 @@ function initCompareControls() {
           await renameCompareSnapshot(renameId, displayName);
         } catch (err) {
           renderCompareSnapshotStatus(`Rename failed: ${err.message || 'request failed'}`);
+        }
+        return;
+      }
+
+      const pinId = target.getAttribute('data-compare-snapshot-pin') || '';
+      if (pinId) {
+        try {
+          await toggleCompareSnapshotPin(pinId);
+        } catch (err) {
+          renderCompareSnapshotStatus(`Pin update failed: ${err.message || 'request failed'}`);
+        }
+        return;
+      }
+
+      const tagsId = target.getAttribute('data-compare-snapshot-tags-save') || '';
+      if (tagsId) {
+        const input = savedPanel.querySelector(`[data-compare-snapshot-tags="${CSS.escape(tagsId)}"]`);
+        const rawTags = input instanceof HTMLInputElement ? input.value : '';
+        try {
+          await saveCompareSnapshotTags(tagsId, rawTags);
+        } catch (err) {
+          renderCompareSnapshotStatus(`Tag update failed: ${err.message || 'request failed'}`);
         }
         return;
       }
