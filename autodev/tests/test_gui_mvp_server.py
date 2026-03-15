@@ -873,6 +873,10 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="scorecardCards"' in index_html
     assert 'id="scorecardEmpty"' in index_html
     assert 'id="scorecardError"' in index_html
+    assert 'id="trustCards"' in index_html
+    assert 'id="trustActions"' in index_html
+    assert 'id="trustEmpty"' in index_html
+    assert 'id="trustError"' in index_html
     assert 'id="overviewStateBox"' in index_html
     assert 'id="overviewRefreshBtn"' in index_html
     assert 'id="validationStateBox"' in index_html
@@ -882,11 +886,15 @@ def test_overview_scorecard_static_contract(gui_server):
         app_js = resp.read().decode("utf-8")
     assert "function refreshScorecardWidget({ silent = false } = {})" in app_js
     assert "function renderScorecardWidget()" in app_js
+    assert "function refreshTrustWidget({ silent = false } = {})" in app_js
+    assert "function renderTrustWidget()" in app_js
+    assert "buildMockTrustPayload" in app_js
     assert "function renderOverviewState()" in app_js
     assert "function renderValidationState({ rows = [], filtered = [] } = {})" in app_js
     assert "function initTabRecoveryActions()" in app_js
     assert "buildMockScorecardPayload" in app_js
     assert "/api/scorecard/latest" in app_js
+    assert "/api/autonomous/trust/latest" in app_js
 
 
 def test_artifact_read_endpoint_rejects_invalid_query(gui_server):

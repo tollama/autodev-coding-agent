@@ -167,6 +167,40 @@ section { margin-bottom: 16px; }
   border-color: #fecaca;
   background: #fff1f2;
 }
+.scorecard-card.tone-neutral {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.trust-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.trust-action {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+}
+
+.trust-action .title {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.trust-action .meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.trust-action .body {
+  font-size: 13px;
+  line-height: 1.45;
+}
 
 .timeline {
   display: flex;

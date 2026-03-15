@@ -24,6 +24,9 @@ const state = {
   scorecardPayload: null,
   scorecardError: '',
   scorecardLoading: false,
+  trustPayload: null,
+  trustError: '',
+  trustLoading: false,
   lastProcessId: '',
   trendPayload: null,
   artifactViewerPath: '',
@@ -551,6 +554,49 @@ function buildMockScorecardPayload() {
   };
 }
 
+function buildMockTrustPayload() {
+  return {
+    empty: false,
+    message: '',
+    latest: {
+      run_id: String(mock.details[mock.runs[0]?.run_id]?.run_id || mock.runs[0]?.run_id || ''),
+      profile: String(mock.details[mock.runs[0]?.run_id]?.summary?.profile?.name || ''),
+      completed_at: new Date().toISOString(),
+    },
+    summary: {
+      status: 'failed',
+      trust_status: 'moderate',
+      trust_score: 0.58,
+      requires_human_review: true,
+      latest_quality_status: 'advisory_warning',
+      latest_quality_score: 42,
+      incident_owner_team: 'Feature Engineering',
+      incident_severity: 'high',
+      incident_target_sla: '4h',
+      event_count: 12,
+      llm_call_count: 6,
+      experiment_entry_count: 3,
+    },
+    packet: {
+      operator_next: {
+        top_actions: [
+          {
+            code: 'tests.min_pass_rate_not_met',
+            title: 'Tests gate failed',
+            actions: ['Stabilize failing tests before retry.', 'Rerun targeted tests, then full suite.'],
+          },
+          {
+            code: 'autonomous_guard.repeated_gate_failure_limit_reached',
+            title: 'Stop guard triggered',
+            actions: ['Pause retries and narrow scope before resuming.'],
+          },
+        ],
+      },
+    },
+    warnings: [],
+  };
+}
+
 function renderScorecardWidget() {
   const cardsNode = el('scorecardCards');
   const emptyNode = el('scorecardEmpty');
@@ -612,6 +658,123 @@ function renderScorecardWidget() {
   cardsNode.classList.remove('hidden');
 }
 
+function trustCardTone(key, summary) {
+  const status = String(summary?.trust_status || '').toLowerCase();
+  if (key === 'trust_status') {
+    if (status === 'high') return 'ok';
+    if (status === 'moderate') return 'warning';
+    return 'danger';
+  }
+  if (key === 'requires_human_review') {
+    return summary?.requires_human_review ? 'warning' : 'ok';
+  }
+  if (key === 'incident_severity') {
+    const severity = String(summary?.incident_severity || '').toLowerCase();
+    if (severity === 'high' || severity === 'critical') return 'danger';
+    if (severity === 'medium') return 'warning';
+    return 'neutral';
+  }
+  return 'neutral';
+}
+
+function renderTrustWidget() {
+  const cardsNode = el('trustCards');
+  const actionsNode = el('trustActions');
+  const emptyNode = el('trustEmpty');
+  const errorNode = el('trustError');
+  const metaNode = el('trustMeta');
+  if (!cardsNode || !actionsNode || !emptyNode || !errorNode || !metaNode) return;
+
+  cardsNode.innerHTML = '';
+  actionsNode.innerHTML = '';
+  errorNode.classList.add('hidden');
+  errorNode.textContent = '';
+
+  if (state.trustLoading) {
+    cardsNode.classList.add('hidden');
+    actionsNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = 'Loading latest trust intelligence…';
+    metaNode.textContent = '';
+    return;
+  }
+
+  if (state.trustError) {
+    cardsNode.classList.add('hidden');
+    actionsNode.classList.add('hidden');
+    emptyNode.classList.add('hidden');
+    errorNode.classList.remove('hidden');
+    errorNode.textContent = state.trustError;
+    metaNode.textContent = '';
+    return;
+  }
+
+  const payload = state.trustPayload;
+  const summary = payload?.summary || null;
+  if (!payload || payload.empty || !summary) {
+    cardsNode.classList.add('hidden');
+    actionsNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = payload?.message || 'No trust intelligence data available yet.';
+    metaNode.textContent = '';
+    return;
+  }
+
+  const cardDefs = [
+    ['trust_status', 'Trust Status', String(summary.trust_status || '-').toUpperCase()],
+    ['trust_score', 'Trust Score', summary.trust_score != null ? String(summary.trust_score) : '-'],
+    ['requires_human_review', 'Human Review', summary.requires_human_review ? 'Required' : 'Not needed'],
+    ['latest_quality_status', 'Quality Signal', String(summary.latest_quality_status || '-')],
+    ['incident_severity', 'Incident Severity', String(summary.incident_severity || '-')],
+    ['incident_target_sla', 'Target SLA', String(summary.incident_target_sla || '-')],
+  ];
+
+  cardDefs.forEach(([key, label, value]) => {
+    const article = document.createElement('article');
+    article.className = `scorecard-card tone-${trustCardTone(key, summary)}`;
+    article.innerHTML = `
+      <div class="value">${escapeHtml(value)}</div>
+      <div class="label">${escapeHtml(label)}</div>
+    `;
+    cardsNode.appendChild(article);
+  });
+
+  const latest = payload.latest || {};
+  const metaParts = [];
+  if (latest.run_id) metaParts.push(`run=${latest.run_id}`);
+  if (summary.status) metaParts.push(`status=${summary.status}`);
+  if (summary.incident_owner_team) metaParts.push(`owner=${summary.incident_owner_team}`);
+  if (summary.event_count != null) metaParts.push(`events=${summary.event_count}`);
+  if (summary.llm_call_count != null) metaParts.push(`llm_calls=${summary.llm_call_count}`);
+  if (latest.completed_at) metaParts.push(`completed=${formatTime(latest.completed_at)}`);
+  metaNode.textContent = metaParts.join(' • ');
+
+  const actions = Array.isArray(payload?.packet?.operator_next?.top_actions)
+    ? payload.packet.operator_next.top_actions
+    : [];
+  if (actions.length) {
+    actions.slice(0, 3).forEach((item) => {
+      const article = document.createElement('article');
+      const actionText = Array.isArray(item?.actions) && item.actions.length
+        ? item.actions.join('; ')
+        : '-';
+      article.className = 'trust-action';
+      article.innerHTML = `
+        <div class="title">${escapeHtml(item?.title || item?.code || 'Operator action')}</div>
+        <div class="meta">${escapeHtml(item?.code || '-')}</div>
+        <div class="body">${escapeHtml(actionText)}</div>
+      `;
+      actionsNode.appendChild(article);
+    });
+    actionsNode.classList.remove('hidden');
+  } else {
+    actionsNode.classList.add('hidden');
+  }
+
+  emptyNode.classList.add('hidden');
+  cardsNode.classList.remove('hidden');
+}
+
 async function refreshScorecardWidget({ silent = false } = {}) {
   state.scorecardLoading = true;
   if (!silent) {
@@ -631,6 +794,28 @@ async function refreshScorecardWidget({ silent = false } = {}) {
   } finally {
     state.scorecardLoading = false;
     renderScorecardWidget();
+  }
+}
+
+async function refreshTrustWidget({ silent = false } = {}) {
+  state.trustLoading = true;
+  if (!silent) {
+    state.trustError = '';
+  }
+  renderTrustWidget();
+
+  try {
+    const payload = state.useMock
+      ? buildMockTrustPayload()
+      : await fetchJson('/api/autonomous/trust/latest');
+    state.trustPayload = payload;
+    state.trustError = '';
+  } catch (err) {
+    state.trustPayload = null;
+    state.trustError = `Latest trust intelligence unavailable: ${err.message || 'request failed'}`;
+  } finally {
+    state.trustLoading = false;
+    renderTrustWidget();
   }
 }
 
@@ -2943,6 +3128,7 @@ async function loadRuns() {
     await refreshComparison({ silent: true });
     await refreshTrends({ silent: true });
     await refreshScorecardWidget({ silent: true });
+    await refreshTrustWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     state.runsLoading = false;
@@ -2972,6 +3158,7 @@ async function loadRuns() {
     await refreshComparison({ silent: true });
     await refreshTrends({ silent: true });
     await refreshScorecardWidget({ silent: true });
+    await refreshTrustWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     state.runsLoading = false;
@@ -2992,6 +3179,10 @@ async function loadRuns() {
     state.scorecardError = 'Latest scorecard unavailable: unable to load runs list.';
     state.scorecardLoading = false;
     renderScorecardWidget();
+    state.trustPayload = null;
+    state.trustError = 'Latest trust intelligence unavailable: unable to load runs list.';
+    state.trustLoading = false;
+    renderTrustWidget();
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     setupPolling();
