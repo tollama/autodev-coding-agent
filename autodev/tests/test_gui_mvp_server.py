@@ -1118,6 +1118,8 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="compareExportMdBtn"' in index_html
     assert 'id="compareCopyMdBtn"' in index_html
     assert 'id="compareSavedSnapshotSelect"' in index_html
+    assert 'id="compareSavedFilterInput"' in index_html
+    assert 'id="compareSavedSortSelect"' in index_html
     assert 'id="compareOpenSnapshotBtn"' in index_html
     assert 'id="compareRefreshSnapshotsBtn"' in index_html
     assert 'id="compareSavedPanel"' in index_html
@@ -1142,6 +1144,7 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "function renderCompareSnapshotMarkdown(snapshot)" in app_js
     assert "function compareSnapshotDownloadName(snapshot, format = 'json')" in app_js
     assert "function renderCompareSnapshotOptions()" in app_js
+    assert "function getVisibleCompareSnapshots()" in app_js
     assert "function loadCompareSnapshots({ preserveSelection = true, silent = true } = {})" in app_js
     assert "function saveCompareSnapshot()" in app_js
     assert "function openSavedCompareSnapshot(snapshotId)" in app_js

@@ -2846,14 +2846,61 @@ function compareSnapshotDownloadName(snapshot, format = 'json') {
   return `compare-trust-snapshot-${left}-vs-${right}.${suffix}`;
 }
 
+function getVisibleCompareSnapshots() {
+  const filter = String(state.compareSnapshotFilter || '').trim().toLowerCase();
+  const sort = String(state.compareSnapshotSort || 'newest').trim().toLowerCase();
+  const snapshots = Array.isArray(state.compareSavedSnapshots) ? [...state.compareSavedSnapshots] : [];
+
+  const filtered = filter
+    ? snapshots.filter((row) => {
+        const haystack = [
+          row?.display_name,
+          row?.snapshot_id,
+          row?.left_run_id,
+          row?.right_run_id,
+          row?.persisted_at,
+          row?.source,
+        ].map((v) => String(v || '').toLowerCase()).join(' ');
+        return haystack.includes(filter);
+      })
+    : snapshots;
+
+  filtered.sort((a, b) => {
+    if (sort === 'oldest') {
+      return String(a?.persisted_at || '').localeCompare(String(b?.persisted_at || ''));
+    }
+    if (sort === 'name') {
+      return String(a?.display_name || '').localeCompare(String(b?.display_name || ''));
+    }
+    if (sort === 'baseline') {
+      return String(a?.left_run_id || '').localeCompare(String(b?.left_run_id || ''));
+    }
+    if (sort === 'candidate') {
+      return String(a?.right_run_id || '').localeCompare(String(b?.right_run_id || ''));
+    }
+    return String(b?.persisted_at || '').localeCompare(String(a?.persisted_at || ''));
+  });
+
+  return filtered;
+}
+
 function renderCompareSnapshotOptions() {
   const select = el('compareSavedSnapshotSelect');
   const openBtn = el('compareOpenSnapshotBtn');
   const panel = el('compareSavedPanel');
   const emptyNode = el('compareSavedEmpty');
+  const filterInput = el('compareSavedFilterInput');
+  const sortSelect = el('compareSavedSortSelect');
   if (!select) return;
 
-  const snapshots = Array.isArray(state.compareSavedSnapshots) ? state.compareSavedSnapshots : [];
+  if (filterInput && filterInput.value !== state.compareSnapshotFilter) {
+    filterInput.value = state.compareSnapshotFilter;
+  }
+  if (sortSelect && sortSelect.value !== state.compareSnapshotSort) {
+    sortSelect.value = state.compareSnapshotSort;
+  }
+
+  const snapshots = getVisibleCompareSnapshots();
   const current = String(state.compareSelectedSnapshotId || '').trim();
   select.innerHTML = '<option value="">Saved snapshots</option>';
 
@@ -2881,6 +2928,9 @@ function renderCompareSnapshotOptions() {
     if (!snapshots.length) {
       panel.classList.add('hidden');
       emptyNode.classList.remove('hidden');
+      emptyNode.textContent = state.compareSnapshotFilter
+        ? 'No saved compare snapshots match the current filter.'
+        : 'No saved compare snapshots yet.';
       return;
     }
 
@@ -4544,6 +4594,8 @@ function initCompareControls() {
   const exportMdBtn = el('compareExportMdBtn');
   const copyMdBtn = el('compareCopyMdBtn');
   const savedSelect = el('compareSavedSnapshotSelect');
+  const savedFilterInput = el('compareSavedFilterInput');
+  const savedSortSelect = el('compareSavedSortSelect');
   const openSavedBtn = el('compareOpenSnapshotBtn');
   const refreshSavedBtn = el('compareRefreshSnapshotsBtn');
   const savedPanel = el('compareSavedPanel');
@@ -4636,6 +4688,23 @@ function initCompareControls() {
   if (savedSelect) {
     savedSelect.addEventListener('change', () => {
       state.compareSelectedSnapshotId = savedSelect.value || '';
+      syncCompareSnapshotControls(state.comparePayload);
+      renderCompareSnapshotOptions();
+    });
+  }
+
+  if (savedFilterInput) {
+    savedFilterInput.addEventListener('input', () => {
+      state.compareSnapshotFilter = savedFilterInput.value || '';
+      renderCompareSnapshotOptions();
+      syncCompareSnapshotControls(state.comparePayload);
+    });
+  }
+
+  if (savedSortSelect) {
+    savedSortSelect.addEventListener('change', () => {
+      state.compareSnapshotSort = savedSortSelect.value || 'newest';
+      renderCompareSnapshotOptions();
       syncCompareSnapshotControls(state.comparePayload);
     });
   }
