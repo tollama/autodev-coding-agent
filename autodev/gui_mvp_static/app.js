@@ -2847,6 +2847,8 @@ function compareSnapshotDownloadName(snapshot, format = 'json') {
 function renderCompareSnapshotOptions() {
   const select = el('compareSavedSnapshotSelect');
   const openBtn = el('compareOpenSnapshotBtn');
+  const panel = el('compareSavedPanel');
+  const emptyNode = el('compareSavedEmpty');
   if (!select) return;
 
   const snapshots = Array.isArray(state.compareSavedSnapshots) ? state.compareSavedSnapshots : [];
@@ -2871,6 +2873,40 @@ function renderCompareSnapshotOptions() {
   }
 
   if (openBtn) openBtn.disabled = !state.compareSelectedSnapshotId;
+
+  if (panel && emptyNode) {
+    panel.innerHTML = '';
+    if (!snapshots.length) {
+      panel.classList.add('hidden');
+      emptyNode.classList.remove('hidden');
+      return;
+    }
+
+    snapshots.forEach((row) => {
+      const article = document.createElement('article');
+      const snapshotId = String(row?.snapshot_id || '');
+      article.className = `compare-saved-card ${snapshotId === state.compareSelectedSnapshotId ? 'is-selected' : ''}`.trim();
+      article.innerHTML = `
+        <div class="compare-saved-header">
+          <div>
+            <div class="compare-saved-title">${escapeHtml(String(row?.display_name || `${row?.left_run_id || 'baseline'} vs ${row?.right_run_id || 'candidate'}`))}</div>
+            <div class="compare-saved-meta">${escapeHtml(String(row?.left_run_id || 'baseline'))} vs ${escapeHtml(String(row?.right_run_id || 'candidate'))} • ${escapeHtml(String(row?.persisted_at || ''))}</div>
+          </div>
+          <div class="muted">${escapeHtml(snapshotId)}</div>
+        </div>
+        <div class="compare-saved-controls">
+          <input type="text" value="${escapeHtml(String(row?.display_name || ''))}" data-compare-snapshot-name="${escapeHtml(snapshotId)}" />
+          <button type="button" data-compare-snapshot-open="${escapeHtml(snapshotId)}">Open</button>
+          <button type="button" data-compare-snapshot-rename="${escapeHtml(snapshotId)}">Rename</button>
+          <button type="button" data-compare-snapshot-delete="${escapeHtml(snapshotId)}">Delete</button>
+        </div>
+      `;
+      panel.appendChild(article);
+    });
+
+    panel.classList.remove('hidden');
+    emptyNode.classList.add('hidden');
+  }
 }
 
 async function loadCompareSnapshots({ preserveSelection = true, silent = true } = {}) {
@@ -2910,6 +2946,30 @@ async function saveCompareSnapshot() {
   state.compareSelectedSnapshotId = String(snapshotMeta.snapshot_id || '');
   await loadCompareSnapshots({ preserveSelection: true, silent: true });
   renderCompareSnapshotStatus(`Saved snapshot ${state.compareSelectedSnapshotId || 'compare snapshot'}.`);
+}
+
+async function renameCompareSnapshot(snapshotId, displayName) {
+  const normalized = String(snapshotId || '').trim();
+  if (!normalized) return;
+  const body = await postJson(`/api/runs/compare/snapshots/${encodeURIComponent(normalized)}/rename`, {
+    display_name: displayName,
+  });
+  const snapshotMeta = body?.snapshot || {};
+  state.compareSelectedSnapshotId = String(snapshotMeta.snapshot_id || normalized);
+  await loadCompareSnapshots({ preserveSelection: true, silent: true });
+  renderCompareSnapshotStatus(`Renamed snapshot ${state.compareSelectedSnapshotId}.`);
+}
+
+async function deleteCompareSnapshot(snapshotId) {
+  const normalized = String(snapshotId || '').trim();
+  if (!normalized) return;
+  await postJson(`/api/runs/compare/snapshots/${encodeURIComponent(normalized)}/delete`, {});
+  if (state.compareSelectedSnapshotId === normalized) {
+    state.compareSelectedSnapshotId = '';
+  }
+  await loadCompareSnapshots({ preserveSelection: true, silent: true });
+  syncCompareSnapshotControls(state.comparePayload);
+  renderCompareSnapshotStatus(`Deleted snapshot ${normalized}.`);
 }
 
 async function openSavedCompareSnapshot(snapshotId) {
@@ -4484,6 +4544,7 @@ function initCompareControls() {
   const savedSelect = el('compareSavedSnapshotSelect');
   const openSavedBtn = el('compareOpenSnapshotBtn');
   const refreshSavedBtn = el('compareRefreshSnapshotsBtn');
+  const savedPanel = el('compareSavedPanel');
   const diffs = el('compareDiffs');
   const trustPanel = el('compareTrustPanel');
   const trustDiffPanel = el('compareTrustDiffPanel');
@@ -4592,6 +4653,44 @@ function initCompareControls() {
     refreshSavedBtn.addEventListener('click', async () => {
       await loadCompareSnapshots({ preserveSelection: true, silent: false });
       syncCompareSnapshotControls(state.comparePayload);
+    });
+  }
+
+  if (savedPanel) {
+    savedPanel.addEventListener('click', async (event) => {
+      const target = event.target instanceof Element ? event.target.closest('button') : null;
+      if (!target) return;
+
+      const openId = target.getAttribute('data-compare-snapshot-open') || '';
+      if (openId) {
+        try {
+          await openSavedCompareSnapshot(openId);
+        } catch (err) {
+          renderCompareSnapshotStatus(`Open failed: ${err.message || 'request failed'}`);
+        }
+        return;
+      }
+
+      const renameId = target.getAttribute('data-compare-snapshot-rename') || '';
+      if (renameId) {
+        const input = savedPanel.querySelector(`[data-compare-snapshot-name="${CSS.escape(renameId)}"]`);
+        const displayName = input instanceof HTMLInputElement ? input.value : '';
+        try {
+          await renameCompareSnapshot(renameId, displayName);
+        } catch (err) {
+          renderCompareSnapshotStatus(`Rename failed: ${err.message || 'request failed'}`);
+        }
+        return;
+      }
+
+      const deleteId = target.getAttribute('data-compare-snapshot-delete') || '';
+      if (deleteId) {
+        try {
+          await deleteCompareSnapshot(deleteId);
+        } catch (err) {
+          renderCompareSnapshotStatus(`Delete failed: ${err.message || 'request failed'}`);
+        }
+      }
     });
   }
 

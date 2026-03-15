@@ -1226,14 +1226,18 @@ def _compare_snapshot_metadata(record: dict[str, Any], json_path: Path) -> dict[
     left = snapshot.get("left") if isinstance(snapshot.get("left"), dict) else {}
     right = snapshot.get("right") if isinstance(snapshot.get("right"), dict) else {}
     md_path = json_path.with_suffix(".md")
+    left_run_id = str(left.get("run_id") or "")
+    right_run_id = str(right.get("run_id") or "")
+    default_name = f"{left_run_id or 'baseline'} vs {right_run_id or 'candidate'}"
     return {
         "snapshot_id": str(record.get("snapshot_id") or json_path.stem),
         "schema_version": str(record.get("schema_version") or COMPARE_SNAPSHOT_RECORD_VERSION),
         "persisted_at": str(record.get("persisted_at") or ""),
         "generated_at": str(snapshot.get("generated_at") or ""),
         "source": str(snapshot.get("source") or ""),
-        "left_run_id": str(left.get("run_id") or ""),
-        "right_run_id": str(right.get("run_id") or ""),
+        "display_name": str(record.get("display_name") or default_name),
+        "left_run_id": left_run_id,
+        "right_run_id": right_run_id,
         "json_path": str(json_path),
         "markdown_path": str(md_path) if md_path.exists() else "",
     }
@@ -1269,6 +1273,7 @@ def _persist_compare_snapshot(runs_root: Path, payload: dict[str, Any]) -> dict[
         "schema_version": COMPARE_SNAPSHOT_RECORD_VERSION,
         "snapshot_id": snapshot_id,
         "persisted_at": persisted_at,
+        "display_name": payload.get("display_name") or f"{left.get('run_id') or 'baseline'} vs {right.get('run_id') or 'candidate'}",
         "snapshot": snapshot,
         "compare_payload": compare_payload,
         "markdown": markdown_text,
@@ -1338,6 +1343,88 @@ def _get_compare_snapshot(runs_root: Path, snapshot_id: str) -> tuple[dict[str, 
         "compare_payload": record.get("compare_payload") if isinstance(record.get("compare_payload"), dict) else {},
         "markdown": str(record.get("markdown") or ""),
     }, HTTPStatus.OK
+
+
+def _rename_compare_snapshot(runs_root: Path, snapshot_id: str, display_name: str) -> tuple[dict[str, Any], HTTPStatus]:
+    normalized_id = snapshot_id.strip()
+    if not normalized_id or not SAFE_COMPARE_SNAPSHOT_ID_RE.fullmatch(normalized_id):
+        return {
+            "error": {
+                "code": "invalid_compare_snapshot_id",
+                "message": "snapshot id is invalid",
+            }
+        }, HTTPStatus.BAD_REQUEST
+
+    normalized_name = str(display_name or "").strip()
+    if not normalized_name:
+        return {
+            "error": {
+                "code": "invalid_compare_snapshot_name",
+                "message": "display_name is required",
+            }
+        }, HTTPStatus.BAD_REQUEST
+
+    path = _compare_snapshots_root(runs_root) / f"{normalized_id}.json"
+    if not path.exists() or not path.is_file():
+        return {
+            "error": {
+                "code": "compare_snapshot_not_found",
+                "message": "compare snapshot not found",
+                "snapshot_id": normalized_id,
+            }
+        }, HTTPStatus.NOT_FOUND
+
+    try:
+        record = _load_compare_snapshot_record(path)
+        record["display_name"] = normalized_name
+        path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return {
+            "error": {
+                "code": "compare_snapshot_update_failed",
+                "message": str(exc),
+                "snapshot_id": normalized_id,
+            }
+        }, HTTPStatus.UNPROCESSABLE_ENTITY
+
+    return {"snapshot": _compare_snapshot_metadata(record, path)}, HTTPStatus.OK
+
+
+def _delete_compare_snapshot(runs_root: Path, snapshot_id: str) -> tuple[dict[str, Any], HTTPStatus]:
+    normalized_id = snapshot_id.strip()
+    if not normalized_id or not SAFE_COMPARE_SNAPSHOT_ID_RE.fullmatch(normalized_id):
+        return {
+            "error": {
+                "code": "invalid_compare_snapshot_id",
+                "message": "snapshot id is invalid",
+            }
+        }, HTTPStatus.BAD_REQUEST
+
+    path = _compare_snapshots_root(runs_root) / f"{normalized_id}.json"
+    md_path = path.with_suffix(".md")
+    if not path.exists() or not path.is_file():
+        return {
+            "error": {
+                "code": "compare_snapshot_not_found",
+                "message": "compare snapshot not found",
+                "snapshot_id": normalized_id,
+            }
+        }, HTTPStatus.NOT_FOUND
+
+    try:
+        path.unlink()
+        if md_path.exists():
+            md_path.unlink()
+    except OSError as exc:
+        return {
+            "error": {
+                "code": "compare_snapshot_delete_failed",
+                "message": str(exc),
+                "snapshot_id": normalized_id,
+            }
+        }, HTTPStatus.UNPROCESSABLE_ENTITY
+
+    return {"deleted": True, "snapshot_id": normalized_id}, HTTPStatus.OK
 
 
 class GuiRequestHandler(BaseHTTPRequestHandler):
@@ -1556,6 +1643,14 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/runs/compare/snapshots":
             self._handle_compare_snapshot_save()
             return
+        if path.startswith("/api/runs/compare/snapshots/") and path.endswith("/rename"):
+            snapshot_id = unquote(path.removeprefix("/api/runs/compare/snapshots/").removesuffix("/rename")).strip("/")
+            self._handle_compare_snapshot_rename(snapshot_id)
+            return
+        if path.startswith("/api/runs/compare/snapshots/") and path.endswith("/delete"):
+            snapshot_id = unquote(path.removeprefix("/api/runs/compare/snapshots/").removesuffix("/delete")).strip("/")
+            self._handle_compare_snapshot_delete(snapshot_id)
+            return
         self._json_response({"error": "not found", "path": path}, status=HTTPStatus.NOT_FOUND)
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -1722,6 +1817,18 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             return
 
         self._json_response({"snapshot": snapshot}, status=HTTPStatus.OK)
+
+    def _handle_compare_snapshot_rename(self, snapshot_id: str) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+        display_name = str(payload.get("display_name") or "")
+        body, status = _rename_compare_snapshot(self.config.runs_root, snapshot_id, display_name)
+        self._json_response(body, status=status)
+
+    def _handle_compare_snapshot_delete(self, snapshot_id: str) -> None:
+        body, status = _delete_compare_snapshot(self.config.runs_root, snapshot_id)
+        self._json_response(body, status=status)
 
     def _read_json_payload(self) -> dict[str, Any] | None:
         try:

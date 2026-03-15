@@ -599,6 +599,30 @@ def test_compare_snapshot_persist_list_and_reload(gui_server):
     assert detail_body["compare_payload"]["right"]["run_id"] == "run-b"
     assert "baseline_run: run-a" in detail_body["markdown"]
 
+    rename_status, rename_body = _post_json(
+        f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/rename",
+        {"display_name": "Release gating compare"},
+    )
+    assert rename_status == 200
+    assert rename_body["snapshot"]["display_name"] == "Release gating compare"
+
+    renamed_status, renamed_list = _get_json(f"{base_url}/api/runs/compare/snapshots")
+    assert renamed_status == 200
+    assert renamed_list["snapshots"][0]["display_name"] == "Release gating compare"
+
+    delete_status, delete_body = _post_json(
+        f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/delete",
+        {},
+    )
+    assert delete_status == 200
+    assert delete_body["deleted"] is True
+    assert not (snapshot_dir / f"{snapshot_id}.json").exists()
+    assert not (snapshot_dir / f"{snapshot_id}.md").exists()
+
+    missing_status, missing_body = _get_json(f"{base_url}/api/runs/compare/snapshots/{snapshot_id}")
+    assert missing_status == 404
+    assert missing_body["error"]["code"] == "compare_snapshot_not_found"
+
 
 def test_gui_context_endpoint_defaults(gui_server):
     base_url, _ = gui_server
@@ -1096,6 +1120,8 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="compareSavedSnapshotSelect"' in index_html
     assert 'id="compareOpenSnapshotBtn"' in index_html
     assert 'id="compareRefreshSnapshotsBtn"' in index_html
+    assert 'id="compareSavedPanel"' in index_html
+    assert 'id="compareSavedEmpty"' in index_html
     assert 'id="compareSnapshotStatus"' in index_html
     assert 'id="overviewStateBox"' in index_html
     assert 'id="overviewRefreshBtn"' in index_html
@@ -1119,6 +1145,8 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "function loadCompareSnapshots({ preserveSelection = true, silent = true } = {})" in app_js
     assert "function saveCompareSnapshot()" in app_js
     assert "function openSavedCompareSnapshot(snapshotId)" in app_js
+    assert "function renameCompareSnapshot(snapshotId, displayName)" in app_js
+    assert "function deleteCompareSnapshot(snapshotId)" in app_js
     assert "function downloadTextFile(text, filename, mimeType)" in app_js
     assert "function buildArtifactViewerFocusPreview(payload, focusPath)" in app_js
     assert "function setCompareTrustFocus(sideKey, { scroll = false } = {})" in app_js
@@ -1137,6 +1165,8 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'data-compare-trust-diff-side="left"' in app_js
     assert "Focused trust path:" in app_js
     assert "/api/runs/compare/snapshots" in app_js
+    assert "/rename" in app_js
+    assert "/delete" in app_js
     assert ".autodev/autonomous_trust_intelligence.json" in app_js
     assert ".autodev/autonomous_trust_intelligence.md" in app_js
     assert "/api/scorecard/latest" in app_js
