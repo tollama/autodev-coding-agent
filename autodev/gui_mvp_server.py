@@ -5,7 +5,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,6 +31,7 @@ from .gui_audit import persist_audit_event
 from .gui_failure_hints import build_run_control_fix_hints
 from .gui_mvp_dto import normalize_run_comparison_summary, normalize_run_trace, normalize_tasks, normalize_validation
 from .run_status import normalize_run_status
+from .trust_intelligence import build_trust_intelligence_packet, build_trust_summary
 
 
 @dataclass
@@ -838,6 +839,8 @@ def _latest_quality_gate_snapshot(runs_root: Path) -> dict[str, Any]:
     warnings = snapshot.get("warnings") if isinstance(snapshot.get("warnings"), list) else []
 
     summary = build_operator_audit_summary(snapshot)
+    trust_packet = build_trust_intelligence_packet(run_dir, summary=snapshot)
+    trust_summary = build_trust_summary(trust_packet)
 
     return {
         "empty": False,
@@ -851,7 +854,54 @@ def _latest_quality_gate_snapshot(runs_root: Path) -> dict[str, Any]:
             "completed_at": latest_run.get("completed_at"),
         },
         "summary": summary,
+        "trust": trust_summary,
         "snapshot": snapshot,
+        "warnings": [str(item) for item in warnings if item],
+    }
+
+
+def _latest_trust_snapshot(runs_root: Path) -> dict[str, Any]:
+    if not runs_root.exists() or not runs_root.is_dir():
+        return {
+            "empty": True,
+            "message": "No runs root found.",
+            "latest": None,
+            "summary": None,
+            "packet": None,
+            "warnings": [],
+        }
+
+    run_dirs = sorted((p for p in runs_root.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not run_dirs:
+        return {
+            "empty": True,
+            "message": "No runs found in runs root.",
+            "latest": None,
+            "summary": None,
+            "packet": None,
+            "warnings": [],
+        }
+
+    run_dir = run_dirs[0]
+    snapshot = extract_autonomous_summary(str(run_dir))
+    latest_run = snapshot.get("latest_run") if isinstance(snapshot.get("latest_run"), dict) else {}
+    warnings = snapshot.get("warnings") if isinstance(snapshot.get("warnings"), list) else []
+    packet = build_trust_intelligence_packet(run_dir, summary=snapshot)
+    summary = build_trust_summary(packet)
+
+    return {
+        "empty": False,
+        "message": "",
+        "latest": {
+            "run_id": str(latest_run.get("run_id") or run_dir.name),
+            "path": str(run_dir),
+            "updated_at": datetime.fromtimestamp(run_dir.stat().st_mtime).isoformat(),
+            "profile": latest_run.get("profile"),
+            "request_id": latest_run.get("request_id"),
+            "completed_at": latest_run.get("completed_at"),
+        },
+        "summary": summary,
+        "packet": packet,
         "warnings": [str(item) for item in warnings if item],
     }
 
@@ -1214,6 +1264,10 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             self._json_response(_latest_quality_gate_snapshot(self.config.runs_root))
             return
 
+        if path == "/api/autonomous/trust/latest":
+            self._json_response(_latest_trust_snapshot(self.config.runs_root))
+            return
+
         if path == "/api/runs":
             self._json_response({"runs": _list_runs(self.config.runs_root)})
             return
@@ -1349,7 +1403,7 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         execute = bool(payload.get("execute", False))
         correlation_id = _coerce_correlation_id_for_audit(payload.get("correlation_id"))
         event = {
-            "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "action": action,
             "role": role,
             "auth": {

@@ -548,6 +548,29 @@ def build_xai_delivery_packet_from_trust(packet: Mapping[str, Any]) -> dict[str,
     )
 
 
+def build_trust_summary(packet: Mapping[str, Any]) -> dict[str, Any]:
+    trust_signals = _safe_dict(packet.get("trust_signals"))
+    overall = _safe_dict(trust_signals.get("overall"))
+    latest_quality = _safe_dict(packet.get("latest_quality"))
+    operator_next = _safe_dict(packet.get("operator_next"))
+    runtime_observability = _safe_dict(packet.get("runtime_observability"))
+
+    return {
+        "status": packet.get("status"),
+        "trust_status": overall.get("status"),
+        "trust_score": overall.get("score"),
+        "requires_human_review": overall.get("requires_human_review"),
+        "latest_quality_status": latest_quality.get("status"),
+        "latest_quality_score": latest_quality.get("composite_score"),
+        "incident_owner_team": operator_next.get("owner_team"),
+        "incident_severity": operator_next.get("severity"),
+        "incident_target_sla": operator_next.get("target_sla"),
+        "event_count": runtime_observability.get("event_count"),
+        "llm_call_count": runtime_observability.get("llm_call_count"),
+        "experiment_entry_count": runtime_observability.get("experiment_entry_count"),
+    }
+
+
 def render_trust_intelligence_packet(
     packet: Mapping[str, Any],
     *,

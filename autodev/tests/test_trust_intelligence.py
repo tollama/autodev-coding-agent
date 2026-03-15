@@ -7,6 +7,9 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+for name in list(sys.modules):
+    if name == "autodev" or name.startswith("autodev."):
+        sys.modules.pop(name, None)
 
 import autodev.autonomous_mode as autonomous_mode  # noqa: E402
 from autodev.trust_intelligence import (  # noqa: E402

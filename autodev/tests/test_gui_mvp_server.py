@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -9,12 +10,20 @@ from urllib import error, request
 
 import pytest
 
+ROOT = Path(__file__).resolve().parent.parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+for name in list(sys.modules):
+    if name == "autodev" or name.startswith("autodev."):
+        sys.modules.pop(name, None)
+
 from autodev.gui_api import _reset_process_manager_for_tests
 from autodev.gui_mvp_server import (
     GuiConfig,
     GuiRequestHandler,
     _latest_quality_gate_snapshot,
     _latest_scorecard_summary,
+    _latest_trust_snapshot,
     _list_runs,
     _quality_trends,
     _resolve_request_auth,
@@ -514,6 +523,8 @@ def test_latest_quality_gate_snapshot_uses_latest_run(tmp_path):
     assert payload["summary"]["gate_counts"] == {"pass": 0, "fail": 1, "total": 1}
     assert payload["summary"]["guard_decision"]["reason_code"] == "autonomous_guard.repeated_gate_failure_limit_reached"
     assert payload["summary"]["operator_guidance_top"][0]["code"] == "tests.min_pass_rate_not_met"
+    assert payload["trust"]["status"] == "failed"
+    assert payload["trust"]["requires_human_review"] is True
 
 
 def test_latest_quality_gate_snapshot_summary_matches_canonical_snapshot_fixture(tmp_path):
@@ -624,6 +635,8 @@ def test_quality_gate_snapshot_latest_endpoint_returns_payload(gui_server):
     assert body["summary"]["gate_counts"] == {"pass": 0, "fail": 1, "total": 1}
     assert body["summary"]["guard_decision"]["reason_code"] == "autonomous_guard.repeated_gate_failure_limit_reached"
     assert body["summary"]["operator_guidance_top"][0]["code"] == "tests.min_pass_rate_not_met"
+    assert body["trust"]["status"] == "failed"
+    assert body["trust"]["requires_human_review"] is True
 
 
 def test_quality_gate_snapshot_latest_endpoint_handles_missing_artifacts(gui_server):
@@ -645,9 +658,135 @@ def test_quality_gate_snapshot_latest_endpoint_handles_missing_artifacts(gui_ser
     assert body["latest"]["run_id"] == "run-autonomous-missing"
     assert body["summary"]["status"] == "completed"
     assert body["summary"]["gate_counts"] == {"pass": 0, "fail": 0, "total": 0}
+    assert body["trust"]["status"] == "completed"
     assert any("gate_results: missing" in item for item in body["warnings"])
     assert any("strategy_trace: missing" in item for item in body["warnings"])
     assert any("guard_decisions: missing" in item for item in body["warnings"])
+
+
+def test_latest_trust_snapshot_returns_packet_and_summary(tmp_path):
+    run = tmp_path / "run-trust"
+    _write_json(
+        run / ".autodev" / "autonomous_report.json",
+        {
+            "ok": True,
+            "run_id": "run-trust",
+            "request_id": "req-trust",
+            "profile": "enterprise",
+            "preflight": {"status": "passed", "reason_codes": []},
+            "operator_guidance": {
+                "top": [
+                    {
+                        "code": "autonomous.unmapped_or_missing_code",
+                        "actions": ["Review summary artifacts before approval."],
+                    }
+                ]
+            },
+            "incident_routing": {
+                "primary": {
+                    "owner_team": "Autonomy On-Call",
+                    "severity": "medium",
+                    "target_sla": "12h",
+                    "escalation_class": "manual_triage",
+                }
+            },
+            "gate_results": {
+                "passed": True,
+                "gates": {
+                    "composite_quality": {
+                        "status": "passed",
+                        "composite_score": 96.0,
+                        "hard_blocked": False,
+                        "components": {"tests": 100.0},
+                    }
+                },
+                "fail_reasons": [],
+            },
+        },
+    )
+    _write_json(
+        run / ".autodev" / "autonomous_gate_results.json",
+        {"attempts": [{"iteration": 1, "gate_results": {"passed": True, "fail_reasons": []}}]},
+    )
+    _write_json(run / ".autodev" / "autonomous_strategy_trace.json", {"latest": {"name": "mixed"}})
+    _write_json(run / ".autodev" / "autonomous_guard_decisions.json", {"decisions": [], "latest": None})
+    _write_json(
+        run / ".autodev" / "run_trace.json",
+        {
+            "events": [{"event_type": "quality_score.computed"}],
+            "phases": [{"phase": "planning", "duration_ms": 100}],
+            "llm_metrics": {"planner": {"call_count": 1, "retry_count": 0}},
+        },
+    )
+    _write_json(run / ".autodev" / "run_metadata.json", {"run_completed_at": "2026-03-15T00:00:00Z"})
+
+    payload = _latest_trust_snapshot(tmp_path)
+    assert payload["empty"] is False
+    assert payload["latest"]["run_id"] == "run-trust"
+    assert payload["summary"]["trust_status"] == "high"
+    assert payload["packet"]["latest_quality"]["composite_score"] == 96.0
+
+
+def test_trust_latest_endpoint_returns_payload(gui_server):
+    base_url, runs_root = gui_server
+    run = runs_root / "run-trust-endpoint"
+    _write_json(
+        run / ".autodev" / "autonomous_report.json",
+        {
+            "ok": True,
+            "run_id": "run-trust-endpoint",
+            "request_id": "req-trust-endpoint",
+            "profile": "enterprise",
+            "preflight": {"status": "passed", "reason_codes": []},
+            "operator_guidance": {
+                "top": [
+                    {
+                        "code": "autonomous.unmapped_or_missing_code",
+                        "actions": ["Review summary artifacts before approval."],
+                    }
+                ]
+            },
+            "incident_routing": {
+                "primary": {
+                    "owner_team": "Autonomy On-Call",
+                    "severity": "medium",
+                    "target_sla": "12h",
+                    "escalation_class": "manual_triage",
+                }
+            },
+            "gate_results": {
+                "passed": True,
+                "gates": {
+                    "composite_quality": {
+                        "status": "passed",
+                        "composite_score": 96.0,
+                        "hard_blocked": False,
+                        "components": {"tests": 100.0},
+                    }
+                },
+                "fail_reasons": [],
+            },
+        },
+    )
+    _write_json(run / ".autodev" / "autonomous_gate_results.json", {"attempts": []})
+    _write_json(run / ".autodev" / "autonomous_strategy_trace.json", {"latest": {"name": "mixed"}})
+    _write_json(run / ".autodev" / "autonomous_guard_decisions.json", {"decisions": [], "latest": None})
+    _write_json(
+        run / ".autodev" / "run_trace.json",
+        {
+            "events": [{"event_type": "quality_score.computed"}],
+            "phases": [],
+            "llm_metrics": {"planner": {"call_count": 1, "retry_count": 0}},
+        },
+    )
+    _write_json(run / ".autodev" / "run_metadata.json", {"run_completed_at": "2026-03-15T00:00:00Z"})
+
+    status, body = _get_json(f"{base_url}/api/autonomous/trust/latest")
+    assert status == 200
+    assert body["empty"] is False
+    assert body["latest"]["run_id"] == "run-trust-endpoint"
+    assert body["summary"]["trust_status"] == "high"
+    assert body["packet"]["operator_next"]["owner_team"] == "Autonomy On-Call"
 
 
 def test_artifact_read_endpoint_returns_json_payload(gui_server):
