@@ -34,6 +34,7 @@ const state = {
   artifactViewerPayload: null,
   artifactViewerError: '',
   artifactViewerLoading: false,
+  artifactViewerFocusPath: '',
   artifactViewerRequestedBy: '',
   artifactViewerActionStatus: null,
   artifactViewerExpanded: false,
@@ -1607,6 +1608,7 @@ function clearArtifactViewerState({ preservePath = false } = {}) {
   state.artifactViewerPayload = null;
   state.artifactViewerError = '';
   state.artifactViewerLoading = false;
+  state.artifactViewerFocusPath = '';
   state.artifactViewerRequestedBy = '';
   state.artifactViewerActionStatus = null;
   state.artifactViewerExpanded = false;
@@ -1798,6 +1800,61 @@ function getArtifactViewerTextPayload(payload, { expanded = false } = {}) {
   return { text: '', mode: 'empty', canExport: false, previewOnly: false, canExpand: false };
 }
 
+function parseArtifactFocusPath(path) {
+  const normalized = String(path || '').trim();
+  if (!normalized) return [];
+  const tokens = [];
+  const pattern = /([^[.\]]+)|\[(\d+)\]/g;
+  let match = pattern.exec(normalized);
+  while (match) {
+    if (match[1]) {
+      tokens.push(match[1]);
+    } else if (match[2] !== undefined) {
+      tokens.push(Number(match[2]));
+    }
+    match = pattern.exec(normalized);
+  }
+  return tokens;
+}
+
+function resolveArtifactFocusValue(root, focusPath) {
+  const tokens = parseArtifactFocusPath(focusPath);
+  let current = root;
+  for (const token of tokens) {
+    if (Array.isArray(current) && typeof token === 'number') {
+      current = current[token];
+      continue;
+    }
+    if (current && typeof current === 'object' && typeof token === 'string' && Object.prototype.hasOwnProperty.call(current, token)) {
+      current = current[token];
+      continue;
+    }
+    return { found: false, value: null };
+  }
+  return { found: tokens.length > 0, value: current };
+}
+
+function buildArtifactViewerFocusPreview(payload, focusPath) {
+  const normalized = String(focusPath || '').trim();
+  if (!normalized) return '';
+  if (payload?.content_type !== 'application/json' || payload?.content === null || payload?.content === undefined) {
+    return `# Focus path\n${normalized}\n\nFocused path preview is available for parsed JSON artifacts only.`;
+  }
+
+  const resolved = resolveArtifactFocusValue(payload.content, normalized);
+  const valueText = resolved.found
+    ? (typeof resolved.value === 'string' ? resolved.value : JSON.stringify(resolved.value, null, 2))
+    : '<path not found>';
+
+  return [
+    '# Focus path',
+    normalized,
+    '',
+    '# Focus value',
+    valueText,
+  ].join('\n');
+}
+
 function artifactViewerDownloadName(path, payload) {
   const normalized = String(path || '').trim();
   if (!normalized) {
@@ -1978,6 +2035,9 @@ function renderArtifactViewer() {
   if (state.artifactViewerRequestedBy) {
     metaParts.push(`requested by ${state.artifactViewerRequestedBy}`);
   }
+  if (state.artifactViewerFocusPath) {
+    metaParts.push(`focus=${state.artifactViewerFocusPath}`);
+  }
   metaNode.textContent = metaParts.join(' • ');
 
   const typedError = formatArtifactJsonError(payload.error);
@@ -1989,7 +2049,10 @@ function renderArtifactViewer() {
     errorNode.textContent = '';
   }
 
-  contentNode.textContent = textPayload.text;
+  const focusPreview = buildArtifactViewerFocusPreview(payload, state.artifactViewerFocusPath);
+  contentNode.textContent = focusPreview
+    ? `${focusPreview}\n\n--- artifact content ---\n\n${textPayload.text}`
+    : textPayload.text;
   const canExport = exportPayload.canExport;
   if (copyBtn) copyBtn.disabled = !canExport;
   if (downloadBtn) downloadBtn.disabled = !canExport;
@@ -2011,8 +2074,9 @@ async function fetchJsonWithPayload(url) {
   return body;
 }
 
-async function openArtifactInViewer(path, { source = '', autoFocus = true } = {}) {
+async function openArtifactInViewer(path, { source = '', autoFocus = true, focusPath = '' } = {}) {
   const normalizedPath = String(path || '').trim();
+  const normalizedFocusPath = String(focusPath || '').trim();
   if (!normalizedPath) {
     clearArtifactViewerState();
     state.artifactViewerError = 'artifact path is required';
@@ -2023,6 +2087,7 @@ async function openArtifactInViewer(path, { source = '', autoFocus = true } = {}
   if (!state.selectedRunId || state.useMock) {
     clearArtifactViewerState({ preservePath: true });
     state.artifactViewerPath = normalizedPath;
+    state.artifactViewerFocusPath = normalizedFocusPath;
     state.artifactViewerError = 'artifact viewer requires a selected real run (mock mode unsupported).';
     state.artifactViewerRequestedBy = source;
     renderArtifactViewer();
@@ -2033,6 +2098,7 @@ async function openArtifactInViewer(path, { source = '', autoFocus = true } = {}
   state.artifactViewerPayload = null;
   state.artifactViewerError = '';
   state.artifactViewerLoading = true;
+  state.artifactViewerFocusPath = normalizedFocusPath;
   state.artifactViewerRequestedBy = source;
   state.artifactViewerActionStatus = null;
   state.artifactViewerExpanded = false;
@@ -2720,8 +2786,12 @@ function renderCompareTrustPacketDiff(payload) {
     node.className = 'compare-trust-diff-row';
     node.innerHTML = `
       <div class="compare-trust-diff-path">${escapeHtml(row.path || '-')}</div>
-      <div class="compare-trust-diff-value">${escapeHtml(String(row.left))}</div>
-      <div class="compare-trust-diff-value">${escapeHtml(String(row.right))}</div>
+      <div class="compare-trust-diff-value">
+        <button type="button" class="compare-trust-diff-open" data-compare-trust-diff-side="left" data-compare-trust-diff-path="${escapeHtml(row.path || '')}">${escapeHtml(String(row.left))}</button>
+      </div>
+      <div class="compare-trust-diff-value">
+        <button type="button" class="compare-trust-diff-open" data-compare-trust-diff-side="right" data-compare-trust-diff-path="${escapeHtml(row.path || '')}">${escapeHtml(String(row.right))}</button>
+      </div>
     `;
     panel.appendChild(node);
   });
@@ -2844,18 +2914,31 @@ async function openCompareRun(sideKey) {
   activateTab('overview');
 }
 
-async function openCompareTrustArtifact(sideKey, format = 'json') {
+async function openCompareTrustArtifactWithFocus(sideKey, format = 'json', focusPath = '') {
   const runId = state.comparePayload?.[sideKey]?.run_id;
   if (!runId) return;
   const normalizedFormat = String(format || 'json').toLowerCase() === 'markdown' ? 'markdown' : 'json';
   const artifactPath = normalizedFormat === 'markdown'
     ? '.autodev/autonomous_trust_intelligence.md'
     : '.autodev/autonomous_trust_intelligence.json';
+  const normalizedFocusPath = String(focusPath || '').trim();
   await selectRun(runId);
   await openArtifactInViewer(artifactPath, {
     source: `compare-trust-${sideKey}-${normalizedFormat}`,
     autoFocus: true,
+    focusPath: normalizedFocusPath,
   });
+  if (normalizedFocusPath) {
+    announceArtifactViewerAction(`Focused trust path: ${normalizedFocusPath}`, 'ok');
+  }
+}
+
+async function openCompareTrustArtifact(sideKey, format = 'json') {
+  await openCompareTrustArtifactWithFocus(sideKey, format, '');
+}
+
+async function openCompareTrustArtifactAtPath(sideKey, focusPath) {
+  await openCompareTrustArtifactWithFocus(sideKey, 'json', focusPath);
 }
 
 function renderComparison(payload, { source = state.compareSource, error = '' } = {}) {
@@ -4129,6 +4212,7 @@ function initCompareControls() {
   const refresh = el('compareRefreshBtn');
   const diffs = el('compareDiffs');
   const trustPanel = el('compareTrustPanel');
+  const trustDiffPanel = el('compareTrustDiffPanel');
 
   if (!left || !right || !swap || !refresh) return;
 
@@ -4185,6 +4269,16 @@ function initCompareControls() {
         const format = target.getAttribute('data-compare-open-trust-format') || 'json';
         await openCompareTrustArtifact(artifactSide, format);
       }
+    });
+  }
+
+  if (trustDiffPanel) {
+    trustDiffPanel.addEventListener('click', async (event) => {
+      const target = event.target instanceof Element ? event.target.closest('[data-compare-trust-diff-side]') : null;
+      const side = target?.getAttribute('data-compare-trust-diff-side') || '';
+      const path = target?.getAttribute('data-compare-trust-diff-path') || '';
+      if (!side || !path) return;
+      await openCompareTrustArtifactAtPath(side, path);
     });
   }
 }

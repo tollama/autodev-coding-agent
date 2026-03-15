@@ -724,6 +724,19 @@ section { margin-bottom: 16px; }
   word-break: break-word;
   font-variant-numeric: tabular-nums;
 }
+.compare-trust-diff-open {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.compare-trust-diff-open:hover {
+  text-decoration: underline;
+}
 
 .stale-indicator {
   display: inline-block;

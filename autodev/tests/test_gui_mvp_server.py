@@ -1041,9 +1041,11 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "function renderCompareTrustPacketDiff(payload)" in app_js
     assert "function buildTrustPacketDiffRows(leftPacket, rightPacket)" in app_js
     assert "function summarizeTrustPacketForDiff(packet)" in app_js
+    assert "function buildArtifactViewerFocusPreview(payload, focusPath)" in app_js
     assert "function setCompareTrustFocus(sideKey, { scroll = false } = {})" in app_js
     assert "function openCompareRun(sideKey)" in app_js
     assert "function openCompareTrustArtifact(sideKey, format = 'json')" in app_js
+    assert "function openCompareTrustArtifactAtPath(sideKey, focusPath)" in app_js
     assert "buildMockTrustPayload" in app_js
     assert "function renderOverviewState()" in app_js
     assert "function renderValidationState({ rows = [], filtered = [] } = {})" in app_js
@@ -1051,6 +1053,8 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "buildMockScorecardPayload" in app_js
     assert 'data-compare-trust-side="left"' in app_js
     assert 'data-compare-open-trust-artifact="${escapeHtml(sideKey)}"' in app_js
+    assert 'data-compare-trust-diff-side="left"' in app_js
+    assert "Focused trust path:" in app_js
     assert ".autodev/autonomous_trust_intelligence.json" in app_js
     assert ".autodev/autonomous_trust_intelligence.md" in app_js
     assert "/api/scorecard/latest" in app_js
