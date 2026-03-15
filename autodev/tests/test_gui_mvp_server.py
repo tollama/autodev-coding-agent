@@ -786,6 +786,113 @@ def test_compare_snapshot_integrity_and_duplicate_detection(gui_server):
     assert "markdown_sha256" in detail_body["integrity"]["mismatches"]
 
 
+def test_compare_snapshot_import_and_legacy_migration(gui_server):
+    base_url, runs_root = gui_server
+
+    legacy_export = {
+        "schema_version": "compare-trust-snapshot-v1",
+        "generated_at": "2026-03-15T00:00:00Z",
+        "source": "export",
+        "left": {
+            "run_id": "run-import-a",
+            "status": "failed",
+            "profile": "minimal",
+            "model": "m-a",
+            "trust": {"status": "low", "score": 0.42, "requires_human_review": True},
+            "trust_packet_summary": {"trust_signals": {"overall": {"status": "low", "score": 0.42}}},
+        },
+        "right": {
+            "run_id": "run-import-b",
+            "status": "ok",
+            "profile": "enterprise",
+            "model": "m-b",
+            "trust": {"status": "high", "score": 0.96, "requires_human_review": False},
+            "trust_packet_summary": {"trust_signals": {"overall": {"status": "high", "score": 0.96}}},
+        },
+        "delta": {"trust_score": 0.54, "trust_status_changed": True},
+        "trust_packet_diff": [{"path": "trust_signals.overall.score", "left": "0.42", "right": "0.96"}],
+        "highlights": ["Trust improved from 0.42 to 0.96"],
+    }
+
+    import_status, import_body = _post_json(
+        f"{base_url}/api/runs/compare/snapshots/import",
+        {"snapshot": legacy_export, "display_name": "Imported compare"},
+    )
+    assert import_status == 200
+    imported_id = import_body["snapshot"]["snapshot_id"]
+    assert import_body["snapshot"]["display_name"] == "Imported compare"
+    assert import_body["import"]["migration"]["applied"] is True
+
+    detail_status, detail_body = _get_json(f"{base_url}/api/runs/compare/snapshots/{imported_id}")
+    assert detail_status == 200
+    assert detail_body["snapshot"]["migration"]["applied"] is False
+    assert detail_body["compare_payload"]["left"]["run_id"] == "run-import-a"
+
+    legacy_path = runs_root / ".autodev" / "compare_snapshots" / "legacy-direct.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(json.dumps(legacy_export, indent=2), encoding="utf-8")
+
+    list_status, list_body = _get_json(f"{base_url}/api/runs/compare/snapshots?archived=all")
+    assert list_status == 200
+    legacy_row = next(row for row in list_body["snapshots"] if row["snapshot_id"] == "legacy-direct")
+    assert legacy_row["migration"]["applied"] is True
+    assert legacy_row["migration"]["from_schema_version"] == "compare-trust-snapshot-v1"
+
+
+def test_compare_snapshot_retention_preview_and_apply(gui_server):
+    base_url, runs_root = gui_server
+    payload = {
+        "snapshot": {
+            "schema_version": "compare-trust-snapshot-v1",
+            "generated_at": "2026-03-15T00:00:00Z",
+            "source": "manual",
+            "left": {"run_id": "run-retain-a", "status": "failed", "trust": {"status": "low", "score": 0.4}},
+            "right": {"run_id": "run-retain-b", "status": "ok", "trust": {"status": "high", "score": 0.9}},
+            "delta": {"trust_score": 0.5},
+            "trust_packet_diff": [],
+            "highlights": [],
+        },
+        "markdown": "# Compare Trust Snapshot\n",
+        "compare_payload": {
+            "left": {"run_id": "run-retain-a", "status": "failed", "trust": {"status": "low", "score": 0.4}},
+            "right": {"run_id": "run-retain-b", "status": "ok", "trust": {"status": "high", "score": 0.9}},
+            "delta": {"trust_score": 0.5},
+        },
+    }
+
+    saved_ids = []
+    for _ in range(3):
+        status, body = _post_json(f"{base_url}/api/runs/compare/snapshots", payload)
+        assert status == 200
+        saved_ids.append(body["snapshot"]["snapshot_id"])
+
+    snapshot_dir = runs_root / ".autodev" / "compare_snapshots"
+    for index, snapshot_id in enumerate(saved_ids):
+        path = snapshot_dir / f"{snapshot_id}.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["persisted_at"] = f"2026-03-{10 + index:02d}T00:00:00Z"
+        path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+    preview_status, preview_body = _post_json(
+        f"{base_url}/api/runs/compare/snapshots/retention/apply",
+        {"keep_latest": 1, "dry_run": True},
+    )
+    assert preview_status == 200
+    assert preview_body["dry_run"] is True
+    assert preview_body["summary"]["matched"] == 2
+
+    apply_status, apply_body = _post_json(
+        f"{base_url}/api/runs/compare/snapshots/retention/apply",
+        {"keep_latest": 1, "dry_run": False},
+    )
+    assert apply_status == 200
+    assert apply_body["summary"]["deleted"] == 2
+
+    list_status, list_body = _get_json(f"{base_url}/api/runs/compare/snapshots?archived=all")
+    assert list_status == 200
+    assert len(list_body["snapshots"]) == 1
+
+
 def test_gui_context_endpoint_defaults(gui_server):
     base_url, _ = gui_server
 
@@ -1359,6 +1466,8 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="compareExportJsonBtn"' in index_html
     assert 'id="compareExportMdBtn"' in index_html
     assert 'id="compareCopyMdBtn"' in index_html
+    assert 'id="compareImportJsonInput"' in index_html
+    assert 'id="compareImportJsonBtn"' in index_html
     assert 'id="compareSavedSnapshotSelect"' in index_html
     assert 'id="compareSavedFilterInput"' in index_html
     assert 'id="compareSavedSortSelect"' in index_html
@@ -1386,6 +1495,11 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="compareSavedPagePrevBtn"' in index_html
     assert 'id="compareSavedPageLabel"' in index_html
     assert 'id="compareSavedPageNextBtn"' in index_html
+    assert 'id="compareRetentionKeepLatestInput"' in index_html
+    assert 'id="compareRetentionMaxAgeInput"' in index_html
+    assert 'id="compareRetentionArchivedToggle"' in index_html
+    assert 'id="compareRetentionPreviewBtn"' in index_html
+    assert 'id="compareRetentionApplyBtn"' in index_html
     assert 'id="compareSavedPanel"' in index_html
     assert 'id="compareSavedEmpty"' in index_html
     assert 'id="compareSnapshotStatus"' in index_html
@@ -1427,6 +1541,8 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "function archiveCompareSnapshot(snapshotId, archived)" in app_js
     assert "function deleteCompareSnapshot(snapshotId)" in app_js
     assert "function bulkUpdateCompareSnapshots(action, updates = {})" in app_js
+    assert "function importCompareSnapshotFromJson(rawText, filename = '')" in app_js
+    assert "function applyCompareSnapshotRetention({ dryRun = true } = {})" in app_js
     assert "function downloadTextFile(text, filename, mimeType)" in app_js
     assert "function buildArtifactViewerFocusPreview(payload, focusPath)" in app_js
     assert "function setCompareTrustFocus(sideKey, { scroll = false } = {})" in app_js
@@ -1446,6 +1562,8 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "Focused trust path:" in app_js
     assert "/api/runs/compare/snapshots" in app_js
     assert "/api/runs/compare/snapshots/bulk" in app_js
+    assert "/api/runs/compare/snapshots/import" in app_js
+    assert "/api/runs/compare/snapshots/retention/apply" in app_js
     assert "method: 'PATCH'" in app_js
     assert "method: 'DELETE'" in app_js
     assert ".autodev/autonomous_trust_intelligence.json" in app_js

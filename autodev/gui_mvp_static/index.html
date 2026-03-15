@@ -239,6 +239,8 @@
               <button id="compareExportJsonBtn" type="button" disabled>Export JSON</button>
               <button id="compareExportMdBtn" type="button" disabled>Export Markdown</button>
               <button id="compareCopyMdBtn" type="button" disabled>Copy Markdown</button>
+              <input id="compareImportJsonInput" type="file" accept="application/json,.json" class="hidden" />
+              <button id="compareImportJsonBtn" type="button">Import JSON</button>
               <select id="compareSavedSnapshotSelect" aria-label="Saved compare snapshots">
                 <option value="">Saved snapshots</option>
               </select>
@@ -305,6 +307,16 @@
               <button id="compareSavedPagePrevBtn" type="button">Previous page</button>
               <span id="compareSavedPageLabel" class="muted"></span>
               <button id="compareSavedPageNextBtn" type="button">Next page</button>
+            </div>
+            <div class="compare-saved-toolbar">
+              <input id="compareRetentionKeepLatestInput" type="number" min="0" placeholder="Keep latest count" />
+              <input id="compareRetentionMaxAgeInput" type="number" min="0" placeholder="Max age days" />
+              <label class="inline-toggle" for="compareRetentionArchivedToggle">
+                <input id="compareRetentionArchivedToggle" type="checkbox" />
+                Include archived
+              </label>
+              <button id="compareRetentionPreviewBtn" type="button">Preview retention</button>
+              <button id="compareRetentionApplyBtn" type="button">Apply retention</button>
             </div>
             <div id="compareSavedPanel" class="compare-saved-panel hidden"></div>
             <div id="compareSavedEmpty" class="empty">No saved compare snapshots yet.</div>

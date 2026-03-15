@@ -73,6 +73,7 @@ SAFE_RUN_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:/@+-]+$")
 SAFE_COMPARE_SNAPSHOT_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 COMPARE_SNAPSHOT_DIR = ".autodev/compare_snapshots"
 COMPARE_SNAPSHOT_RECORD_VERSION = "compare-trust-snapshot-record-v1"
+COMPARE_SNAPSHOT_EXPORT_VERSION = "compare-trust-snapshot-v1"
 DEFAULT_COMPARE_SNAPSHOT_PAGE_SIZE = 20
 MAX_COMPARE_SNAPSHOT_PAGE_SIZE = 100
 COMPARE_SNAPSHOT_SORTS = {"newest", "oldest", "name", "baseline", "candidate"}
@@ -1388,6 +1389,147 @@ def _normalize_compare_snapshot_tags(raw: Any) -> list[str]:
     return out
 
 
+def _render_compare_snapshot_markdown(snapshot: Mapping[str, Any]) -> str:
+    left = snapshot.get("left") if isinstance(snapshot.get("left"), dict) else {}
+    right = snapshot.get("right") if isinstance(snapshot.get("right"), dict) else {}
+    highlights = snapshot.get("highlights") if isinstance(snapshot.get("highlights"), list) else []
+    trust_rows = snapshot.get("trust_packet_diff") if isinstance(snapshot.get("trust_packet_diff"), list) else []
+    lines = [
+        "# Compare Trust Snapshot",
+        "",
+        f"- generated_at: {snapshot.get('generated_at') or '-'}",
+        f"- source: {snapshot.get('source') or '-'}",
+        f"- baseline_run: {left.get('run_id') or '-'}",
+        f"- candidate_run: {right.get('run_id') or '-'}",
+        "",
+        "## Highlights",
+    ]
+    if highlights:
+        lines.extend(f"- {str(item)}" for item in highlights[:20] if item)
+    else:
+        lines.append("- No highlighted differences.")
+    lines.extend(["", "## Trust Packet Diff"])
+    if trust_rows:
+        lines.extend(["", "| Field path | Baseline | Candidate |", "| --- | --- | --- |"])
+        for row in trust_rows[:20]:
+            if not isinstance(row, dict):
+                continue
+            path = str(row.get("path") or "-").replace("|", "\\|")
+            left_value = str(row.get("left") or "").replace("|", "\\|")
+            right_value = str(row.get("right") or "").replace("|", "\\|")
+            lines.append(f"| {path} | {left_value} | {right_value} |")
+    else:
+        lines.extend(["", "- No structural trust packet differences."])
+    return "\n".join(lines)
+
+
+def _build_compare_payload_from_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    left = snapshot.get("left") if isinstance(snapshot.get("left"), dict) else {}
+    right = snapshot.get("right") if isinstance(snapshot.get("right"), dict) else {}
+    delta = snapshot.get("delta") if isinstance(snapshot.get("delta"), dict) else {}
+    left_packet = left.get("trust_packet") if isinstance(left.get("trust_packet"), dict) else left.get("trust_packet_summary")
+    right_packet = right.get("trust_packet") if isinstance(right.get("trust_packet"), dict) else right.get("trust_packet_summary")
+    return {
+        "left": {
+            "run_id": left.get("run_id"),
+            "status": left.get("status"),
+            "profile": left.get("profile"),
+            "model": left.get("model"),
+            "totals": left.get("totals") if isinstance(left.get("totals"), dict) else {},
+            "validation": left.get("validation") if isinstance(left.get("validation"), dict) else {},
+            "blockers": left.get("blockers") if isinstance(left.get("blockers"), list) else [],
+            "trust": left.get("trust") if isinstance(left.get("trust"), dict) else {},
+            "trust_packet": left_packet if isinstance(left_packet, dict) else {},
+        },
+        "right": {
+            "run_id": right.get("run_id"),
+            "status": right.get("status"),
+            "profile": right.get("profile"),
+            "model": right.get("model"),
+            "totals": right.get("totals") if isinstance(right.get("totals"), dict) else {},
+            "validation": right.get("validation") if isinstance(right.get("validation"), dict) else {},
+            "blockers": right.get("blockers") if isinstance(right.get("blockers"), list) else [],
+            "trust": right.get("trust") if isinstance(right.get("trust"), dict) else {},
+            "trust_packet": right_packet if isinstance(right_packet, dict) else {},
+        },
+        "delta": delta,
+    }
+
+
+def _normalize_compare_snapshot_record(
+    payload: dict[str, Any],
+    *,
+    snapshot_id_hint: str = "",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    original_schema = str(payload.get("schema_version") or "").strip()
+    migration: dict[str, Any] = {
+        "applied": False,
+        "from_schema_version": original_schema or "unknown",
+        "notes": [],
+    }
+
+    if isinstance(payload.get("snapshot"), dict) and isinstance(payload.get("compare_payload"), dict):
+        snapshot = payload.get("snapshot")
+        compare_payload = payload.get("compare_payload")
+        markdown_text = str(payload.get("markdown") or "")
+        normalized = dict(payload)
+        normalized["schema_version"] = COMPARE_SNAPSHOT_RECORD_VERSION
+        normalized["snapshot_id"] = str(normalized.get("snapshot_id") or snapshot_id_hint or "")
+        normalized["display_name"] = str(normalized.get("display_name") or "")
+        normalized["pinned"] = bool(normalized.get("pinned", False))
+        normalized["archived"] = bool(normalized.get("archived", False))
+        normalized["archived_at"] = str(normalized.get("archived_at") or "")
+        normalized["tags"] = _normalize_compare_snapshot_tags(normalized.get("tags"))
+        normalized["snapshot"] = snapshot
+        normalized["compare_payload"] = compare_payload
+        normalized["markdown"] = markdown_text or _render_compare_snapshot_markdown(snapshot)
+        if isinstance(payload.get("integrity"), dict) and original_schema == COMPARE_SNAPSHOT_RECORD_VERSION:
+            normalized["integrity"] = payload.get("integrity")
+        else:
+            normalized["integrity"] = _compute_compare_snapshot_integrity(snapshot, compare_payload, normalized["markdown"])
+        if original_schema != COMPARE_SNAPSHOT_RECORD_VERSION:
+            migration["applied"] = True
+            migration["notes"].append("record_schema_upgraded")
+        return normalized, migration
+
+    snapshot_like = payload
+    if isinstance(payload.get("snapshot"), dict) and not isinstance(payload.get("compare_payload"), dict):
+        snapshot_like = payload.get("snapshot")
+        migration["notes"].append("record_missing_compare_payload_rebuilt_from_snapshot")
+
+    if isinstance(snapshot_like, dict) and isinstance(snapshot_like.get("left"), dict) and isinstance(snapshot_like.get("right"), dict):
+        snapshot = dict(snapshot_like)
+        compare_payload = _build_compare_payload_from_snapshot(snapshot)
+        markdown_text = str(payload.get("markdown") or "") if isinstance(payload, dict) else ""
+        normalized = {
+            "schema_version": COMPARE_SNAPSHOT_RECORD_VERSION,
+            "snapshot_id": str(payload.get("snapshot_id") or snapshot_id_hint or ""),
+            "persisted_at": str(payload.get("persisted_at") or ""),
+            "display_name": str(payload.get("display_name") or ""),
+            "pinned": bool(payload.get("pinned", False)),
+            "archived": bool(payload.get("archived", False)),
+            "archived_at": str(payload.get("archived_at") or ""),
+            "tags": _normalize_compare_snapshot_tags(payload.get("tags")),
+            "snapshot": snapshot,
+            "compare_payload": compare_payload,
+            "markdown": markdown_text or _render_compare_snapshot_markdown(snapshot),
+        }
+        normalized["integrity"] = _compute_compare_snapshot_integrity(snapshot, compare_payload, normalized["markdown"])
+        migration["applied"] = True
+        migration["notes"].append("snapshot_export_migrated_to_record")
+        return normalized, migration
+
+    raise ValueError("compare snapshot record must include snapshot/compare payload or export snapshot left/right sections")
+
+
+def _serialize_compare_snapshot_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): value
+        for key, value in dict(record).items()
+        if not str(key).startswith("_")
+    }
+
+
 def _compare_snapshot_integrity_status(record: dict[str, Any]) -> dict[str, Any]:
     snapshot = record.get("snapshot") if isinstance(record.get("snapshot"), dict) else {}
     compare_payload = record.get("compare_payload") if isinstance(record.get("compare_payload"), dict) else {}
@@ -1414,6 +1556,7 @@ def _compare_snapshot_metadata(
     integrity: dict[str, Any] | None = None,
     duplicate_of: str = "",
     duplicate_count: int = 1,
+    migration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     snapshot = record.get("snapshot") if isinstance(record.get("snapshot"), dict) else {}
     left = snapshot.get("left") if isinstance(snapshot.get("left"), dict) else {}
@@ -1442,6 +1585,7 @@ def _compare_snapshot_metadata(
         "content_sha256": str((integrity_status.get("computed") or {}).get("content_sha256") or ""),
         "duplicate_of": duplicate_of,
         "duplicate_count": max(1, int(duplicate_count or 1)),
+        "migration": migration or {"applied": False, "from_schema_version": str(record.get("schema_version") or ""), "notes": []},
         "json_path": str(json_path),
         "markdown_path": str(md_path) if md_path.exists() else "",
     }
@@ -1451,7 +1595,9 @@ def _load_compare_snapshot_record(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("compare snapshot record must be a JSON object")
-    return payload
+    normalized, migration = _normalize_compare_snapshot_record(payload, snapshot_id_hint=path.stem)
+    normalized["_migration"] = migration
+    return normalized
 
 
 def _read_compare_snapshot_entries(runs_root: Path) -> tuple[list[dict[str, Any]], list[str]]:
@@ -1470,6 +1616,7 @@ def _read_compare_snapshot_entries(runs_root: Path) -> tuple[list[dict[str, Any]
                     "path": path,
                     "record": record,
                     "integrity": integrity,
+                    "migration": record.get("_migration") if isinstance(record.get("_migration"), dict) else {},
                 }
             )
         except (OSError, json.JSONDecodeError, ValueError) as exc:
@@ -1689,7 +1836,7 @@ def _persist_compare_snapshot(runs_root: Path, payload: dict[str, Any]) -> dict[
     root.mkdir(parents=True, exist_ok=True)
     json_path = root / f"{snapshot_id}.json"
     md_path = root / f"{snapshot_id}.md"
-    json_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    json_path.write_text(json.dumps(_serialize_compare_snapshot_record(record), indent=2), encoding="utf-8")
     md_path.write_text(markdown_text, encoding="utf-8")
     entries, _ = _read_compare_snapshot_entries(runs_root)
     _annotate_compare_snapshot_duplicates(entries)
@@ -1702,6 +1849,146 @@ def _persist_compare_snapshot(runs_root: Path, payload: dict[str, Any]) -> dict[
             duplicate_count = max(1, int(entry.get("duplicate_count") or 1))
             break
     return _compare_snapshot_metadata(record, json_path, duplicate_of=duplicate_of, duplicate_count=duplicate_count)
+
+
+def _import_compare_snapshot(runs_root: Path, payload: dict[str, Any]) -> tuple[dict[str, Any], HTTPStatus]:
+    raw_record = payload.get("record")
+    raw_snapshot = payload.get("snapshot")
+    import_payload: dict[str, Any]
+
+    if isinstance(raw_record, dict):
+        normalized, migration = _normalize_compare_snapshot_record(raw_record)
+        import_payload = {
+            "display_name": payload.get("display_name") or normalized.get("display_name"),
+            "pinned": payload.get("pinned", normalized.get("pinned")),
+            "archived": payload.get("archived", normalized.get("archived")),
+            "tags": payload.get("tags", normalized.get("tags")),
+            "snapshot": normalized.get("snapshot"),
+            "compare_payload": normalized.get("compare_payload"),
+            "markdown": payload.get("markdown") or normalized.get("markdown"),
+        }
+    elif isinstance(raw_snapshot, dict):
+        normalized, migration = _normalize_compare_snapshot_record(raw_snapshot)
+        import_payload = {
+            "display_name": payload.get("display_name") or normalized.get("display_name"),
+            "pinned": payload.get("pinned", False),
+            "archived": payload.get("archived", False),
+            "tags": payload.get("tags", []),
+            "snapshot": normalized.get("snapshot"),
+            "compare_payload": normalized.get("compare_payload"),
+            "markdown": payload.get("markdown") or normalized.get("markdown"),
+        }
+    else:
+        return {
+            "error": {
+                "code": "invalid_compare_snapshot_import",
+                "message": "request body must include either 'record' or 'snapshot'",
+            }
+        }, HTTPStatus.BAD_REQUEST
+
+    try:
+        snapshot = _persist_compare_snapshot(runs_root, import_payload)
+    except GuiApiError as exc:
+        return {"error": {"code": "invalid_compare_snapshot_import", "message": str(exc)}}, HTTPStatus.UNPROCESSABLE_ENTITY
+    except (OSError, ValueError) as exc:
+        return {"error": {"code": "compare_snapshot_import_failed", "message": str(exc)}}, HTTPStatus.INTERNAL_SERVER_ERROR
+
+    return {
+        "snapshot": snapshot,
+        "import": {
+            "migration": migration,
+            "source_schema_version": migration.get("from_schema_version"),
+            "imported": True,
+        },
+    }, HTTPStatus.OK
+
+
+def _apply_compare_snapshot_retention(
+    runs_root: Path,
+    *,
+    keep_latest: int | None = None,
+    max_age_days: int | None = None,
+    include_archived: bool = False,
+    dry_run: bool = True,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    if keep_latest is None and max_age_days is None:
+        return {
+            "error": {
+                "code": "invalid_compare_snapshot_retention",
+                "message": "retention requires keep_latest and/or max_age_days",
+            }
+        }, HTTPStatus.BAD_REQUEST
+
+    entries, warnings = _read_compare_snapshot_entries(runs_root)
+    _annotate_compare_snapshot_duplicates(entries)
+    now = datetime.now(timezone.utc)
+    candidates: list[dict[str, Any]] = []
+    for entry in entries:
+        record = entry.get("record") if isinstance(entry.get("record"), dict) else {}
+        if not include_archived and bool(record.get("archived", False)):
+            continue
+        persisted_raw = str(record.get("persisted_at") or "").strip()
+        persisted_at = _parse_compare_snapshot_filter_datetime(persisted_raw)
+        candidates.append(
+            {
+                "entry": entry,
+                "persisted_at": persisted_at,
+                "snapshot_id": str(record.get("snapshot_id") or entry["path"].stem),
+            }
+        )
+
+    candidates.sort(
+        key=lambda row: (
+            row["persisted_at"] or datetime.fromtimestamp(0, tz=timezone.utc),
+            row["snapshot_id"],
+        ),
+        reverse=True,
+    )
+
+    matched: list[dict[str, Any]] = []
+    for index, row in enumerate(candidates):
+        reasons: list[str] = []
+        persisted_at = row["persisted_at"]
+        if keep_latest is not None and index >= max(0, keep_latest):
+            reasons.append(f"beyond_keep_latest={keep_latest}")
+        if max_age_days is not None and persisted_at is not None:
+            age_days = (now - persisted_at).total_seconds() / 86400.0
+            if age_days > max_age_days:
+                reasons.append(f"older_than_days={max_age_days}")
+        if reasons:
+            matched.append(
+                {
+                    "snapshot_id": row["snapshot_id"],
+                    "persisted_at": persisted_at.isoformat().replace("+00:00", "Z") if persisted_at else "",
+                    "reasons": reasons,
+                }
+            )
+
+    deleted_snapshot_ids: list[str] = []
+    errors: list[dict[str, Any]] = []
+    if not dry_run:
+        for row in matched:
+            body, status = _delete_compare_snapshot(runs_root, row["snapshot_id"])
+            if status == HTTPStatus.OK:
+                deleted_snapshot_ids.append(row["snapshot_id"])
+            else:
+                errors.append({"snapshot_id": row["snapshot_id"], "error": body.get("error", body)})
+
+    return {
+        "dry_run": dry_run,
+        "keep_latest": keep_latest,
+        "max_age_days": max_age_days,
+        "include_archived": include_archived,
+        "matched": matched,
+        "deleted_snapshot_ids": deleted_snapshot_ids,
+        "errors": errors,
+        "warnings": warnings,
+        "summary": {
+            "matched": len(matched),
+            "deleted": len(deleted_snapshot_ids),
+            "failed": len(errors),
+        },
+    }, HTTPStatus.OK
 
 
 def _list_compare_snapshots(
@@ -1730,6 +2017,7 @@ def _list_compare_snapshots(
             integrity=entry["integrity"],
             duplicate_of=str(entry.get("duplicate_of") or ""),
             duplicate_count=max(1, int(entry.get("duplicate_count") or 1)),
+            migration=entry.get("migration") if isinstance(entry.get("migration"), dict) else None,
         )
         if _compare_snapshot_passes_filters(
             metadata,
@@ -1805,7 +2093,12 @@ def _get_compare_snapshot(runs_root: Path, snapshot_id: str) -> tuple[dict[str, 
 
     integrity = _compare_snapshot_integrity_status(record)
     return {
-        "snapshot": _compare_snapshot_metadata(record, path, integrity=integrity),
+        "snapshot": _compare_snapshot_metadata(
+            record,
+            path,
+            integrity=integrity,
+            migration=record.get("_migration") if isinstance(record.get("_migration"), dict) else None,
+        ),
         "compare_snapshot": record.get("snapshot") if isinstance(record.get("snapshot"), dict) else {},
         "compare_payload": record.get("compare_payload") if isinstance(record.get("compare_payload"), dict) else {},
         "markdown": str(record.get("markdown") or ""),
@@ -1845,7 +2138,7 @@ def _rename_compare_snapshot(runs_root: Path, snapshot_id: str, display_name: st
     try:
         record = _load_compare_snapshot_record(path)
         record["display_name"] = normalized_name
-        path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        path.write_text(json.dumps(_serialize_compare_snapshot_record(record), indent=2), encoding="utf-8")
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         return {
             "error": {
@@ -1910,7 +2203,7 @@ def _update_compare_snapshot_metadata(
             )
         if tags is not None:
             record["tags"] = _normalize_compare_snapshot_tags(tags)
-        path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        path.write_text(json.dumps(_serialize_compare_snapshot_record(record), indent=2), encoding="utf-8")
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         return {
             "error": {
@@ -2306,8 +2599,14 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/runs/compare/snapshots":
             self._handle_compare_snapshot_save()
             return
+        if path == "/api/runs/compare/snapshots/import":
+            self._handle_compare_snapshot_import()
+            return
         if path == "/api/runs/compare/snapshots/bulk":
             self._handle_compare_snapshot_bulk()
+            return
+        if path == "/api/runs/compare/snapshots/retention/apply":
+            self._handle_compare_snapshot_retention()
             return
         if path.startswith("/api/runs/compare/snapshots/") and path.endswith("/metadata"):
             snapshot_id = unquote(path.removeprefix("/api/runs/compare/snapshots/").removesuffix("/metadata")).strip("/")
@@ -2538,6 +2837,68 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                     "snapshot_id": snapshot.get("snapshot_id"),
                 },
                 result_status="saved",
+            ),
+        )
+
+    def _handle_compare_snapshot_import(self) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+        body, status = _import_compare_snapshot(self.config.runs_root, payload)
+        self._audit_then_respond(
+            body=body,
+            status=status,
+            audit_event=self._build_compare_snapshot_audit_event(
+                action="compare_snapshot_import",
+                payload={
+                    "has_record": isinstance(payload.get("record"), dict),
+                    "has_snapshot": isinstance(payload.get("snapshot"), dict),
+                    "display_name": payload.get("display_name"),
+                    "tags": _normalize_compare_snapshot_tags(payload.get("tags")),
+                },
+                result_status="imported" if status == HTTPStatus.OK else "failed",
+            ),
+        )
+
+    def _handle_compare_snapshot_retention(self) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+        keep_latest_raw = payload.get("keep_latest")
+        max_age_days_raw = payload.get("max_age_days")
+        try:
+            keep_latest = None if keep_latest_raw in (None, "", False) else max(0, int(keep_latest_raw))
+            max_age_days = None if max_age_days_raw in (None, "", False) else max(0, int(max_age_days_raw))
+        except (TypeError, ValueError):
+            self._audit_then_respond(
+                body={"error": {"code": "invalid_compare_snapshot_retention", "message": "retention inputs must be integers"}},
+                status=HTTPStatus.BAD_REQUEST,
+                audit_event=self._build_compare_snapshot_audit_event(
+                    action="compare_snapshot_retention",
+                    payload={"keep_latest": keep_latest_raw, "max_age_days": max_age_days_raw},
+                    result_status="failed",
+                ),
+            )
+            return
+        body, status = _apply_compare_snapshot_retention(
+            self.config.runs_root,
+            keep_latest=keep_latest,
+            max_age_days=max_age_days,
+            include_archived=bool(payload.get("include_archived", False)),
+            dry_run=bool(payload.get("dry_run", True)),
+        )
+        self._audit_then_respond(
+            body=body,
+            status=status,
+            audit_event=self._build_compare_snapshot_audit_event(
+                action="compare_snapshot_retention",
+                payload={
+                    "keep_latest": keep_latest,
+                    "max_age_days": max_age_days,
+                    "include_archived": bool(payload.get("include_archived", False)),
+                    "dry_run": bool(payload.get("dry_run", True)),
+                },
+                result_status="applied" if status == HTTPStatus.OK else "failed",
             ),
         )
 

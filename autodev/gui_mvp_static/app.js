@@ -3439,6 +3439,69 @@ async function bulkUpdateCompareSnapshots(action, updates = {}) {
   renderCompareSnapshotStatus(`Bulk ${action} completed: ${updated} updated, ${deleted} deleted, ${failed} failed.`);
 }
 
+async function importCompareSnapshotFromJson(rawText, filename = '') {
+  const trimmed = String(rawText || '').trim();
+  if (!trimmed) {
+    throw new Error('imported snapshot JSON is empty');
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    throw new Error('imported snapshot JSON is invalid');
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('imported snapshot payload must be a JSON object');
+  }
+
+  const payload = parsed.snapshot && parsed.compare_payload
+    ? { record: parsed }
+    : { snapshot: parsed };
+  if (filename) {
+    payload.display_name = String(filename).replace(/\.json$/i, '').replace(/[_-]+/g, ' ').trim();
+  }
+
+  const body = await postJson('/api/runs/compare/snapshots/import', payload);
+  const snapshotMeta = body?.snapshot || {};
+  state.compareSelectedSnapshotId = String(snapshotMeta.snapshot_id || '');
+  await loadCompareSnapshots({ preserveSelection: true, silent: true });
+  if (state.compareSelectedSnapshotId) {
+    await openSavedCompareSnapshot(state.compareSelectedSnapshotId);
+  }
+  const migrationNotes = Array.isArray(body?.import?.migration?.notes) ? body.import.migration.notes : [];
+  renderCompareSnapshotStatus(
+    migrationNotes.length
+      ? `Imported snapshot ${state.compareSelectedSnapshotId}. Migration: ${migrationNotes.join(', ')}.`
+      : `Imported snapshot ${state.compareSelectedSnapshotId}.`,
+  );
+}
+
+async function applyCompareSnapshotRetention({ dryRun = true } = {}) {
+  const keepLatestInput = el('compareRetentionKeepLatestInput');
+  const maxAgeInput = el('compareRetentionMaxAgeInput');
+  const includeArchivedToggle = el('compareRetentionArchivedToggle');
+  const keepLatestRaw = keepLatestInput instanceof HTMLInputElement ? keepLatestInput.value.trim() : '';
+  const maxAgeRaw = maxAgeInput instanceof HTMLInputElement ? maxAgeInput.value.trim() : '';
+  const keepLatest = keepLatestRaw ? Math.max(0, Number(keepLatestRaw)) : null;
+  const maxAgeDays = maxAgeRaw ? Math.max(0, Number(maxAgeRaw)) : null;
+  const body = await postJson('/api/runs/compare/snapshots/retention/apply', {
+    keep_latest: Number.isFinite(keepLatest) ? keepLatest : null,
+    max_age_days: Number.isFinite(maxAgeDays) ? maxAgeDays : null,
+    include_archived: includeArchivedToggle instanceof HTMLInputElement ? includeArchivedToggle.checked : false,
+    dry_run: dryRun,
+  });
+  if (!dryRun) {
+    await loadCompareSnapshots({ preserveSelection: true, silent: true });
+  }
+  const summary = body?.summary || {};
+  renderCompareSnapshotStatus(
+    dryRun
+      ? `Retention preview: ${summary.matched || 0} snapshot(s) would be deleted.`
+      : `Retention applied: ${summary.deleted || 0} deleted, ${summary.failed || 0} failed.`,
+  );
+  return body;
+}
+
 async function openSavedCompareSnapshot(snapshotId) {
   const normalized = String(snapshotId || '').trim();
   if (!normalized) return;
@@ -5014,6 +5077,8 @@ function initCompareControls() {
   const exportJsonBtn = el('compareExportJsonBtn');
   const exportMdBtn = el('compareExportMdBtn');
   const copyMdBtn = el('compareCopyMdBtn');
+  const importJsonInput = el('compareImportJsonInput');
+  const importJsonBtn = el('compareImportJsonBtn');
   const savedSelect = el('compareSavedSnapshotSelect');
   const savedFilterInput = el('compareSavedFilterInput');
   const savedSortSelect = el('compareSavedSortSelect');
@@ -5038,6 +5103,8 @@ function initCompareControls() {
   const bulkDeleteBtn = el('compareSavedBulkDeleteBtn');
   const savedPagePrevBtn = el('compareSavedPagePrevBtn');
   const savedPageNextBtn = el('compareSavedPageNextBtn');
+  const retentionPreviewBtn = el('compareRetentionPreviewBtn');
+  const retentionApplyBtn = el('compareRetentionApplyBtn');
   const savedPanel = el('compareSavedPanel');
   const diffs = el('compareDiffs');
   const trustPanel = el('compareTrustPanel');
@@ -5122,6 +5189,24 @@ function initCompareControls() {
           renderCompareSnapshotStatus('Copy failed. Browser clipboard access was denied.');
         }
       });
+    });
+  }
+
+  if (importJsonBtn && importJsonInput instanceof HTMLInputElement) {
+    importJsonBtn.addEventListener('click', () => {
+      importJsonInput.click();
+    });
+    importJsonInput.addEventListener('change', async () => {
+      const file = importJsonInput.files?.[0];
+      if (!file) return;
+      try {
+        const rawText = await file.text();
+        await importCompareSnapshotFromJson(rawText, file.name);
+      } catch (err) {
+        renderCompareSnapshotStatus(`Import failed: ${err.message || 'request failed'}`);
+      } finally {
+        importJsonInput.value = '';
+      }
     });
   }
 
@@ -5330,6 +5415,27 @@ function initCompareControls() {
         await bulkUpdateCompareSnapshots('delete');
       } catch (err) {
         renderCompareSnapshotStatus(`Bulk delete failed: ${err.message || 'request failed'}`);
+      }
+    });
+  }
+
+  if (retentionPreviewBtn) {
+    retentionPreviewBtn.addEventListener('click', async () => {
+      try {
+        await applyCompareSnapshotRetention({ dryRun: true });
+      } catch (err) {
+        renderCompareSnapshotStatus(`Retention preview failed: ${err.message || 'request failed'}`);
+      }
+    });
+  }
+
+  if (retentionApplyBtn) {
+    retentionApplyBtn.addEventListener('click', async () => {
+      if (!window.confirm('Apply compare snapshot retention and delete matched snapshots?')) return;
+      try {
+        await applyCompareSnapshotRetention({ dryRun: false });
+      } catch (err) {
+        renderCompareSnapshotStatus(`Retention apply failed: ${err.message || 'request failed'}`);
       }
     });
   }
