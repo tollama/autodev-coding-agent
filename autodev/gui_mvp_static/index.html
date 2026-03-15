@@ -226,9 +226,15 @@
               <select id="compareRightRun" aria-label="Candidate run"></select>
               <button id="compareSwapBtn" type="button">Swap</button>
               <button id="compareRefreshBtn" type="button">Compare</button>
+              <button id="compareSaveSnapshotBtn" type="button" disabled>Save snapshot</button>
               <button id="compareExportJsonBtn" type="button" disabled>Export JSON</button>
               <button id="compareExportMdBtn" type="button" disabled>Export Markdown</button>
               <button id="compareCopyMdBtn" type="button" disabled>Copy Markdown</button>
+              <select id="compareSavedSnapshotSelect" aria-label="Saved compare snapshots">
+                <option value="">Saved snapshots</option>
+              </select>
+              <button id="compareOpenSnapshotBtn" type="button" disabled>Open saved</button>
+              <button id="compareRefreshSnapshotsBtn" type="button">Refresh saved</button>
               <span id="compareSourceBadge" class="muted"></span>
               <span id="compareSnapshotStatus" class="muted"></span>
             </div>

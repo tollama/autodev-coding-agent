@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
+from uuid import uuid4
 
 from .autonomous_mode import (
     AUTONOMOUS_REPORT_JSON,
@@ -68,6 +69,9 @@ MAX_TREND_WINDOW = 200
 DEFAULT_ARTIFACT_READ_MAX_BYTES = 512_000
 MAX_ARTIFACT_READ_MAX_BYTES = 2_000_000
 SAFE_RUN_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:/@+-]+$")
+SAFE_COMPARE_SNAPSHOT_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+COMPARE_SNAPSHOT_DIR = ".autodev/compare_snapshots"
+COMPARE_SNAPSHOT_RECORD_VERSION = "compare-trust-snapshot-record-v1"
 
 SCORECARD_CARD_ORDER: list[tuple[str, str]] = [
     ("task_pass_rate_percent", "Pass Rate"),
@@ -1208,6 +1212,134 @@ def _quality_trends(runs_root: Path, window: int, *, allow_partial: bool = False
     }
 
 
+def _compare_snapshots_root(runs_root: Path) -> Path:
+    return runs_root / ".autodev" / "compare_snapshots"
+
+
+def _sanitize_compare_snapshot_segment(value: Any, fallback: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip()).strip("._-")
+    return text or fallback
+
+
+def _compare_snapshot_metadata(record: dict[str, Any], json_path: Path) -> dict[str, Any]:
+    snapshot = record.get("snapshot") if isinstance(record.get("snapshot"), dict) else {}
+    left = snapshot.get("left") if isinstance(snapshot.get("left"), dict) else {}
+    right = snapshot.get("right") if isinstance(snapshot.get("right"), dict) else {}
+    md_path = json_path.with_suffix(".md")
+    return {
+        "snapshot_id": str(record.get("snapshot_id") or json_path.stem),
+        "schema_version": str(record.get("schema_version") or COMPARE_SNAPSHOT_RECORD_VERSION),
+        "persisted_at": str(record.get("persisted_at") or ""),
+        "generated_at": str(snapshot.get("generated_at") or ""),
+        "source": str(snapshot.get("source") or ""),
+        "left_run_id": str(left.get("run_id") or ""),
+        "right_run_id": str(right.get("run_id") or ""),
+        "json_path": str(json_path),
+        "markdown_path": str(md_path) if md_path.exists() else "",
+    }
+
+
+def _load_compare_snapshot_record(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("compare snapshot record must be a JSON object")
+    return payload
+
+
+def _persist_compare_snapshot(runs_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
+    compare_payload = payload.get("compare_payload") if isinstance(payload.get("compare_payload"), dict) else {}
+    markdown = payload.get("markdown")
+    markdown_text = markdown if isinstance(markdown, str) else ""
+
+    if not snapshot:
+        raise GuiApiError("field 'snapshot' is required")
+    if not compare_payload:
+        raise GuiApiError("field 'compare_payload' is required")
+
+    left = snapshot.get("left") if isinstance(snapshot.get("left"), dict) else {}
+    right = snapshot.get("right") if isinstance(snapshot.get("right"), dict) else {}
+    left_id = _sanitize_compare_snapshot_segment(left.get("run_id"), "baseline")
+    right_id = _sanitize_compare_snapshot_segment(right.get("run_id"), "candidate")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    snapshot_id = f"{timestamp}__{left_id}__vs__{right_id}__{uuid4().hex[:8]}"
+    persisted_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    record = {
+        "schema_version": COMPARE_SNAPSHOT_RECORD_VERSION,
+        "snapshot_id": snapshot_id,
+        "persisted_at": persisted_at,
+        "snapshot": snapshot,
+        "compare_payload": compare_payload,
+        "markdown": markdown_text,
+    }
+
+    root = _compare_snapshots_root(runs_root)
+    root.mkdir(parents=True, exist_ok=True)
+    json_path = root / f"{snapshot_id}.json"
+    md_path = root / f"{snapshot_id}.md"
+    json_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    md_path.write_text(markdown_text, encoding="utf-8")
+    return _compare_snapshot_metadata(record, json_path)
+
+
+def _list_compare_snapshots(runs_root: Path) -> dict[str, Any]:
+    root = _compare_snapshots_root(runs_root)
+    if not root.exists():
+        return {"snapshots": [], "warnings": []}
+
+    snapshots: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for path in sorted(root.glob("*.json"), reverse=True):
+        try:
+            record = _load_compare_snapshot_record(path)
+            snapshots.append(_compare_snapshot_metadata(record, path))
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            warnings.append(f"{path.name}: {exc}")
+
+    snapshots.sort(key=lambda row: str(row.get("persisted_at") or ""), reverse=True)
+    return {"snapshots": snapshots, "warnings": warnings}
+
+
+def _get_compare_snapshot(runs_root: Path, snapshot_id: str) -> tuple[dict[str, Any], HTTPStatus]:
+    normalized_id = snapshot_id.strip()
+    if not normalized_id or not SAFE_COMPARE_SNAPSHOT_ID_RE.fullmatch(normalized_id):
+        return {
+            "error": {
+                "code": "invalid_compare_snapshot_id",
+                "message": "snapshot id is invalid",
+            }
+        }, HTTPStatus.BAD_REQUEST
+
+    path = _compare_snapshots_root(runs_root) / f"{normalized_id}.json"
+    if not path.exists() or not path.is_file():
+        return {
+            "error": {
+                "code": "compare_snapshot_not_found",
+                "message": "compare snapshot not found",
+                "snapshot_id": normalized_id,
+            }
+        }, HTTPStatus.NOT_FOUND
+
+    try:
+        record = _load_compare_snapshot_record(path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return {
+            "error": {
+                "code": "compare_snapshot_unreadable",
+                "message": str(exc),
+                "snapshot_id": normalized_id,
+            }
+        }, HTTPStatus.UNPROCESSABLE_ENTITY
+
+    return {
+        "snapshot": _compare_snapshot_metadata(record, path),
+        "compare_snapshot": record.get("snapshot") if isinstance(record.get("snapshot"), dict) else {},
+        "compare_payload": record.get("compare_payload") if isinstance(record.get("compare_payload"), dict) else {},
+        "markdown": str(record.get("markdown") or ""),
+    }, HTTPStatus.OK
+
+
 class GuiRequestHandler(BaseHTTPRequestHandler):
     server_version = "AutoDevGuiMvp/0.1"
 
@@ -1293,6 +1425,16 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/runs":
             self._json_response({"runs": _list_runs(self.config.runs_root)})
+            return
+
+        if path == "/api/runs/compare/snapshots":
+            self._json_response(_list_compare_snapshots(self.config.runs_root))
+            return
+
+        if path.startswith("/api/runs/compare/snapshots/"):
+            snapshot_id = unquote(path.removeprefix("/api/runs/compare/snapshots/")).strip("/")
+            payload, status = _get_compare_snapshot(self.config.runs_root, snapshot_id)
+            self._json_response(payload, status=status)
             return
 
         if path == "/api/runs/compare":
@@ -1410,6 +1552,9 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/runs/retry":
             self._handle_run_control(action="retry")
+            return
+        if path == "/api/runs/compare/snapshots":
+            self._handle_compare_snapshot_save()
             return
         self._json_response({"error": "not found", "path": path}, status=HTTPStatus.NOT_FOUND)
 
@@ -1556,6 +1701,27 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         else:
             event["result_status"] = "spawned" if result.get("spawned") else "dry_run"
         self._audit_then_respond(body=result, status=HTTPStatus.OK, audit_event=event)
+
+    def _handle_compare_snapshot_save(self) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+        try:
+            snapshot = _persist_compare_snapshot(self.config.runs_root, payload)
+        except GuiApiError as exc:
+            self._json_response(
+                {"error": _error_payload("invalid_compare_snapshot", str(exc))},
+                status=HTTPStatus.UNPROCESSABLE_ENTITY,
+            )
+            return
+        except OSError as exc:
+            self._json_response(
+                {"error": _error_payload("compare_snapshot_persist_failed", str(exc))},
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            return
+
+        self._json_response({"snapshot": snapshot}, status=HTTPStatus.OK)
 
     def _read_json_payload(self) -> dict[str, Any] | None:
         try:

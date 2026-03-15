@@ -537,6 +537,69 @@ def test_compare_endpoint_requires_both_run_ids(gui_server):
     assert body["error"]["code"] == "invalid_compare_query"
 
 
+def test_compare_snapshot_persist_list_and_reload(gui_server):
+    base_url, runs_root = gui_server
+
+    payload = {
+        "snapshot": {
+            "schema_version": "compare-trust-snapshot-v1",
+            "generated_at": "2026-03-15T12:00:00Z",
+            "source": "api",
+            "left": {
+                "run_id": "run-a",
+                "status": "failed",
+                "trust": {"status": "low", "score": 0.42, "requires_human_review": True},
+            },
+            "right": {
+                "run_id": "run-b",
+                "status": "ok",
+                "trust": {"status": "high", "score": 0.96, "requires_human_review": False},
+            },
+            "delta": {"trust_status_changed": True, "trust_score": 0.54},
+            "trust_packet_diff": [{"path": "trust_signals.overall.status", "left": "low", "right": "high"}],
+            "highlights": ["Trust: low (0.42) -> high (0.96)"],
+        },
+        "markdown": "# Compare Trust Snapshot\n\n- baseline_run: run-a\n- candidate_run: run-b\n",
+        "compare_payload": {
+            "left": {
+                "run_id": "run-a",
+                "status": "failed",
+                "trust": {"status": "low", "score": 0.42, "requires_human_review": True},
+                "trust_packet": {"trust_signals": {"overall": {"status": "low", "score": 0.42}}},
+            },
+            "right": {
+                "run_id": "run-b",
+                "status": "ok",
+                "trust": {"status": "high", "score": 0.96, "requires_human_review": False},
+                "trust_packet": {"trust_signals": {"overall": {"status": "high", "score": 0.96}}},
+            },
+            "delta": {"trust_status_changed": True, "trust_score": 0.54},
+        },
+    }
+
+    status, body = _post_json(f"{base_url}/api/runs/compare/snapshots", payload)
+    assert status == 200
+    snapshot = body["snapshot"]
+    snapshot_id = snapshot["snapshot_id"]
+    assert snapshot["left_run_id"] == "run-a"
+    assert snapshot["right_run_id"] == "run-b"
+
+    snapshot_dir = runs_root / ".autodev" / "compare_snapshots"
+    assert (snapshot_dir / f"{snapshot_id}.json").exists()
+    assert (snapshot_dir / f"{snapshot_id}.md").exists()
+
+    list_status, list_body = _get_json(f"{base_url}/api/runs/compare/snapshots")
+    assert list_status == 200
+    assert list_body["snapshots"][0]["snapshot_id"] == snapshot_id
+
+    detail_status, detail_body = _get_json(f"{base_url}/api/runs/compare/snapshots/{snapshot_id}")
+    assert detail_status == 200
+    assert detail_body["snapshot"]["snapshot_id"] == snapshot_id
+    assert detail_body["compare_snapshot"]["left"]["run_id"] == "run-a"
+    assert detail_body["compare_payload"]["right"]["run_id"] == "run-b"
+    assert "baseline_run: run-a" in detail_body["markdown"]
+
+
 def test_gui_context_endpoint_defaults(gui_server):
     base_url, _ = gui_server
 
@@ -1026,9 +1089,13 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="compareTrustDiffPanel"' in index_html
     assert 'id="compareTrustDiffEmpty"' in index_html
     assert 'id="compareTrustDiffMeta"' in index_html
+    assert 'id="compareSaveSnapshotBtn"' in index_html
     assert 'id="compareExportJsonBtn"' in index_html
     assert 'id="compareExportMdBtn"' in index_html
     assert 'id="compareCopyMdBtn"' in index_html
+    assert 'id="compareSavedSnapshotSelect"' in index_html
+    assert 'id="compareOpenSnapshotBtn"' in index_html
+    assert 'id="compareRefreshSnapshotsBtn"' in index_html
     assert 'id="compareSnapshotStatus"' in index_html
     assert 'id="overviewStateBox"' in index_html
     assert 'id="overviewRefreshBtn"' in index_html
@@ -1048,6 +1115,10 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "function buildCompareSnapshot(payload)" in app_js
     assert "function renderCompareSnapshotMarkdown(snapshot)" in app_js
     assert "function compareSnapshotDownloadName(snapshot, format = 'json')" in app_js
+    assert "function renderCompareSnapshotOptions()" in app_js
+    assert "function loadCompareSnapshots({ preserveSelection = true, silent = true } = {})" in app_js
+    assert "function saveCompareSnapshot()" in app_js
+    assert "function openSavedCompareSnapshot(snapshotId)" in app_js
     assert "function downloadTextFile(text, filename, mimeType)" in app_js
     assert "function buildArtifactViewerFocusPreview(payload, focusPath)" in app_js
     assert "function setCompareTrustFocus(sideKey, { scroll = false } = {})" in app_js
@@ -1065,6 +1136,7 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'data-compare-open-trust-artifact="${escapeHtml(sideKey)}"' in app_js
     assert 'data-compare-trust-diff-side="left"' in app_js
     assert "Focused trust path:" in app_js
+    assert "/api/runs/compare/snapshots" in app_js
     assert ".autodev/autonomous_trust_intelligence.json" in app_js
     assert ".autodev/autonomous_trust_intelligence.md" in app_js
     assert "/api/scorecard/latest" in app_js

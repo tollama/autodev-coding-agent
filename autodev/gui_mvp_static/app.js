@@ -20,6 +20,8 @@ const state = {
   compareSource: '',
   compareManualSelection: false,
   compareTrustFocus: '',
+  compareSavedSnapshots: [],
+  compareSelectedSnapshotId: '',
   guiContext: null,
   healthSnapshot: null,
   scorecardPayload: null,
@@ -2842,6 +2844,92 @@ function compareSnapshotDownloadName(snapshot, format = 'json') {
   return `compare-trust-snapshot-${left}-vs-${right}.${suffix}`;
 }
 
+function renderCompareSnapshotOptions() {
+  const select = el('compareSavedSnapshotSelect');
+  const openBtn = el('compareOpenSnapshotBtn');
+  if (!select) return;
+
+  const snapshots = Array.isArray(state.compareSavedSnapshots) ? state.compareSavedSnapshots : [];
+  const current = String(state.compareSelectedSnapshotId || '').trim();
+  select.innerHTML = '<option value="">Saved snapshots</option>';
+
+  snapshots.forEach((row) => {
+    const option = document.createElement('option');
+    option.value = String(row?.snapshot_id || '');
+    const left = String(row?.left_run_id || 'baseline');
+    const right = String(row?.right_run_id || 'candidate');
+    const persisted = String(row?.persisted_at || '');
+    option.textContent = persisted ? `${left} vs ${right} (${persisted})` : `${left} vs ${right}`;
+    select.appendChild(option);
+  });
+
+  if (current && snapshots.some((row) => String(row?.snapshot_id || '') === current)) {
+    select.value = current;
+  } else {
+    state.compareSelectedSnapshotId = '';
+    select.value = '';
+  }
+
+  if (openBtn) openBtn.disabled = !state.compareSelectedSnapshotId;
+}
+
+async function loadCompareSnapshots({ preserveSelection = true, silent = true } = {}) {
+  if (state.useMock) {
+    state.compareSavedSnapshots = [];
+    if (!preserveSelection) state.compareSelectedSnapshotId = '';
+    renderCompareSnapshotOptions();
+    return;
+  }
+
+  const previous = preserveSelection ? String(state.compareSelectedSnapshotId || '') : '';
+  try {
+    const payload = await fetchJson('/api/runs/compare/snapshots');
+    state.compareSavedSnapshots = Array.isArray(payload?.snapshots) ? payload.snapshots : [];
+    state.compareSelectedSnapshotId = previous;
+    renderCompareSnapshotOptions();
+  } catch (err) {
+    state.compareSavedSnapshots = [];
+    if (!preserveSelection) state.compareSelectedSnapshotId = '';
+    renderCompareSnapshotOptions();
+    if (!silent) {
+      renderCompareSnapshotStatus(`Saved snapshots unavailable: ${err.message || 'request failed'}`);
+    }
+  }
+}
+
+async function saveCompareSnapshot() {
+  if (!state.comparePayload) return;
+  const snapshot = buildCompareSnapshot(state.comparePayload);
+  const markdown = renderCompareSnapshotMarkdown(snapshot);
+  const body = await postJson('/api/runs/compare/snapshots', {
+    snapshot,
+    markdown,
+    compare_payload: state.comparePayload,
+  });
+  const snapshotMeta = body?.snapshot || {};
+  state.compareSelectedSnapshotId = String(snapshotMeta.snapshot_id || '');
+  await loadCompareSnapshots({ preserveSelection: true, silent: true });
+  renderCompareSnapshotStatus(`Saved snapshot ${state.compareSelectedSnapshotId || 'compare snapshot'}.`);
+}
+
+async function openSavedCompareSnapshot(snapshotId) {
+  const normalized = String(snapshotId || '').trim();
+  if (!normalized) return;
+  const body = await fetchJson(`/api/runs/compare/snapshots/${encodeURIComponent(normalized)}`);
+  const comparePayload = body?.compare_payload || null;
+  if (!comparePayload) {
+    throw new Error('saved compare snapshot payload is missing');
+  }
+  state.compareSelectedSnapshotId = normalized;
+  state.compareManualSelection = true;
+  state.compareLeftId = String(comparePayload?.left?.run_id || state.compareLeftId || '');
+  state.compareRightId = String(comparePayload?.right?.run_id || state.compareRightId || '');
+  renderCompareSnapshotOptions();
+  refreshCompareRunOptions();
+  renderComparison(comparePayload, { source: `saved:${normalized}` });
+  renderCompareSnapshotStatus(`Opened saved snapshot ${normalized}.`);
+}
+
 function flattenTrustPacketDiffObject(value, prefix = '', rows = []) {
   if (Array.isArray(value)) {
     if (!value.length) {
@@ -3092,10 +3180,16 @@ function syncCompareSnapshotControls(payload) {
   const exportJsonBtn = el('compareExportJsonBtn');
   const exportMdBtn = el('compareExportMdBtn');
   const copyMdBtn = el('compareCopyMdBtn');
+  const saveBtn = el('compareSaveSnapshotBtn');
+  const openBtn = el('compareOpenSnapshotBtn');
+  const refreshBtn = el('compareRefreshSnapshotsBtn');
   const enabled = Boolean(payload);
   if (exportJsonBtn) exportJsonBtn.disabled = !enabled;
   if (exportMdBtn) exportMdBtn.disabled = !enabled;
   if (copyMdBtn) copyMdBtn.disabled = !enabled;
+  if (saveBtn) saveBtn.disabled = !enabled || state.useMock;
+  if (openBtn) openBtn.disabled = !state.compareSelectedSnapshotId;
+  if (refreshBtn) refreshBtn.disabled = state.useMock;
   if (!enabled) {
     renderCompareSnapshotStatus('');
   }
@@ -3113,9 +3207,17 @@ function renderComparison(payload, { source = state.compareSource, error = '' } 
   renderCompareSnapshotStatus('');
 
   if (badge) {
-    badge.textContent = state.compareSource
-      ? `Source: ${state.compareSource === 'api' ? 'SHW-012 API' : 'Adapter fallback'}`
-      : '';
+    if (!state.compareSource) {
+      badge.textContent = '';
+    } else if (state.compareSource === 'api') {
+      badge.textContent = 'Source: SHW-012 API';
+    } else if (state.compareSource === 'fallback') {
+      badge.textContent = 'Source: Adapter fallback';
+    } else if (state.compareSource.startsWith('saved:')) {
+      badge.textContent = `Source: Saved snapshot (${state.compareSource.slice('saved:'.length)})`;
+    } else {
+      badge.textContent = `Source: ${state.compareSource}`;
+    }
   }
 
   if (!payload) {
@@ -3826,6 +3928,7 @@ async function loadRuns() {
     initComparisonState({ forceLatest: !state.compareManualSelection });
     refreshCompareRunOptions();
     await refreshComparison({ silent: true });
+    await loadCompareSnapshots({ preserveSelection: true, silent: true });
     await refreshTrends({ silent: true });
     await refreshScorecardWidget({ silent: true });
     await refreshTrustWidget({ silent: true });
@@ -3856,6 +3959,7 @@ async function loadRuns() {
     initComparisonState({ forceLatest: !state.compareManualSelection });
     refreshCompareRunOptions();
     await refreshComparison({ silent: true });
+    await loadCompareSnapshots({ preserveSelection: true, silent: true });
     await refreshTrends({ silent: true });
     await refreshScorecardWidget({ silent: true });
     await refreshTrustWidget({ silent: true });
@@ -3874,6 +3978,7 @@ async function loadRuns() {
     renderOverviewState();
     refreshCompareRunOptions();
     renderComparison(null, { error: 'Unable to load runs for comparison.' });
+    await loadCompareSnapshots({ preserveSelection: false, silent: true });
     renderTrends(null);
     state.scorecardPayload = null;
     state.scorecardError = 'Latest scorecard unavailable: unable to load runs list.';
@@ -4372,9 +4477,13 @@ function initCompareControls() {
   const right = el('compareRightRun');
   const swap = el('compareSwapBtn');
   const refresh = el('compareRefreshBtn');
+  const saveBtn = el('compareSaveSnapshotBtn');
   const exportJsonBtn = el('compareExportJsonBtn');
   const exportMdBtn = el('compareExportMdBtn');
   const copyMdBtn = el('compareCopyMdBtn');
+  const savedSelect = el('compareSavedSnapshotSelect');
+  const openSavedBtn = el('compareOpenSnapshotBtn');
+  const refreshSavedBtn = el('compareRefreshSnapshotsBtn');
   const diffs = el('compareDiffs');
   const trustPanel = el('compareTrustPanel');
   const trustDiffPanel = el('compareTrustDiffPanel');
@@ -4405,6 +4514,16 @@ function initCompareControls() {
   refresh.addEventListener('click', async () => {
     await refreshComparison();
   });
+
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async () => {
+      try {
+        await saveCompareSnapshot();
+      } catch (err) {
+        renderCompareSnapshotStatus(`Save failed: ${err.message || 'request failed'}`);
+      }
+    });
+  }
 
   if (exportJsonBtn) {
     exportJsonBtn.addEventListener('click', async () => {
@@ -4448,6 +4567,31 @@ function initCompareControls() {
           renderCompareSnapshotStatus('Copy failed. Browser clipboard access was denied.');
         }
       });
+    });
+  }
+
+  if (savedSelect) {
+    savedSelect.addEventListener('change', () => {
+      state.compareSelectedSnapshotId = savedSelect.value || '';
+      syncCompareSnapshotControls(state.comparePayload);
+    });
+  }
+
+  if (openSavedBtn) {
+    openSavedBtn.addEventListener('click', async () => {
+      if (!state.compareSelectedSnapshotId) return;
+      try {
+        await openSavedCompareSnapshot(state.compareSelectedSnapshotId);
+      } catch (err) {
+        renderCompareSnapshotStatus(`Open failed: ${err.message || 'request failed'}`);
+      }
+    });
+  }
+
+  if (refreshSavedBtn) {
+    refreshSavedBtn.addEventListener('click', async () => {
+      await loadCompareSnapshots({ preserveSelection: true, silent: false });
+      syncCompareSnapshotControls(state.comparePayload);
     });
   }
 
