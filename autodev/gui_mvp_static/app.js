@@ -22,6 +22,8 @@ const state = {
   compareTrustFocus: '',
   compareSavedSnapshots: [],
   compareSelectedSnapshotId: '',
+  compareSnapshotFilter: '',
+  compareSnapshotSort: 'newest',
   guiContext: null,
   healthSnapshot: null,
   scorecardPayload: null,
