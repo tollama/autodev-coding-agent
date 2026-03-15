@@ -1870,6 +1870,17 @@ function artifactViewerDownloadName(path, payload) {
   return `${base}.txt`;
 }
 
+function downloadTextFile(text, filename, mimeType) {
+  const blob = new Blob([text], { type: mimeType });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(link.href);
+}
+
 function setArtifactViewerActionStatus(message, kind = 'ok') {
   const node = el('artifactViewerActionStatus');
   if (!node) return;
@@ -2701,6 +2712,136 @@ function stringifyTrustDiffValue(value) {
   return JSON.stringify(value);
 }
 
+function buildComparisonHighlights(payload) {
+  const left = payload?.left || {};
+  const right = payload?.right || {};
+  const delta = payload?.delta || {};
+  const blockerLeft = Array.isArray(delta.blockers_only_left)
+    ? delta.blockers_only_left
+    : (left.blockers || []).filter((b) => !(right.blockers || []).includes(b));
+  const blockerRight = Array.isArray(delta.blockers_only_right)
+    ? delta.blockers_only_right
+    : (right.blockers || []).filter((b) => !(left.blockers || []).includes(b));
+  const valChanged = Array.isArray(delta.validation_changed) ? delta.validation_changed : [];
+
+  const lines = [];
+  if ((left.status || 'unknown') !== (right.status || 'unknown')) {
+    lines.push(`Status: ${left.status || 'unknown'} -> ${right.status || 'unknown'}`);
+  }
+  if (Boolean(delta.trust_status_changed || ((left.trust?.status || '') !== (right.trust?.status || '')))) {
+    lines.push(`Trust: ${left.trust?.status || 'unknown'} (${formatComparisonTrustScore(left.trust?.score)}) -> ${right.trust?.status || 'unknown'} (${formatComparisonTrustScore(right.trust?.score)})`);
+  } else if (Math.abs(Number(delta.trust_score ?? 0)) > 0.001) {
+    lines.push(`Trust score: ${formatComparisonTrustScore(left.trust?.score)} -> ${formatComparisonTrustScore(right.trust?.score)}`);
+  }
+  if (Boolean(delta.trust_review_changed || (left.trust?.requires_human_review !== right.trust?.requires_human_review))) {
+    lines.push(`Human review: ${formatComparisonReviewState(left.trust?.requires_human_review)} -> ${formatComparisonReviewState(right.trust?.requires_human_review)}`);
+  }
+  if (Boolean(delta.trust_owner_changed || ((left.trust?.incident_owner_team || '') !== (right.trust?.incident_owner_team || '')))) {
+    lines.push(`Incident owner: ${left.trust?.incident_owner_team || '-'} -> ${right.trust?.incident_owner_team || '-'}`);
+  }
+  if (blockerLeft.length || blockerRight.length) {
+    lines.push(`Blockers: only baseline [${blockerLeft.join(', ') || 'none'}], only candidate [${blockerRight.join(', ') || 'none'}]`);
+  }
+  if (valChanged.length) {
+    const top = valChanged.slice(0, 6).map((row) => `${row.name}: ${row.left} -> ${row.right}`).join(', ');
+    lines.push(`Validator outcome changes: ${top}${valChanged.length > 6 ? ` (+${valChanged.length - 6} more)` : ''}`);
+  }
+  return lines;
+}
+
+function buildCompareSnapshot(payload) {
+  const generatedAt = new Date().toISOString();
+  const trustDiffRows = buildTrustPacketDiffRows(payload?.left?.trust_packet, payload?.right?.trust_packet);
+  return {
+    schema_version: 'compare-trust-snapshot-v1',
+    generated_at: generatedAt,
+    source: state.compareSource || '',
+    left: {
+      run_id: payload?.left?.run_id || '',
+      status: payload?.left?.status || '',
+      profile: payload?.left?.profile || '',
+      model: payload?.left?.model || '',
+      totals: payload?.left?.totals || {},
+      validation: payload?.left?.validation || {},
+      blockers: payload?.left?.blockers || [],
+      trust: payload?.left?.trust || {},
+      trust_packet_summary: summarizeTrustPacketForDiff(payload?.left?.trust_packet || {}),
+    },
+    right: {
+      run_id: payload?.right?.run_id || '',
+      status: payload?.right?.status || '',
+      profile: payload?.right?.profile || '',
+      model: payload?.right?.model || '',
+      totals: payload?.right?.totals || {},
+      validation: payload?.right?.validation || {},
+      blockers: payload?.right?.blockers || [],
+      trust: payload?.right?.trust || {},
+      trust_packet_summary: summarizeTrustPacketForDiff(payload?.right?.trust_packet || {}),
+    },
+    delta: payload?.delta || {},
+    trust_packet_diff: trustDiffRows,
+    highlights: buildComparisonHighlights(payload),
+  };
+}
+
+function renderCompareSnapshotMarkdown(snapshot) {
+  const left = snapshot?.left || {};
+  const right = snapshot?.right || {};
+  const highlights = Array.isArray(snapshot?.highlights) ? snapshot.highlights : [];
+  const trustRows = Array.isArray(snapshot?.trust_packet_diff) ? snapshot.trust_packet_diff : [];
+  const visibleRows = trustRows.slice(0, 20);
+
+  const lines = [
+    '# Compare Trust Snapshot',
+    '',
+    `- generated_at: ${snapshot?.generated_at || '-'}`,
+    `- source: ${snapshot?.source || '-'}`,
+    `- baseline_run: ${left.run_id || '-'}`,
+    `- candidate_run: ${right.run_id || '-'}`,
+    '',
+    '## Run Summary',
+    '',
+    '| Field | Baseline | Candidate |',
+    '| --- | --- | --- |',
+    `| Status | ${left.status || '-'} | ${right.status || '-'} |`,
+    `| Profile | ${left.profile || '-'} | ${right.profile || '-'} |`,
+    `| Model | ${left.model || '-'} | ${right.model || '-'} |`,
+    `| Trust status | ${left.trust?.status || '-'} | ${right.trust?.status || '-'} |`,
+    `| Trust score | ${formatComparisonTrustScore(left.trust?.score)} | ${formatComparisonTrustScore(right.trust?.score)} |`,
+    `| Human review | ${formatComparisonReviewState(left.trust?.requires_human_review)} | ${formatComparisonReviewState(right.trust?.requires_human_review)} |`,
+    '',
+    '## Highlights',
+  ];
+
+  if (highlights.length) {
+    highlights.forEach((line) => lines.push(`- ${line}`));
+  } else {
+    lines.push('- No highlighted differences.');
+  }
+
+  lines.push('', '## Trust Packet Diff');
+  if (visibleRows.length) {
+    lines.push('', '| Field path | Baseline | Candidate |', '| --- | --- | --- |');
+    visibleRows.forEach((row) => {
+      lines.push(`| ${row.path || '-'} | ${String(row.left || '').replace(/\|/g, '\\|')} | ${String(row.right || '').replace(/\|/g, '\\|')} |`);
+    });
+    if (trustRows.length > visibleRows.length) {
+      lines.push('', `- Additional changed trust fields not shown: ${trustRows.length - visibleRows.length}`);
+    }
+  } else {
+    lines.push('', '- No structural trust packet differences.');
+  }
+
+  return lines.join('\n');
+}
+
+function compareSnapshotDownloadName(snapshot, format = 'json') {
+  const left = String(snapshot?.left?.run_id || 'baseline').replace(/[^A-Za-z0-9._-]+/g, '_');
+  const right = String(snapshot?.right?.run_id || 'candidate').replace(/[^A-Za-z0-9._-]+/g, '_');
+  const suffix = String(format || 'json').toLowerCase() === 'markdown' ? 'md' : 'json';
+  return `compare-trust-snapshot-${left}-vs-${right}.${suffix}`;
+}
+
 function flattenTrustPacketDiffObject(value, prefix = '', rows = []) {
   if (Array.isArray(value)) {
     if (!value.length) {
@@ -2941,6 +3082,25 @@ async function openCompareTrustArtifactAtPath(sideKey, focusPath) {
   await openCompareTrustArtifactWithFocus(sideKey, 'json', focusPath);
 }
 
+function renderCompareSnapshotStatus(message = '') {
+  const node = el('compareSnapshotStatus');
+  if (!node) return;
+  node.textContent = message;
+}
+
+function syncCompareSnapshotControls(payload) {
+  const exportJsonBtn = el('compareExportJsonBtn');
+  const exportMdBtn = el('compareExportMdBtn');
+  const copyMdBtn = el('compareCopyMdBtn');
+  const enabled = Boolean(payload);
+  if (exportJsonBtn) exportJsonBtn.disabled = !enabled;
+  if (exportMdBtn) exportMdBtn.disabled = !enabled;
+  if (copyMdBtn) copyMdBtn.disabled = !enabled;
+  if (!enabled) {
+    renderCompareSnapshotStatus('');
+  }
+}
+
 function renderComparison(payload, { source = state.compareSource, error = '' } = {}) {
   const grid = el('compareGrid');
   const diffs = el('compareDiffs');
@@ -2949,6 +3109,8 @@ function renderComparison(payload, { source = state.compareSource, error = '' } 
 
   state.comparePayload = payload;
   state.compareSource = source || '';
+  syncCompareSnapshotControls(payload);
+  renderCompareSnapshotStatus('');
 
   if (badge) {
     badge.textContent = state.compareSource
@@ -4210,6 +4372,9 @@ function initCompareControls() {
   const right = el('compareRightRun');
   const swap = el('compareSwapBtn');
   const refresh = el('compareRefreshBtn');
+  const exportJsonBtn = el('compareExportJsonBtn');
+  const exportMdBtn = el('compareExportMdBtn');
+  const copyMdBtn = el('compareCopyMdBtn');
   const diffs = el('compareDiffs');
   const trustPanel = el('compareTrustPanel');
   const trustDiffPanel = el('compareTrustDiffPanel');
@@ -4240,6 +4405,51 @@ function initCompareControls() {
   refresh.addEventListener('click', async () => {
     await refreshComparison();
   });
+
+  if (exportJsonBtn) {
+    exportJsonBtn.addEventListener('click', async () => {
+      if (!state.comparePayload) return;
+      const snapshot = buildCompareSnapshot(state.comparePayload);
+      await withPreservedFocus(async () => {
+        downloadTextFile(
+          JSON.stringify(snapshot, null, 2),
+          compareSnapshotDownloadName(snapshot, 'json'),
+          'application/json;charset=utf-8',
+        );
+        renderCompareSnapshotStatus(`Exported ${compareSnapshotDownloadName(snapshot, 'json')}`);
+      });
+    });
+  }
+
+  if (exportMdBtn) {
+    exportMdBtn.addEventListener('click', async () => {
+      if (!state.comparePayload) return;
+      const snapshot = buildCompareSnapshot(state.comparePayload);
+      await withPreservedFocus(async () => {
+        downloadTextFile(
+          renderCompareSnapshotMarkdown(snapshot),
+          compareSnapshotDownloadName(snapshot, 'markdown'),
+          'text/markdown;charset=utf-8',
+        );
+        renderCompareSnapshotStatus(`Exported ${compareSnapshotDownloadName(snapshot, 'markdown')}`);
+      });
+    });
+  }
+
+  if (copyMdBtn) {
+    copyMdBtn.addEventListener('click', async () => {
+      if (!state.comparePayload) return;
+      const snapshot = buildCompareSnapshot(state.comparePayload);
+      await withPreservedFocus(async () => {
+        try {
+          await copyTextToClipboard(renderCompareSnapshotMarkdown(snapshot));
+          renderCompareSnapshotStatus('Copied compare trust snapshot Markdown.');
+        } catch {
+          renderCompareSnapshotStatus('Copy failed. Browser clipboard access was denied.');
+        }
+      });
+    });
+  }
 
   if (diffs) {
     diffs.addEventListener('click', (event) => {

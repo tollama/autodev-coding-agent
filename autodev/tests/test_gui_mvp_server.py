@@ -1026,6 +1026,10 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="compareTrustDiffPanel"' in index_html
     assert 'id="compareTrustDiffEmpty"' in index_html
     assert 'id="compareTrustDiffMeta"' in index_html
+    assert 'id="compareExportJsonBtn"' in index_html
+    assert 'id="compareExportMdBtn"' in index_html
+    assert 'id="compareCopyMdBtn"' in index_html
+    assert 'id="compareSnapshotStatus"' in index_html
     assert 'id="overviewStateBox"' in index_html
     assert 'id="overviewRefreshBtn"' in index_html
     assert 'id="validationStateBox"' in index_html
@@ -1041,11 +1045,17 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "function renderCompareTrustPacketDiff(payload)" in app_js
     assert "function buildTrustPacketDiffRows(leftPacket, rightPacket)" in app_js
     assert "function summarizeTrustPacketForDiff(packet)" in app_js
+    assert "function buildCompareSnapshot(payload)" in app_js
+    assert "function renderCompareSnapshotMarkdown(snapshot)" in app_js
+    assert "function compareSnapshotDownloadName(snapshot, format = 'json')" in app_js
+    assert "function downloadTextFile(text, filename, mimeType)" in app_js
     assert "function buildArtifactViewerFocusPreview(payload, focusPath)" in app_js
     assert "function setCompareTrustFocus(sideKey, { scroll = false } = {})" in app_js
     assert "function openCompareRun(sideKey)" in app_js
     assert "function openCompareTrustArtifact(sideKey, format = 'json')" in app_js
     assert "function openCompareTrustArtifactAtPath(sideKey, focusPath)" in app_js
+    assert "function renderCompareSnapshotStatus(message = '')" in app_js
+    assert "function syncCompareSnapshotControls(payload)" in app_js
     assert "buildMockTrustPayload" in app_js
     assert "function renderOverviewState()" in app_js
     assert "function renderValidationState({ rows = [], filtered = [] } = {})" in app_js
