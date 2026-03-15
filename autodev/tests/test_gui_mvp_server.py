@@ -395,6 +395,44 @@ def test_run_compare_returns_normalized_summary_for_two_runs(tmp_path):
         run_a / ".autodev" / "run_trace.json",
         {"llm": {"model": "m-a"}, "phase_timeline": [{"phase": "planning", "duration_ms": 100}]},
     )
+    _write_json(
+        run_a / ".autodev" / "autonomous_report.json",
+        {
+            "ok": False,
+            "run_id": "run-a",
+            "request_id": "req-a",
+            "profile": "minimal",
+            "preflight": {"status": "passed", "reason_codes": []},
+            "operator_guidance": {
+                "top": [
+                    {
+                        "code": "tests.min_pass_rate_not_met",
+                        "actions": ["Stabilize tests before retry."],
+                    }
+                ]
+            },
+            "incident_routing": {
+                "primary": {
+                    "owner_team": "Feature Engineering",
+                    "severity": "high",
+                    "target_sla": "4h",
+                    "escalation_class": "manual_triage",
+                }
+            },
+            "gate_results": {
+                "passed": False,
+                "gates": {
+                    "composite_quality": {
+                        "status": "failed",
+                        "composite_score": 42.0,
+                        "hard_blocked": True,
+                        "components": {"tests": 50.0},
+                    }
+                },
+                "fail_reasons": ["tests.min_pass_rate_not_met"],
+            },
+        },
+    )
 
     run_b = tmp_path / "run-b"
     _write_json(
@@ -416,6 +454,44 @@ def test_run_compare_returns_normalized_summary_for_two_runs(tmp_path):
         },
     )
     _write_json(run_b / ".autodev" / "run_trace.json", {"model": "m-b"})
+    _write_json(
+        run_b / ".autodev" / "autonomous_report.json",
+        {
+            "ok": True,
+            "run_id": "run-b",
+            "request_id": "req-b",
+            "profile": "enterprise",
+            "preflight": {"status": "passed", "reason_codes": []},
+            "operator_guidance": {
+                "top": [
+                    {
+                        "code": "autonomous.unmapped_or_missing_code",
+                        "actions": ["Review final artifacts and approve closure."],
+                    }
+                ]
+            },
+            "incident_routing": {
+                "primary": {
+                    "owner_team": "Autonomy On-Call",
+                    "severity": "medium",
+                    "target_sla": "12h",
+                    "escalation_class": "manual_triage",
+                }
+            },
+            "gate_results": {
+                "passed": True,
+                "gates": {
+                    "composite_quality": {
+                        "status": "passed",
+                        "composite_score": 96.0,
+                        "hard_blocked": False,
+                        "components": {"tests": 100.0},
+                    }
+                },
+                "fail_reasons": [],
+            },
+        },
+    )
 
     payload, status = _run_compare(tmp_path, "run-a", "run-b")
     assert status == 200
@@ -426,6 +502,11 @@ def test_run_compare_returns_normalized_summary_for_two_runs(tmp_path):
     assert payload["right"]["validation"]["passed"] == 2
     assert payload["delta"]["validation_passed"] == 2
     assert payload["delta"]["hard_failures"] == -1
+    assert payload["left"]["trust"]["status"] == "low"
+    assert payload["right"]["trust"]["status"] == "high"
+    assert payload["delta"]["trust_status_changed"] is True
+    assert isinstance(payload["delta"]["trust_review_changed"], bool)
+    assert payload["delta"]["trust_owner_changed"] is True
 
 
 def test_compare_endpoint_supports_legacy_query_aliases(gui_server):

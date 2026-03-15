@@ -1,7 +1,17 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+for name in list(sys.modules):
+    if name == "autodev" or name.startswith("autodev."):
+        sys.modules.pop(name, None)
 
 from autodev.gui_mvp_dto import (
     normalize_run_comparison,
@@ -201,6 +211,15 @@ def test_normalize_run_comparison_summary_handles_mixed_schema_versions() -> Non
                 ]
             },
             "quality_index": {"final": {"status": "completed"}},
+            "trust_summary": {
+                "trust_status": "high",
+                "trust_score": 0.94,
+                "requires_human_review": False,
+                "latest_quality_status": "passed",
+                "latest_quality_score": 96,
+                "incident_owner_team": "Autonomy On-Call",
+                "incident_severity": "medium",
+            },
         }
     )
 
@@ -218,6 +237,15 @@ def test_normalize_run_comparison_summary_handles_mixed_schema_versions() -> Non
     }
     assert dto["timeline"]["phase_count"] == 1
     assert dto["timeline"]["total_duration_ms"] == 250
+    assert dto["trust"] == {
+        "status": "high",
+        "score": 0.94,
+        "requires_human_review": False,
+        "latest_quality_status": "passed",
+        "latest_quality_score": 96.0,
+        "incident_owner_team": "Autonomy On-Call",
+        "incident_severity": "medium",
+    }
 
 
 def test_normalize_run_comparison_highlights_key_differences() -> None:
@@ -239,6 +267,14 @@ def test_normalize_run_comparison_highlights_key_differences() -> None:
                     {"name": "pytest", "status": "passed", "ok": True},
                 ],
             },
+            "trust_summary": {
+                "trust_status": "moderate",
+                "trust_score": 0.58,
+                "requires_human_review": True,
+                "latest_quality_status": "advisory_warning",
+                "incident_owner_team": "Feature Engineering",
+                "incident_severity": "high",
+            },
         },
         {
             "run_id": "run-b",
@@ -258,6 +294,14 @@ def test_normalize_run_comparison_highlights_key_differences() -> None:
                     {"name": "mypy", "status": "soft_fail", "ok": False},
                 ],
             },
+            "trust_summary": {
+                "trust_status": "high",
+                "trust_score": 0.93,
+                "requires_human_review": False,
+                "latest_quality_status": "passed",
+                "incident_owner_team": "Autonomy On-Call",
+                "incident_severity": "medium",
+            },
         },
     )
 
@@ -269,6 +313,13 @@ def test_normalize_run_comparison_highlights_key_differences() -> None:
     changed = payload["diff"]["validation"]["changed"]
     assert changed == [{"name": "ruff", "left": "failed", "right": "passed"}]
     assert payload["diff"]["validation"]["only_right"] == [{"name": "mypy", "status": "soft_fail"}]
+    trust_diff = payload["diff"]["trust"]
+    assert trust_diff["status_changed"] is True
+    assert trust_diff["score_delta"] == pytest.approx(0.35)
+    assert trust_diff["review_changed"] is True
+    assert trust_diff["quality_status_changed"] is True
+    assert trust_diff["owner_changed"] is True
+    assert trust_diff["severity_changed"] is True
 
 
 def _load_compat_fixture(filename: str) -> dict[str, object]:

@@ -624,6 +624,8 @@ def _run_compare(runs_root: Path, left_run_id: str, right_run_id: str) -> tuple[
 
     left_summary = normalize_run_comparison_summary(_run_detail(left_dir))
     right_summary = normalize_run_comparison_summary(_run_detail(right_dir))
+    left_trust = left_summary.get("trust") if isinstance(left_summary.get("trust"), dict) else {}
+    right_trust = right_summary.get("trust") if isinstance(right_summary.get("trust"), dict) else {}
 
     return {
         "left": left_summary,
@@ -636,6 +638,12 @@ def _run_compare(runs_root: Path, left_run_id: str, right_run_id: str) -> tuple[
             "validation_failed": right_summary["validation"]["failed"] - left_summary["validation"]["failed"],
             "validation_passed": right_summary["validation"]["passed"] - left_summary["validation"]["passed"],
             "timeline_total_duration_ms": right_summary["timeline"]["total_duration_ms"] - left_summary["timeline"]["total_duration_ms"],
+            "trust_score": _safe_int(round((float(right_trust.get("score") or 0.0) - float(left_trust.get("score") or 0.0)) * 100), default=0) / 100,
+            "trust_status_changed": left_trust.get("status") != right_trust.get("status"),
+            "trust_review_changed": left_trust.get("requires_human_review") != right_trust.get("requires_human_review"),
+            "trust_quality_status_changed": left_trust.get("latest_quality_status") != right_trust.get("latest_quality_status"),
+            "trust_owner_changed": left_trust.get("incident_owner_team") != right_trust.get("incident_owner_team"),
+            "trust_severity_changed": left_trust.get("incident_severity") != right_trust.get("incident_severity"),
         },
     }, HTTPStatus.OK
 

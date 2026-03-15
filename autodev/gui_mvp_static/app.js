@@ -2403,6 +2403,30 @@ function refreshCompareRunOptions() {
   right.value = state.compareRightId || '';
 }
 
+function normalizeComparisonTrust(detail) {
+  const trust = detail?.trust_summary || {};
+  return {
+    status: String(trust.trust_status || trust.status || '').trim(),
+    score: Number(trust.trust_score ?? 0),
+    requires_human_review: typeof trust.requires_human_review === 'boolean' ? trust.requires_human_review : null,
+    latest_quality_status: String(trust.latest_quality_status || '').trim(),
+    incident_owner_team: String(trust.incident_owner_team || '').trim(),
+    incident_severity: String(trust.incident_severity || '').trim(),
+  };
+}
+
+function formatComparisonTrustScore(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '-';
+  return num.toFixed(2);
+}
+
+function formatComparisonReviewState(value) {
+  if (value === true) return 'Required';
+  if (value === false) return 'Not required';
+  return '-';
+}
+
 function toComparisonSummary(detail) {
   const summary = detail?.summary || {};
   const totals = summary.totals || {};
@@ -2446,6 +2470,7 @@ function toComparisonSummary(detail) {
     },
     blockers,
     validator_outcomes: outcomes,
+    trust: normalizeComparisonTrust(detail),
   };
 }
 
@@ -2472,6 +2497,12 @@ function buildComparisonFromDetails(leftDetail, rightDetail) {
       validation_failed: right.validation.failed - left.validation.failed,
       validation_passed: right.validation.passed - left.validation.passed,
       status_changed: left.status !== right.status,
+      trust_score: right.trust.score - left.trust.score,
+      trust_status_changed: left.trust.status !== right.trust.status,
+      trust_review_changed: left.trust.requires_human_review !== right.trust.requires_human_review,
+      trust_quality_status_changed: left.trust.latest_quality_status !== right.trust.latest_quality_status,
+      trust_owner_changed: left.trust.incident_owner_team !== right.trust.incident_owner_team,
+      trust_severity_changed: left.trust.incident_severity !== right.trust.incident_severity,
       blockers_only_left: left.blockers.filter((b) => !right.blockers.includes(b)),
       blockers_only_right: right.blockers.filter((b) => !left.blockers.includes(b)),
       validation_changed: validationDiffs,
@@ -2483,8 +2514,10 @@ async function enrichComparisonPayload(payload) {
   const hasValidatorDiffs = Array.isArray(payload?.delta?.validation_changed);
   const hasBlockerSplits = Array.isArray(payload?.delta?.blockers_only_left)
     && Array.isArray(payload?.delta?.blockers_only_right);
+  const hasTrustRows = payload?.left?.trust && payload?.right?.trust;
+  const hasTrustDelta = payload?.delta && Object.prototype.hasOwnProperty.call(payload.delta, 'trust_score');
 
-  if (hasValidatorDiffs && hasBlockerSplits) {
+  if (hasValidatorDiffs && hasBlockerSplits && hasTrustRows && hasTrustDelta) {
     return payload;
   }
 
@@ -2500,12 +2533,26 @@ async function enrichComparisonPayload(payload) {
     const fallback = buildComparisonFromDetails(leftDetail, rightDetail);
     return {
       ...payload,
+      left: {
+        ...(payload?.left || {}),
+        trust: payload?.left?.trust || fallback.left.trust,
+      },
+      right: {
+        ...(payload?.right || {}),
+        trust: payload?.right?.trust || fallback.right.trust,
+      },
       delta: {
         ...(payload?.delta || {}),
         status_changed: payload?.delta?.status_changed ?? fallback.delta.status_changed,
         blockers_only_left: payload?.delta?.blockers_only_left || fallback.delta.blockers_only_left,
         blockers_only_right: payload?.delta?.blockers_only_right || fallback.delta.blockers_only_right,
         validation_changed: payload?.delta?.validation_changed || fallback.delta.validation_changed,
+        trust_score: payload?.delta?.trust_score ?? fallback.delta.trust_score,
+        trust_status_changed: payload?.delta?.trust_status_changed ?? fallback.delta.trust_status_changed,
+        trust_review_changed: payload?.delta?.trust_review_changed ?? fallback.delta.trust_review_changed,
+        trust_quality_status_changed: payload?.delta?.trust_quality_status_changed ?? fallback.delta.trust_quality_status_changed,
+        trust_owner_changed: payload?.delta?.trust_owner_changed ?? fallback.delta.trust_owner_changed,
+        trust_severity_changed: payload?.delta?.trust_severity_changed ?? fallback.delta.trust_severity_changed,
       },
     };
   } catch {
@@ -2552,6 +2599,12 @@ function renderComparison(payload, { source = state.compareSource, error = '' } 
 
   const rows = [
     ['Status', left.status || 'unknown', right.status || 'unknown', Boolean(delta.status_changed || (left.status !== right.status))],
+    ['Trust status', left.trust?.status || '-', right.trust?.status || '-', Boolean(delta.trust_status_changed || ((left.trust?.status || '') !== (right.trust?.status || '')))],
+    ['Trust score', formatComparisonTrustScore(left.trust?.score), formatComparisonTrustScore(right.trust?.score), Math.abs(Number(delta.trust_score ?? 0)) > 0.001],
+    ['Human review', formatComparisonReviewState(left.trust?.requires_human_review), formatComparisonReviewState(right.trust?.requires_human_review), Boolean(delta.trust_review_changed || (left.trust?.requires_human_review !== right.trust?.requires_human_review))],
+    ['Quality signal', left.trust?.latest_quality_status || '-', right.trust?.latest_quality_status || '-', Boolean(delta.trust_quality_status_changed || ((left.trust?.latest_quality_status || '') !== (right.trust?.latest_quality_status || '')))],
+    ['Incident owner', left.trust?.incident_owner_team || '-', right.trust?.incident_owner_team || '-', Boolean(delta.trust_owner_changed || ((left.trust?.incident_owner_team || '') !== (right.trust?.incident_owner_team || '')))],
+    ['Incident severity', left.trust?.incident_severity || '-', right.trust?.incident_severity || '-', Boolean(delta.trust_severity_changed || ((left.trust?.incident_severity || '') !== (right.trust?.incident_severity || '')))],
     ['Profile', left.profile || '-', right.profile || '-', (left.profile || '') !== (right.profile || '')],
     ['Model', left.model || '-', right.model || '-', (left.model || '') !== (right.model || '')],
     ['Task attempts', left.totals?.total_task_attempts ?? 0, right.totals?.total_task_attempts ?? 0, (delta.total_task_attempts || 0) !== 0],
@@ -2600,6 +2653,17 @@ function renderComparison(payload, { source = state.compareSource, error = '' } 
   if ((left.status || 'unknown') !== (right.status || 'unknown')) {
     diffItems.push(`<li><strong>Status:</strong> ${escapeHtml(left.status || 'unknown')} → ${escapeHtml(right.status || 'unknown')}</li>`);
   }
+  if (Boolean(delta.trust_status_changed || ((left.trust?.status || '') !== (right.trust?.status || '')))) {
+    diffItems.push(`<li><strong>Trust:</strong> ${escapeHtml(left.trust?.status || 'unknown')} (${escapeHtml(formatComparisonTrustScore(left.trust?.score))}) → ${escapeHtml(right.trust?.status || 'unknown')} (${escapeHtml(formatComparisonTrustScore(right.trust?.score))})</li>`);
+  } else if (Math.abs(Number(delta.trust_score ?? 0)) > 0.001) {
+    diffItems.push(`<li><strong>Trust score:</strong> ${escapeHtml(formatComparisonTrustScore(left.trust?.score))} → ${escapeHtml(formatComparisonTrustScore(right.trust?.score))}</li>`);
+  }
+  if (Boolean(delta.trust_review_changed || (left.trust?.requires_human_review !== right.trust?.requires_human_review))) {
+    diffItems.push(`<li><strong>Human review:</strong> ${escapeHtml(formatComparisonReviewState(left.trust?.requires_human_review))} → ${escapeHtml(formatComparisonReviewState(right.trust?.requires_human_review))}</li>`);
+  }
+  if (Boolean(delta.trust_owner_changed || ((left.trust?.incident_owner_team || '') !== (right.trust?.incident_owner_team || '')))) {
+    diffItems.push(`<li><strong>Incident owner:</strong> ${escapeHtml(left.trust?.incident_owner_team || '-')} → ${escapeHtml(right.trust?.incident_owner_team || '-')}</li>`);
+  }
   if (blockerLeft.length || blockerRight.length) {
     diffItems.push(`<li><strong>Blockers:</strong> only baseline [${escapeHtml(blockerLeft.join(', ') || 'none')}], only candidate [${escapeHtml(blockerRight.join(', ') || 'none')}]</li>`);
   }
@@ -2628,8 +2692,10 @@ async function refreshComparison({ silent = false } = {}) {
   }
 
   if (state.useMock) {
-    const leftDetail = mock.details[state.compareLeftId] || {};
-    const rightDetail = mock.details[state.compareRightId] || {};
+    const leftBase = mock.details[state.compareLeftId] || {};
+    const rightBase = mock.details[state.compareRightId] || {};
+    const leftDetail = { ...leftBase, ...buildMockDetailTrust(leftBase) };
+    const rightDetail = { ...rightBase, ...buildMockDetailTrust(rightBase) };
     renderComparison(buildComparisonFromDetails(leftDetail, rightDetail), { source: 'fallback' });
     return;
   }

@@ -133,6 +133,9 @@ def normalize_run_comparison(left_detail: dict[str, Any] | None, right_detail: d
         if left["totals"].get(field) != right["totals"].get(field)
     ]
 
+    left_trust = left["trust"]
+    right_trust = right["trust"]
+
     return {
         "schema_version": "shw-012-v1",
         "left": left,
@@ -156,6 +159,14 @@ def normalize_run_comparison(left_detail: dict[str, Any] | None, right_detail: d
                     "soft_fail": right["validation"]["soft_fail"] - left["validation"]["soft_fail"],
                     "skipped": right["validation"]["skipped"] - left["validation"]["skipped"],
                 },
+            },
+            "trust": {
+                "status_changed": left_trust["status"] != right_trust["status"],
+                "score_delta": right_trust["score"] - left_trust["score"],
+                "review_changed": left_trust["requires_human_review"] != right_trust["requires_human_review"],
+                "quality_status_changed": left_trust["latest_quality_status"] != right_trust["latest_quality_status"],
+                "owner_changed": left_trust["incident_owner_team"] != right_trust["incident_owner_team"],
+                "severity_changed": left_trust["incident_severity"] != right_trust["incident_severity"],
             },
         },
     }
@@ -206,6 +217,7 @@ def normalize_run_comparison_summary(run_detail: dict[str, Any] | None) -> dict[
             "total_duration_ms": timeline_duration,
         },
         "blockers": [str(b) for b in blockers],
+        "trust": _normalize_trust_summary(detail),
     }
 
 
@@ -263,6 +275,22 @@ def _normalize_comparison_side(detail: dict[str, Any] | None) -> dict[str, Any]:
             "skipped": _to_int(validation_summary.get("skipped"), default=0),
         },
         "validator_outcomes": outcomes,
+        "trust": _normalize_trust_summary(data),
+    }
+
+
+def _normalize_trust_summary(detail: dict[str, Any]) -> dict[str, Any]:
+    trust_summary = detail.get("trust_summary")
+    trust = trust_summary if isinstance(trust_summary, dict) else {}
+
+    return {
+        "status": _coerce_non_empty(trust.get("trust_status"), trust.get("status")),
+        "score": _to_float(trust.get("trust_score"), default=0.0),
+        "requires_human_review": _to_optional_bool(trust.get("requires_human_review")),
+        "latest_quality_status": _coerce_non_empty(trust.get("latest_quality_status")),
+        "latest_quality_score": _to_float(trust.get("latest_quality_score"), default=0.0),
+        "incident_owner_team": _coerce_non_empty(trust.get("incident_owner_team")),
+        "incident_severity": _coerce_non_empty(trust.get("incident_severity")),
     }
 
 
@@ -633,6 +661,27 @@ def _pick_int(source: dict[str, Any], *keys: str) -> int:
         if key in source and source.get(key) is not None:
             return _to_int(source.get(key), default=0)
     return 0
+
+
+def _to_float(value: Any, *, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return None
 
 
 def _coerce_non_empty(*values: Any) -> str:
