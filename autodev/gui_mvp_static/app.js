@@ -24,6 +24,18 @@ const state = {
   compareSelectedSnapshotId: '',
   compareSnapshotFilter: '',
   compareSnapshotSort: 'newest',
+  compareSnapshotArchiveFilter: 'active',
+  compareSnapshotPinnedFilter: 'all',
+  compareSnapshotBaselineFilter: '',
+  compareSnapshotCandidateFilter: '',
+  compareSnapshotTagFilter: '',
+  compareSnapshotDateFrom: '',
+  compareSnapshotDateTo: '',
+  compareSnapshotPage: 1,
+  compareSnapshotPageSize: 20,
+  compareSnapshotTotal: 0,
+  compareSnapshotTotalPages: 1,
+  compareSnapshotSelection: [],
   guiContext: null,
   healthSnapshot: null,
   scorecardPayload: null,
@@ -1446,6 +1458,28 @@ async function postJson(url, payload) {
   return body;
 }
 
+async function patchJson(url, payload) {
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ApiError(friendlyApiError(body, `${url} -> ${res.status}`), body);
+  }
+  return body;
+}
+
+async function deleteJson(url) {
+  const res = await fetch(url, { method: 'DELETE' });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ApiError(friendlyApiError(body, `${url} -> ${res.status}`), body);
+  }
+  return body;
+}
+
 function normalizeValidationStatus(status, ok) {
   const raw = String(status || '').trim().toLowerCase();
   if (raw) return VALIDATION_STATUS_ALIASES[raw] || raw;
@@ -2846,13 +2880,97 @@ function compareSnapshotDownloadName(snapshot, format = 'json') {
   return `compare-trust-snapshot-${left}-vs-${right}.${suffix}`;
 }
 
+function normalizeCompareSnapshotPageSize(raw) {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return 20;
+  if (parsed <= 10) return 10;
+  if (parsed <= 20) return 20;
+  if (parsed <= 50) return 50;
+  return 100;
+}
+
+function getCompareSnapshotSelection() {
+  const seen = new Set();
+  const out = [];
+  (Array.isArray(state.compareSnapshotSelection) ? state.compareSnapshotSelection : []).forEach((value) => {
+    const normalized = String(value || '').trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    out.push(normalized);
+  });
+  return out;
+}
+
+function setCompareSnapshotSelection(ids) {
+  state.compareSnapshotSelection = Array.isArray(ids)
+    ? ids.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+  renderCompareSnapshotOptions();
+}
+
+function toggleCompareSnapshotSelection(snapshotId, checked) {
+  const normalized = String(snapshotId || '').trim();
+  if (!normalized) return;
+  const current = new Set(getCompareSnapshotSelection());
+  if (checked) {
+    current.add(normalized);
+  } else {
+    current.delete(normalized);
+  }
+  setCompareSnapshotSelection([...current]);
+}
+
+function buildCompareSnapshotListQuery() {
+  const params = new URLSearchParams();
+  const query = String(state.compareSnapshotFilter || '').trim();
+  const sort = String(state.compareSnapshotSort || 'newest').trim();
+  const archive = String(state.compareSnapshotArchiveFilter || 'active').trim();
+  const pinned = String(state.compareSnapshotPinnedFilter || 'all').trim();
+  const baseline = String(state.compareSnapshotBaselineFilter || '').trim();
+  const candidate = String(state.compareSnapshotCandidateFilter || '').trim();
+  const tag = String(state.compareSnapshotTagFilter || '').trim();
+  const dateFrom = String(state.compareSnapshotDateFrom || '').trim();
+  const dateTo = String(state.compareSnapshotDateTo || '').trim();
+  if (query) params.set('query', query);
+  if (sort) params.set('sort', sort);
+  if (archive) params.set('archived', archive);
+  if (pinned) params.set('pinned', pinned);
+  if (baseline) params.set('baseline_run_id', baseline);
+  if (candidate) params.set('candidate_run_id', candidate);
+  if (tag) params.set('tag', tag);
+  if (dateFrom) params.set('date_from', dateFrom);
+  if (dateTo) params.set('date_to', dateTo);
+  params.set('page', String(Math.max(1, Number(state.compareSnapshotPage) || 1)));
+  params.set('page_size', String(normalizeCompareSnapshotPageSize(state.compareSnapshotPageSize)));
+  return params.toString();
+}
+
 function getVisibleCompareSnapshots() {
+  const snapshots = Array.isArray(state.compareSavedSnapshots) ? [...state.compareSavedSnapshots] : [];
+  if (!state.useMock) {
+    return snapshots;
+  }
+
   const filter = String(state.compareSnapshotFilter || '').trim().toLowerCase();
   const sort = String(state.compareSnapshotSort || 'newest').trim().toLowerCase();
-  const snapshots = Array.isArray(state.compareSavedSnapshots) ? [...state.compareSavedSnapshots] : [];
+  const archiveFilter = String(state.compareSnapshotArchiveFilter || 'active').trim().toLowerCase();
+  const pinnedFilter = String(state.compareSnapshotPinnedFilter || 'all').trim().toLowerCase();
+  const baselineFilter = String(state.compareSnapshotBaselineFilter || '').trim().toLowerCase();
+  const candidateFilter = String(state.compareSnapshotCandidateFilter || '').trim().toLowerCase();
+  const tagFilter = String(state.compareSnapshotTagFilter || '').trim().toLowerCase();
 
-  const filtered = filter
-    ? snapshots.filter((row) => {
+  const filtered = snapshots.filter((row) => {
+    if (archiveFilter === 'active' && row?.archived) return false;
+    if (archiveFilter === 'archived' && !row?.archived) return false;
+    if (pinnedFilter === 'pinned' && !row?.pinned) return false;
+    if (pinnedFilter === 'unpinned' && row?.pinned) return false;
+    if (baselineFilter && !String(row?.left_run_id || '').toLowerCase().includes(baselineFilter)) return false;
+    if (candidateFilter && !String(row?.right_run_id || '').toLowerCase().includes(candidateFilter)) return false;
+    if (tagFilter) {
+      const tags = Array.isArray(row?.tags) ? row.tags.join(' ').toLowerCase() : '';
+      if (!tags.includes(tagFilter)) return false;
+    }
+    if (filter) {
         const haystack = [
           row?.display_name,
           row?.snapshot_id,
@@ -2860,11 +2978,14 @@ function getVisibleCompareSnapshots() {
           row?.right_run_id,
           row?.persisted_at,
           row?.source,
+          row?.archived ? 'archived' : 'active',
+          row?.pinned ? 'pinned' : 'unpinned',
           ...(Array.isArray(row?.tags) ? row.tags : []),
         ].map((v) => String(v || '').toLowerCase()).join(' ');
-        return haystack.includes(filter);
-      })
-    : snapshots;
+        if (!haystack.includes(filter)) return false;
+    }
+    return true;
+  });
 
   filtered.sort((a, b) => {
     const pinDelta = Number(Boolean(b?.pinned)) - Number(Boolean(a?.pinned));
@@ -2884,7 +3005,16 @@ function getVisibleCompareSnapshots() {
     return String(b?.persisted_at || '').localeCompare(String(a?.persisted_at || ''));
   });
 
-  return filtered;
+  const pageSize = normalizeCompareSnapshotPageSize(state.compareSnapshotPageSize);
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
+  const currentPage = Math.min(Math.max(Number(state.compareSnapshotPage) || 1, 1), totalPages);
+  state.compareSnapshotPage = currentPage;
+  state.compareSnapshotPageSize = pageSize;
+  state.compareSnapshotTotal = total;
+  state.compareSnapshotTotalPages = totalPages;
+  const start = (currentPage - 1) * pageSize;
+  return filtered.slice(start, start + pageSize);
 }
 
 function renderCompareSnapshotOptions() {
@@ -2894,6 +3024,19 @@ function renderCompareSnapshotOptions() {
   const emptyNode = el('compareSavedEmpty');
   const filterInput = el('compareSavedFilterInput');
   const sortSelect = el('compareSavedSortSelect');
+  const archiveSelect = el('compareSavedArchiveFilterSelect');
+  const pinnedSelect = el('compareSavedPinnedFilterSelect');
+  const baselineInput = el('compareSavedBaselineInput');
+  const candidateInput = el('compareSavedCandidateInput');
+  const tagInput = el('compareSavedTagInput');
+  const dateFromInput = el('compareSavedDateFromInput');
+  const dateToInput = el('compareSavedDateToInput');
+  const pageSizeSelect = el('compareSavedPageSizeSelect');
+  const pagePrevBtn = el('compareSavedPagePrevBtn');
+  const pageNextBtn = el('compareSavedPageNextBtn');
+  const pageLabel = el('compareSavedPageLabel');
+  const summary = el('compareSavedSummary');
+  const selectionLabel = el('compareSavedSelectionCount');
   if (!select) return;
 
   if (filterInput && filterInput.value !== state.compareSnapshotFilter) {
@@ -2902,9 +3045,34 @@ function renderCompareSnapshotOptions() {
   if (sortSelect && sortSelect.value !== state.compareSnapshotSort) {
     sortSelect.value = state.compareSnapshotSort;
   }
+  if (archiveSelect && archiveSelect.value !== state.compareSnapshotArchiveFilter) {
+    archiveSelect.value = state.compareSnapshotArchiveFilter;
+  }
+  if (pinnedSelect && pinnedSelect.value !== state.compareSnapshotPinnedFilter) {
+    pinnedSelect.value = state.compareSnapshotPinnedFilter;
+  }
+  if (baselineInput && baselineInput.value !== state.compareSnapshotBaselineFilter) {
+    baselineInput.value = state.compareSnapshotBaselineFilter;
+  }
+  if (candidateInput && candidateInput.value !== state.compareSnapshotCandidateFilter) {
+    candidateInput.value = state.compareSnapshotCandidateFilter;
+  }
+  if (tagInput && tagInput.value !== state.compareSnapshotTagFilter) {
+    tagInput.value = state.compareSnapshotTagFilter;
+  }
+  if (dateFromInput && dateFromInput.value !== state.compareSnapshotDateFrom) {
+    dateFromInput.value = state.compareSnapshotDateFrom;
+  }
+  if (dateToInput && dateToInput.value !== state.compareSnapshotDateTo) {
+    dateToInput.value = state.compareSnapshotDateTo;
+  }
+  if (pageSizeSelect && pageSizeSelect.value !== String(state.compareSnapshotPageSize || 20)) {
+    pageSizeSelect.value = String(state.compareSnapshotPageSize || 20);
+  }
 
   const snapshots = getVisibleCompareSnapshots();
   const current = String(state.compareSelectedSnapshotId || '').trim();
+  const selectedIds = new Set(getCompareSnapshotSelection());
   select.innerHTML = '<option value="">Saved snapshots</option>';
 
   snapshots.forEach((row) => {
@@ -2925,13 +3093,32 @@ function renderCompareSnapshotOptions() {
   }
 
   if (openBtn) openBtn.disabled = !state.compareSelectedSnapshotId;
+  if (summary) {
+    summary.textContent = `${state.compareSnapshotTotal || snapshots.length} saved snapshot${(state.compareSnapshotTotal || snapshots.length) === 1 ? '' : 's'} • page ${state.compareSnapshotPage}/${state.compareSnapshotTotalPages}`;
+  }
+  if (selectionLabel) {
+    const count = selectedIds.size;
+    selectionLabel.textContent = count ? `${count} selected` : 'No snapshots selected';
+  }
+  if (pageLabel) {
+    pageLabel.textContent = `Page ${state.compareSnapshotPage}/${state.compareSnapshotTotalPages}`;
+  }
+  if (pagePrevBtn) pagePrevBtn.disabled = state.compareSnapshotPage <= 1;
+  if (pageNextBtn) pageNextBtn.disabled = state.compareSnapshotPage >= state.compareSnapshotTotalPages;
 
   if (panel && emptyNode) {
     panel.innerHTML = '';
     if (!snapshots.length) {
       panel.classList.add('hidden');
       emptyNode.classList.remove('hidden');
-      emptyNode.textContent = state.compareSnapshotFilter
+      emptyNode.textContent = [
+        state.compareSnapshotFilter,
+        state.compareSnapshotBaselineFilter,
+        state.compareSnapshotCandidateFilter,
+        state.compareSnapshotTagFilter,
+        state.compareSnapshotArchiveFilter !== 'active',
+        state.compareSnapshotPinnedFilter !== 'all',
+      ].some(Boolean)
         ? 'No saved compare snapshots match the current filter.'
         : 'No saved compare snapshots yet.';
       return;
@@ -2941,13 +3128,24 @@ function renderCompareSnapshotOptions() {
       const article = document.createElement('article');
       const snapshotId = String(row?.snapshot_id || '');
       const tags = Array.isArray(row?.tags) ? row.tags : [];
-      article.className = `compare-saved-card ${snapshotId === state.compareSelectedSnapshotId ? 'is-selected' : ''}`.trim();
+      const badges = [];
+      if (row?.archived) badges.push('Archived');
+      if (!row?.integrity_ok) badges.push(`Integrity mismatch (${Array.isArray(row?.integrity_mismatches) ? row.integrity_mismatches.length : 0})`);
+      if (Number(row?.duplicate_count || 0) > 1) {
+        badges.push(row?.duplicate_of ? `Duplicate of ${row.duplicate_of}` : `Duplicate group ×${row.duplicate_count}`);
+      }
+      article.className = `compare-saved-card ${snapshotId === state.compareSelectedSnapshotId ? 'is-selected' : ''} ${row?.archived ? 'is-archived' : ''}`.trim();
       article.innerHTML = `
         <div class="compare-saved-header">
           <div>
+            <label class="compare-saved-select">
+              <input type="checkbox" data-compare-snapshot-select="${escapeHtml(snapshotId)}" ${selectedIds.has(snapshotId) ? 'checked' : ''} />
+              Select
+            </label>
             <div class="compare-saved-title">${row?.pinned ? 'PINNED • ' : ''}${escapeHtml(String(row?.display_name || `${row?.left_run_id || 'baseline'} vs ${row?.right_run_id || 'candidate'}`))}</div>
             <div class="compare-saved-meta">${escapeHtml(String(row?.left_run_id || 'baseline'))} vs ${escapeHtml(String(row?.right_run_id || 'candidate'))} • ${escapeHtml(String(row?.persisted_at || ''))}</div>
             <div class="compare-saved-tags">${tags.length ? tags.map((tag) => `<span class="compare-saved-tag">${escapeHtml(String(tag))}</span>`).join('') : '<span class="muted">No tags</span>'}</div>
+            <div class="compare-saved-flags">${badges.length ? badges.map((flag) => `<span class="compare-saved-flag">${escapeHtml(String(flag))}</span>`).join('') : '<span class="muted">No integrity or archive flags.</span>'}</div>
           </div>
           <div class="muted">${escapeHtml(snapshotId)}</div>
         </div>
@@ -2958,6 +3156,7 @@ function renderCompareSnapshotOptions() {
           <button type="button" data-compare-snapshot-pin="${escapeHtml(snapshotId)}">${row?.pinned ? 'Unpin' : 'Pin'}</button>
           <button type="button" data-compare-snapshot-tags-save="${escapeHtml(snapshotId)}">Save tags</button>
           <button type="button" data-compare-snapshot-rename="${escapeHtml(snapshotId)}">Rename</button>
+          <button type="button" data-compare-snapshot-archive="${escapeHtml(snapshotId)}">${row?.archived ? 'Restore' : 'Archive'}</button>
           <button type="button" data-compare-snapshot-delete="${escapeHtml(snapshotId)}">Delete</button>
         </div>
       `;
@@ -2979,12 +3178,19 @@ async function loadCompareSnapshots({ preserveSelection = true, silent = true } 
 
   const previous = preserveSelection ? String(state.compareSelectedSnapshotId || '') : '';
   try {
-    const payload = await fetchJson('/api/runs/compare/snapshots');
+    const query = buildCompareSnapshotListQuery();
+    const payload = await fetchJson(`/api/runs/compare/snapshots${query ? `?${query}` : ''}`);
     state.compareSavedSnapshots = Array.isArray(payload?.snapshots) ? payload.snapshots : [];
+    state.compareSnapshotTotal = Number(payload?.meta?.total || state.compareSavedSnapshots.length || 0);
+    state.compareSnapshotPage = Number(payload?.meta?.page || state.compareSnapshotPage || 1);
+    state.compareSnapshotPageSize = normalizeCompareSnapshotPageSize(payload?.meta?.page_size || state.compareSnapshotPageSize);
+    state.compareSnapshotTotalPages = Number(payload?.meta?.total_pages || 1);
     state.compareSelectedSnapshotId = previous;
     renderCompareSnapshotOptions();
   } catch (err) {
     state.compareSavedSnapshots = [];
+    state.compareSnapshotTotal = 0;
+    state.compareSnapshotTotalPages = 1;
     if (!preserveSelection) state.compareSelectedSnapshotId = '';
     renderCompareSnapshotOptions();
     if (!silent) {
@@ -3011,7 +3217,7 @@ async function saveCompareSnapshot() {
 async function updateCompareSnapshotMetadata(snapshotId, updates) {
   const normalized = String(snapshotId || '').trim();
   if (!normalized) return;
-  const body = await postJson(`/api/runs/compare/snapshots/${encodeURIComponent(normalized)}/metadata`, updates);
+  const body = await patchJson(`/api/runs/compare/snapshots/${encodeURIComponent(normalized)}`, updates);
   const snapshotMeta = body?.snapshot || {};
   state.compareSelectedSnapshotId = String(snapshotMeta.snapshot_id || normalized);
   await loadCompareSnapshots({ preserveSelection: true, silent: true });
@@ -3039,16 +3245,50 @@ async function toggleCompareSnapshotPin(snapshotId) {
   renderCompareSnapshotStatus(`${nextPinned ? 'Pinned' : 'Unpinned'} snapshot ${state.compareSelectedSnapshotId}.`);
 }
 
+async function archiveCompareSnapshot(snapshotId, archived) {
+  const normalized = String(snapshotId || '').trim();
+  if (!normalized) return;
+  await updateCompareSnapshotMetadata(normalized, { archived: Boolean(archived) });
+  renderCompareSnapshotStatus(`${archived ? 'Archived' : 'Restored'} snapshot ${normalized}.`);
+}
+
 async function deleteCompareSnapshot(snapshotId) {
   const normalized = String(snapshotId || '').trim();
   if (!normalized) return;
-  await postJson(`/api/runs/compare/snapshots/${encodeURIComponent(normalized)}/delete`, {});
+  await deleteJson(`/api/runs/compare/snapshots/${encodeURIComponent(normalized)}`);
   if (state.compareSelectedSnapshotId === normalized) {
     state.compareSelectedSnapshotId = '';
   }
+  setCompareSnapshotSelection(getCompareSnapshotSelection().filter((value) => value !== normalized));
   await loadCompareSnapshots({ preserveSelection: true, silent: true });
   syncCompareSnapshotControls(state.comparePayload);
   renderCompareSnapshotStatus(`Deleted snapshot ${normalized}.`);
+}
+
+async function bulkUpdateCompareSnapshots(action, updates = {}) {
+  const snapshotIds = getCompareSnapshotSelection();
+  if (!snapshotIds.length) {
+    renderCompareSnapshotStatus('Select at least one saved snapshot first.');
+    return;
+  }
+  const body = await postJson('/api/runs/compare/snapshots/bulk', {
+    action,
+    snapshot_ids: snapshotIds,
+    ...updates,
+  });
+  if (action === 'delete') {
+    const deleted = Array.isArray(body?.deleted_snapshot_ids) ? body.deleted_snapshot_ids.map((value) => String(value || '')) : [];
+    if (deleted.includes(state.compareSelectedSnapshotId)) {
+      state.compareSelectedSnapshotId = '';
+    }
+    setCompareSnapshotSelection(getCompareSnapshotSelection().filter((value) => !deleted.includes(value)));
+  }
+  await loadCompareSnapshots({ preserveSelection: true, silent: true });
+  const summary = body?.summary || {};
+  const updated = Number(summary?.updated || 0);
+  const deleted = Number(summary?.deleted || 0);
+  const failed = Number(summary?.failed || 0);
+  renderCompareSnapshotStatus(`Bulk ${action} completed: ${updated} updated, ${deleted} deleted, ${failed} failed.`);
 }
 
 async function openSavedCompareSnapshot(snapshotId) {
@@ -3066,7 +3306,7 @@ async function openSavedCompareSnapshot(snapshotId) {
   renderCompareSnapshotOptions();
   refreshCompareRunOptions();
   renderComparison(comparePayload, { source: `saved:${normalized}` });
-  renderCompareSnapshotStatus(`Opened saved snapshot ${normalized}.`);
+  renderCompareSnapshotStatus(`Opened saved snapshot ${normalized} in read-only compare mode.`);
 }
 
 function flattenTrustPacketDiffObject(value, prefix = '', rows = []) {
@@ -4623,8 +4863,27 @@ function initCompareControls() {
   const savedSelect = el('compareSavedSnapshotSelect');
   const savedFilterInput = el('compareSavedFilterInput');
   const savedSortSelect = el('compareSavedSortSelect');
+  const savedArchiveSelect = el('compareSavedArchiveFilterSelect');
+  const savedPinnedSelect = el('compareSavedPinnedFilterSelect');
+  const savedBaselineInput = el('compareSavedBaselineInput');
+  const savedCandidateInput = el('compareSavedCandidateInput');
+  const savedTagInput = el('compareSavedTagInput');
+  const savedDateFromInput = el('compareSavedDateFromInput');
+  const savedDateToInput = el('compareSavedDateToInput');
+  const savedPageSizeSelect = el('compareSavedPageSizeSelect');
   const openSavedBtn = el('compareOpenSnapshotBtn');
   const refreshSavedBtn = el('compareRefreshSnapshotsBtn');
+  const selectVisibleBtn = el('compareSavedSelectVisibleBtn');
+  const clearSelectionBtn = el('compareSavedClearSelectionBtn');
+  const bulkPinBtn = el('compareSavedBulkPinBtn');
+  const bulkUnpinBtn = el('compareSavedBulkUnpinBtn');
+  const bulkArchiveBtn = el('compareSavedBulkArchiveBtn');
+  const bulkRestoreBtn = el('compareSavedBulkRestoreBtn');
+  const bulkTagsInput = el('compareSavedBulkTagsInput');
+  const bulkTagsBtn = el('compareSavedBulkTagsBtn');
+  const bulkDeleteBtn = el('compareSavedBulkDeleteBtn');
+  const savedPagePrevBtn = el('compareSavedPagePrevBtn');
+  const savedPageNextBtn = el('compareSavedPageNextBtn');
   const savedPanel = el('compareSavedPanel');
   const diffs = el('compareDiffs');
   const trustPanel = el('compareTrustPanel');
@@ -4721,18 +4980,84 @@ function initCompareControls() {
   }
 
   if (savedFilterInput) {
-    savedFilterInput.addEventListener('input', () => {
+    savedFilterInput.addEventListener('input', async () => {
       state.compareSnapshotFilter = savedFilterInput.value || '';
-      renderCompareSnapshotOptions();
+      state.compareSnapshotPage = 1;
+      await loadCompareSnapshots({ preserveSelection: true, silent: true });
       syncCompareSnapshotControls(state.comparePayload);
     });
   }
 
   if (savedSortSelect) {
-    savedSortSelect.addEventListener('change', () => {
+    savedSortSelect.addEventListener('change', async () => {
       state.compareSnapshotSort = savedSortSelect.value || 'newest';
-      renderCompareSnapshotOptions();
+      state.compareSnapshotPage = 1;
+      await loadCompareSnapshots({ preserveSelection: true, silent: true });
       syncCompareSnapshotControls(state.comparePayload);
+    });
+  }
+
+  if (savedArchiveSelect) {
+    savedArchiveSelect.addEventListener('change', async () => {
+      state.compareSnapshotArchiveFilter = savedArchiveSelect.value || 'active';
+      state.compareSnapshotPage = 1;
+      await loadCompareSnapshots({ preserveSelection: true, silent: true });
+    });
+  }
+
+  if (savedPinnedSelect) {
+    savedPinnedSelect.addEventListener('change', async () => {
+      state.compareSnapshotPinnedFilter = savedPinnedSelect.value || 'all';
+      state.compareSnapshotPage = 1;
+      await loadCompareSnapshots({ preserveSelection: true, silent: true });
+    });
+  }
+
+  if (savedBaselineInput) {
+    savedBaselineInput.addEventListener('change', async () => {
+      state.compareSnapshotBaselineFilter = savedBaselineInput.value || '';
+      state.compareSnapshotPage = 1;
+      await loadCompareSnapshots({ preserveSelection: true, silent: true });
+    });
+  }
+
+  if (savedCandidateInput) {
+    savedCandidateInput.addEventListener('change', async () => {
+      state.compareSnapshotCandidateFilter = savedCandidateInput.value || '';
+      state.compareSnapshotPage = 1;
+      await loadCompareSnapshots({ preserveSelection: true, silent: true });
+    });
+  }
+
+  if (savedTagInput) {
+    savedTagInput.addEventListener('change', async () => {
+      state.compareSnapshotTagFilter = savedTagInput.value || '';
+      state.compareSnapshotPage = 1;
+      await loadCompareSnapshots({ preserveSelection: true, silent: true });
+    });
+  }
+
+  if (savedDateFromInput) {
+    savedDateFromInput.addEventListener('change', async () => {
+      state.compareSnapshotDateFrom = savedDateFromInput.value || '';
+      state.compareSnapshotPage = 1;
+      await loadCompareSnapshots({ preserveSelection: true, silent: true });
+    });
+  }
+
+  if (savedDateToInput) {
+    savedDateToInput.addEventListener('change', async () => {
+      state.compareSnapshotDateTo = savedDateToInput.value || '';
+      state.compareSnapshotPage = 1;
+      await loadCompareSnapshots({ preserveSelection: true, silent: true });
+    });
+  }
+
+  if (savedPageSizeSelect) {
+    savedPageSizeSelect.addEventListener('change', async () => {
+      state.compareSnapshotPageSize = normalizeCompareSnapshotPageSize(savedPageSizeSelect.value);
+      state.compareSnapshotPage = 1;
+      await loadCompareSnapshots({ preserveSelection: true, silent: true });
     });
   }
 
@@ -4754,7 +5079,116 @@ function initCompareControls() {
     });
   }
 
+  if (savedPagePrevBtn) {
+    savedPagePrevBtn.addEventListener('click', async () => {
+      if (state.compareSnapshotPage <= 1) return;
+      state.compareSnapshotPage -= 1;
+      await loadCompareSnapshots({ preserveSelection: true, silent: true });
+    });
+  }
+
+  if (savedPageNextBtn) {
+    savedPageNextBtn.addEventListener('click', async () => {
+      if (state.compareSnapshotPage >= state.compareSnapshotTotalPages) return;
+      state.compareSnapshotPage += 1;
+      await loadCompareSnapshots({ preserveSelection: true, silent: true });
+    });
+  }
+
+  if (selectVisibleBtn) {
+    selectVisibleBtn.addEventListener('click', () => {
+      const next = new Set(getCompareSnapshotSelection());
+      getVisibleCompareSnapshots().forEach((row) => {
+        const snapshotId = String(row?.snapshot_id || '').trim();
+        if (snapshotId) next.add(snapshotId);
+      });
+      setCompareSnapshotSelection([...next]);
+      renderCompareSnapshotStatus(`Selected ${next.size} snapshot${next.size === 1 ? '' : 's'}.`);
+    });
+  }
+
+  if (clearSelectionBtn) {
+    clearSelectionBtn.addEventListener('click', () => {
+      setCompareSnapshotSelection([]);
+      renderCompareSnapshotStatus('Cleared saved snapshot selection.');
+    });
+  }
+
+  if (bulkPinBtn) {
+    bulkPinBtn.addEventListener('click', async () => {
+      try {
+        await bulkUpdateCompareSnapshots('metadata', { pinned: true });
+      } catch (err) {
+        renderCompareSnapshotStatus(`Bulk pin failed: ${err.message || 'request failed'}`);
+      }
+    });
+  }
+
+  if (bulkUnpinBtn) {
+    bulkUnpinBtn.addEventListener('click', async () => {
+      try {
+        await bulkUpdateCompareSnapshots('metadata', { pinned: false });
+      } catch (err) {
+        renderCompareSnapshotStatus(`Bulk unpin failed: ${err.message || 'request failed'}`);
+      }
+    });
+  }
+
+  if (bulkArchiveBtn) {
+    bulkArchiveBtn.addEventListener('click', async () => {
+      try {
+        await bulkUpdateCompareSnapshots('metadata', { archived: true });
+      } catch (err) {
+        renderCompareSnapshotStatus(`Bulk archive failed: ${err.message || 'request failed'}`);
+      }
+    });
+  }
+
+  if (bulkRestoreBtn) {
+    bulkRestoreBtn.addEventListener('click', async () => {
+      try {
+        await bulkUpdateCompareSnapshots('metadata', { archived: false });
+      } catch (err) {
+        renderCompareSnapshotStatus(`Bulk restore failed: ${err.message || 'request failed'}`);
+      }
+    });
+  }
+
+  if (bulkTagsBtn && bulkTagsInput) {
+    bulkTagsBtn.addEventListener('click', async () => {
+      try {
+        await bulkUpdateCompareSnapshots('metadata', { tags: bulkTagsInput.value || '' });
+      } catch (err) {
+        renderCompareSnapshotStatus(`Bulk tag update failed: ${err.message || 'request failed'}`);
+      }
+    });
+  }
+
+  if (bulkDeleteBtn) {
+    bulkDeleteBtn.addEventListener('click', async () => {
+      const count = getCompareSnapshotSelection().length;
+      if (!count) {
+        renderCompareSnapshotStatus('Select at least one saved snapshot first.');
+        return;
+      }
+      if (!window.confirm(`Delete ${count} saved compare snapshot${count === 1 ? '' : 's'} permanently?`)) return;
+      try {
+        await bulkUpdateCompareSnapshots('delete');
+      } catch (err) {
+        renderCompareSnapshotStatus(`Bulk delete failed: ${err.message || 'request failed'}`);
+      }
+    });
+  }
+
   if (savedPanel) {
+    savedPanel.addEventListener('change', (event) => {
+      const target = event.target instanceof HTMLInputElement ? event.target : null;
+      if (!target) return;
+      const selectId = target.getAttribute('data-compare-snapshot-select') || '';
+      if (!selectId) return;
+      toggleCompareSnapshotSelection(selectId, target.checked);
+    });
+
     savedPanel.addEventListener('click', async (event) => {
       const target = event.target instanceof Element ? event.target.closest('button') : null;
       if (!target) return;
@@ -4791,6 +5225,19 @@ function initCompareControls() {
         return;
       }
 
+      const archiveId = target.getAttribute('data-compare-snapshot-archive') || '';
+      if (archiveId) {
+        const current = (Array.isArray(state.compareSavedSnapshots) ? state.compareSavedSnapshots : [])
+          .find((row) => String(row?.snapshot_id || '') === archiveId);
+        const nextArchived = !Boolean(current?.archived);
+        try {
+          await archiveCompareSnapshot(archiveId, nextArchived);
+        } catch (err) {
+          renderCompareSnapshotStatus(`${nextArchived ? 'Archive' : 'Restore'} failed: ${err.message || 'request failed'}`);
+        }
+        return;
+      }
+
       const tagsId = target.getAttribute('data-compare-snapshot-tags-save') || '';
       if (tagsId) {
         const input = savedPanel.querySelector(`[data-compare-snapshot-tags="${CSS.escape(tagsId)}"]`);
@@ -4805,6 +5252,7 @@ function initCompareControls() {
 
       const deleteId = target.getAttribute('data-compare-snapshot-delete') || '';
       if (deleteId) {
+        if (!window.confirm(`Delete saved snapshot ${deleteId} permanently?`)) return;
         try {
           await deleteCompareSnapshot(deleteId);
         } catch (err) {

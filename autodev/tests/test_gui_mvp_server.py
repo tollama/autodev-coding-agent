@@ -583,6 +583,7 @@ def test_compare_snapshot_persist_list_and_reload(gui_server):
     snapshot_id = snapshot["snapshot_id"]
     assert snapshot["left_run_id"] == "run-a"
     assert snapshot["right_run_id"] == "run-b"
+    assert body["meta"]["audit_log_path"].endswith(".jsonl")
 
     snapshot_dir = runs_root / ".autodev" / "compare_snapshots"
     assert (snapshot_dir / f"{snapshot_id}.json").exists()
@@ -591,6 +592,7 @@ def test_compare_snapshot_persist_list_and_reload(gui_server):
     list_status, list_body = _get_json(f"{base_url}/api/runs/compare/snapshots")
     assert list_status == 200
     assert list_body["snapshots"][0]["snapshot_id"] == snapshot_id
+    assert list_body["meta"]["audit_log_path"].endswith(".jsonl")
 
     detail_status, detail_body = _get_json(f"{base_url}/api/runs/compare/snapshots/{snapshot_id}")
     assert detail_status == 200
@@ -598,6 +600,7 @@ def test_compare_snapshot_persist_list_and_reload(gui_server):
     assert detail_body["compare_snapshot"]["left"]["run_id"] == "run-a"
     assert detail_body["compare_payload"]["right"]["run_id"] == "run-b"
     assert "baseline_run: run-a" in detail_body["markdown"]
+    assert detail_body["meta"]["audit_log_path"].endswith(".jsonl")
 
     rename_status, rename_body = _post_json(
         f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/rename",
@@ -632,6 +635,154 @@ def test_compare_snapshot_persist_list_and_reload(gui_server):
     missing_status, missing_body = _get_json(f"{base_url}/api/runs/compare/snapshots/{snapshot_id}")
     assert missing_status == 404
     assert missing_body["error"]["code"] == "compare_snapshot_not_found"
+
+
+def test_compare_snapshot_server_side_filters_bulk_and_rest_endpoints(gui_server, tmp_path, monkeypatch):
+    base_url, _ = gui_server
+    audit_dir = tmp_path / "audit"
+    monkeypatch.setenv("AUTODEV_GUI_AUDIT_DIR", str(audit_dir))
+
+    def _payload(left_id: str, right_id: str, *, left_score: float, right_score: float, tags: list[str] | None = None):
+        return {
+            "display_name": f"{left_id} vs {right_id}",
+            "tags": tags or [],
+            "snapshot": {
+                "generated_at": "2026-03-15T00:00:00Z",
+                "source": "manual",
+                "left": {
+                    "run_id": left_id,
+                    "status": "failed",
+                    "trust": {"status": "low", "score": left_score, "requires_human_review": True},
+                    "trust_packet": {"trust_signals": {"overall": {"status": "low", "score": left_score}}},
+                },
+                "right": {
+                    "run_id": right_id,
+                    "status": "ok",
+                    "trust": {"status": "high", "score": right_score, "requires_human_review": False},
+                    "trust_packet": {"trust_signals": {"overall": {"status": "high", "score": right_score}}},
+                },
+                "highlights": [f"Trust: {left_score} -> {right_score}"],
+            },
+            "markdown": f"# Compare Trust Snapshot\n\n- baseline_run: {left_id}\n- candidate_run: {right_id}\n",
+            "compare_payload": {
+                "left": {
+                    "run_id": left_id,
+                    "status": "failed",
+                    "trust": {"status": "low", "score": left_score, "requires_human_review": True},
+                    "trust_packet": {"trust_signals": {"overall": {"status": "low", "score": left_score}}},
+                },
+                "right": {
+                    "run_id": right_id,
+                    "status": "ok",
+                    "trust": {"status": "high", "score": right_score, "requires_human_review": False},
+                    "trust_packet": {"trust_signals": {"overall": {"status": "high", "score": right_score}}},
+                },
+                "delta": {"trust_status_changed": True, "trust_score": round(right_score - left_score, 2)},
+            },
+        }
+
+    save_a_status, save_a_body = _post_json(
+        f"{base_url}/api/runs/compare/snapshots",
+        _payload("run-alpha", "run-beta", left_score=0.21, right_score=0.94, tags=["release"]),
+    )
+    save_b_status, save_b_body = _post_json(
+        f"{base_url}/api/runs/compare/snapshots",
+        _payload("run-alpha", "run-gamma", left_score=0.32, right_score=0.88, tags=["nightly"]),
+    )
+    assert save_a_status == 200
+    assert save_b_status == 200
+    first_id = save_a_body["snapshot"]["snapshot_id"]
+    second_id = save_b_body["snapshot"]["snapshot_id"]
+
+    patch_status, patch_body = _patch_json(
+        f"{base_url}/api/runs/compare/snapshots/{second_id}",
+        {"archived": True, "pinned": True, "tags": ["nightly", "archived"]},
+    )
+    assert patch_status == 200
+    assert patch_body["snapshot"]["archived"] is True
+    assert patch_body["snapshot"]["pinned"] is True
+    assert patch_body["meta"]["audit_log_path"].endswith(".jsonl")
+
+    filtered_status, filtered_body = _get_json(
+        f"{base_url}/api/runs/compare/snapshots?baseline_run_id=run-alpha&tag=release&pinned=all&archived=all&page=1&page_size=1"
+    )
+    assert filtered_status == 200
+    assert filtered_body["meta"]["total"] == 1
+    assert filtered_body["meta"]["page_size"] == 1
+    assert filtered_body["snapshots"][0]["snapshot_id"] == first_id
+
+    bulk_status, bulk_body = _post_json(
+        f"{base_url}/api/runs/compare/snapshots/bulk",
+        {"action": "metadata", "snapshot_ids": [first_id, second_id], "pinned": True, "tags": ["shared", "gate"]},
+    )
+    assert bulk_status == 200
+    assert bulk_body["summary"]["updated"] == 2
+    assert bulk_body["meta"]["audit_log_path"].endswith(".jsonl")
+
+    pinned_status, pinned_body = _get_json(
+        f"{base_url}/api/runs/compare/snapshots?pinned=pinned&tag=shared&archived=all&sort=name"
+    )
+    assert pinned_status == 200
+    assert {row["snapshot_id"] for row in pinned_body["snapshots"]} == {first_id, second_id}
+
+    delete_status, delete_body = _delete_json(f"{base_url}/api/runs/compare/snapshots/{first_id}")
+    assert delete_status == 200
+    assert delete_body["deleted"] is True
+    assert delete_body["meta"]["audit_log_path"].endswith(".jsonl")
+
+    logs = sorted(audit_dir.glob("gui-audit-*.jsonl"))
+    assert logs
+    actions = [json.loads(line)["action"] for line in logs[0].read_text(encoding="utf-8").splitlines()]
+    assert "compare_snapshot_save" in actions
+    assert "compare_snapshot_list" in actions
+    assert "compare_snapshot_metadata" in actions
+    assert "compare_snapshot_bulk" in actions
+    assert "compare_snapshot_delete" in actions
+
+
+def test_compare_snapshot_integrity_and_duplicate_detection(gui_server):
+    base_url, runs_root = gui_server
+
+    payload = {
+        "display_name": "Integrity test",
+        "snapshot": {
+            "generated_at": "2026-03-15T00:00:00Z",
+            "source": "manual",
+            "left": {"run_id": "run-integrity-a", "status": "failed"},
+            "right": {"run_id": "run-integrity-b", "status": "ok"},
+            "highlights": ["Trust drift"],
+        },
+        "markdown": "# Compare Trust Snapshot\n\n- baseline_run: run-integrity-a\n",
+        "compare_payload": {
+            "left": {"run_id": "run-integrity-a", "status": "failed"},
+            "right": {"run_id": "run-integrity-b", "status": "ok"},
+            "delta": {"trust_status_changed": True},
+        },
+    }
+
+    first_status, first_body = _post_json(f"{base_url}/api/runs/compare/snapshots", payload)
+    second_status, second_body = _post_json(f"{base_url}/api/runs/compare/snapshots", payload)
+    assert first_status == 200
+    assert second_status == 200
+    first_id = first_body["snapshot"]["snapshot_id"]
+    second_id = second_body["snapshot"]["snapshot_id"]
+
+    dup_status, dup_body = _get_json(f"{base_url}/api/runs/compare/snapshots?archived=all")
+    assert dup_status == 200
+    rows = {row["snapshot_id"]: row for row in dup_body["snapshots"]}
+    assert rows[first_id]["duplicate_count"] == 2
+    assert rows[second_id]["duplicate_count"] == 2
+    assert rows[second_id]["duplicate_of"] == first_id
+
+    snapshot_path = runs_root / ".autodev" / "compare_snapshots" / f"{second_id}.json"
+    tampered = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    tampered["markdown"] = "# tampered\n"
+    snapshot_path.write_text(json.dumps(tampered, indent=2), encoding="utf-8")
+
+    detail_status, detail_body = _get_json(f"{base_url}/api/runs/compare/snapshots/{second_id}")
+    assert detail_status == 200
+    assert detail_body["snapshot"]["integrity_ok"] is False
+    assert "markdown_sha256" in detail_body["integrity"]["mismatches"]
 
 
 def test_gui_context_endpoint_defaults(gui_server):
@@ -1130,8 +1281,30 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="compareSavedSnapshotSelect"' in index_html
     assert 'id="compareSavedFilterInput"' in index_html
     assert 'id="compareSavedSortSelect"' in index_html
+    assert 'id="compareSavedArchiveFilterSelect"' in index_html
+    assert 'id="compareSavedPinnedFilterSelect"' in index_html
+    assert 'id="compareSavedBaselineInput"' in index_html
+    assert 'id="compareSavedCandidateInput"' in index_html
+    assert 'id="compareSavedTagInput"' in index_html
+    assert 'id="compareSavedDateFromInput"' in index_html
+    assert 'id="compareSavedDateToInput"' in index_html
+    assert 'id="compareSavedPageSizeSelect"' in index_html
     assert 'id="compareOpenSnapshotBtn"' in index_html
     assert 'id="compareRefreshSnapshotsBtn"' in index_html
+    assert 'id="compareSavedSummary"' in index_html
+    assert 'id="compareSavedSelectionCount"' in index_html
+    assert 'id="compareSavedSelectVisibleBtn"' in index_html
+    assert 'id="compareSavedClearSelectionBtn"' in index_html
+    assert 'id="compareSavedBulkPinBtn"' in index_html
+    assert 'id="compareSavedBulkUnpinBtn"' in index_html
+    assert 'id="compareSavedBulkArchiveBtn"' in index_html
+    assert 'id="compareSavedBulkRestoreBtn"' in index_html
+    assert 'id="compareSavedBulkTagsInput"' in index_html
+    assert 'id="compareSavedBulkTagsBtn"' in index_html
+    assert 'id="compareSavedBulkDeleteBtn"' in index_html
+    assert 'id="compareSavedPagePrevBtn"' in index_html
+    assert 'id="compareSavedPageLabel"' in index_html
+    assert 'id="compareSavedPageNextBtn"' in index_html
     assert 'id="compareSavedPanel"' in index_html
     assert 'id="compareSavedEmpty"' in index_html
     assert 'id="compareSnapshotStatus"' in index_html
@@ -1153,6 +1326,11 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "function buildCompareSnapshot(payload)" in app_js
     assert "function renderCompareSnapshotMarkdown(snapshot)" in app_js
     assert "function compareSnapshotDownloadName(snapshot, format = 'json')" in app_js
+    assert "function normalizeCompareSnapshotPageSize(raw)" in app_js
+    assert "function buildCompareSnapshotListQuery()" in app_js
+    assert "function getCompareSnapshotSelection()" in app_js
+    assert "function setCompareSnapshotSelection(ids)" in app_js
+    assert "function toggleCompareSnapshotSelection(snapshotId, checked)" in app_js
     assert "function renderCompareSnapshotOptions()" in app_js
     assert "function getVisibleCompareSnapshots()" in app_js
     assert "function loadCompareSnapshots({ preserveSelection = true, silent = true } = {})" in app_js
@@ -1162,7 +1340,9 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "function renameCompareSnapshot(snapshotId, displayName)" in app_js
     assert "function saveCompareSnapshotTags(snapshotId, rawTags)" in app_js
     assert "function toggleCompareSnapshotPin(snapshotId)" in app_js
+    assert "function archiveCompareSnapshot(snapshotId, archived)" in app_js
     assert "function deleteCompareSnapshot(snapshotId)" in app_js
+    assert "function bulkUpdateCompareSnapshots(action, updates = {})" in app_js
     assert "function downloadTextFile(text, filename, mimeType)" in app_js
     assert "function buildArtifactViewerFocusPreview(payload, focusPath)" in app_js
     assert "function setCompareTrustFocus(sideKey, { scroll = false } = {})" in app_js
@@ -1181,8 +1361,9 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'data-compare-trust-diff-side="left"' in app_js
     assert "Focused trust path:" in app_js
     assert "/api/runs/compare/snapshots" in app_js
-    assert "/metadata" in app_js
-    assert "/delete" in app_js
+    assert "/api/runs/compare/snapshots/bulk" in app_js
+    assert "method: 'PATCH'" in app_js
+    assert "method: 'DELETE'" in app_js
     assert ".autodev/autonomous_trust_intelligence.json" in app_js
     assert ".autodev/autonomous_trust_intelligence.md" in app_js
     assert "/api/scorecard/latest" in app_js
@@ -1437,10 +1618,11 @@ def _start_http_server(runs_root: Path):
     return httpd, thread
 
 
-def _post_json(url: str, payload: dict, headers: dict[str, str] | None = None):
-    data = json.dumps(payload).encode("utf-8")
-    req = request.Request(url, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
+def _request_json(url: str, *, method: str = "GET", payload: dict | None = None, headers: dict[str, str] | None = None):
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = request.Request(url, data=data, method=method)
+    if payload is not None:
+        req.add_header("Content-Type", "application/json")
     if headers:
         for k, v in headers.items():
             req.add_header(k, v)
@@ -1454,14 +1636,20 @@ def _post_json(url: str, payload: dict, headers: dict[str, str] | None = None):
         return exc.code, body
 
 
+def _post_json(url: str, payload: dict, headers: dict[str, str] | None = None):
+    return _request_json(url, method="POST", payload=payload, headers=headers)
+
+
+def _patch_json(url: str, payload: dict, headers: dict[str, str] | None = None):
+    return _request_json(url, method="PATCH", payload=payload, headers=headers)
+
+
+def _delete_json(url: str, headers: dict[str, str] | None = None):
+    return _request_json(url, method="DELETE", headers=headers)
+
+
 def _get_json(url: str):
-    try:
-        with request.urlopen(url, timeout=5) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-            return resp.status, body
-    except error.HTTPError as exc:
-        body = json.loads(exc.read().decode("utf-8"))
-        return exc.code, body
+    return _request_json(url)
 
 
 @pytest.fixture

@@ -257,6 +257,45 @@
                 <option value="baseline">Baseline run</option>
                 <option value="candidate">Candidate run</option>
               </select>
+              <select id="compareSavedArchiveFilterSelect" aria-label="Filter archived snapshots">
+                <option value="active">Active only</option>
+                <option value="all">Active and archived</option>
+                <option value="archived">Archived only</option>
+              </select>
+              <select id="compareSavedPinnedFilterSelect" aria-label="Filter pinned snapshots">
+                <option value="all">Pinned and unpinned</option>
+                <option value="pinned">Pinned only</option>
+                <option value="unpinned">Unpinned only</option>
+              </select>
+              <input id="compareSavedBaselineInput" type="search" placeholder="Baseline run contains…" />
+              <input id="compareSavedCandidateInput" type="search" placeholder="Candidate run contains…" />
+              <input id="compareSavedTagInput" type="search" placeholder="Tag contains…" />
+              <input id="compareSavedDateFromInput" type="date" aria-label="Saved snapshot date from" />
+              <input id="compareSavedDateToInput" type="date" aria-label="Saved snapshot date to" />
+              <select id="compareSavedPageSizeSelect" aria-label="Saved snapshot page size">
+                <option value="10">10 / page</option>
+                <option value="20">20 / page</option>
+                <option value="50">50 / page</option>
+                <option value="100">100 / page</option>
+              </select>
+            </div>
+            <div class="compare-saved-toolbar">
+              <span id="compareSavedSummary" class="muted"></span>
+              <span id="compareSavedSelectionCount" class="muted"></span>
+              <button id="compareSavedSelectVisibleBtn" type="button">Select visible</button>
+              <button id="compareSavedClearSelectionBtn" type="button">Clear selection</button>
+              <button id="compareSavedBulkPinBtn" type="button">Pin selected</button>
+              <button id="compareSavedBulkUnpinBtn" type="button">Unpin selected</button>
+              <button id="compareSavedBulkArchiveBtn" type="button">Archive selected</button>
+              <button id="compareSavedBulkRestoreBtn" type="button">Restore selected</button>
+              <input id="compareSavedBulkTagsInput" type="text" placeholder="Replace tags for selected…" />
+              <button id="compareSavedBulkTagsBtn" type="button">Apply tags</button>
+              <button id="compareSavedBulkDeleteBtn" type="button">Delete selected</button>
+            </div>
+            <div class="compare-saved-toolbar">
+              <button id="compareSavedPagePrevBtn" type="button">Previous page</button>
+              <span id="compareSavedPageLabel" class="muted"></span>
+              <button id="compareSavedPageNextBtn" type="button">Next page</button>
             </div>
             <div id="compareSavedPanel" class="compare-saved-panel hidden"></div>
             <div id="compareSavedEmpty" class="empty">No saved compare snapshots yet.</div>
