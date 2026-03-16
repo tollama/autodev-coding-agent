@@ -663,6 +663,56 @@ def test_trust_cli_supports_analytics_inbox_and_approvals(tmp_path: Path, capsys
     assert "# Trust Approvals" in approvals_text
     assert "alice" in approvals_text
 
+    autonomous_mode.cli(
+        [
+            "trust-workflow",
+            "update",
+            "--run-dir",
+            str(run_dir),
+            "--assignees",
+            "alice,bob",
+            "--current-owner",
+            "alice",
+            "--due-at",
+            "2026-03-20T12:00:00Z",
+            "--escalation-targets",
+            "eng-oncall,release-manager",
+        ]
+    )
+    workflow_payload = json.loads(capsys.readouterr().out)
+    assert workflow_payload["workflow"]["current_owner"] == "alice"
+
+    autonomous_mode.cli(["trust-workflow", "show", "--run-dir", str(run_dir), "--format", "text"])
+    workflow_text = capsys.readouterr().out
+    assert "# Trust Workflow" in workflow_text
+    assert "current_owner: alice" in workflow_text
+
+    autonomous_mode.cli(["trust-delivery", "preview", "--runs-root", str(runs_root), "--mode", "inbox"])
+    delivery_preview = json.loads(capsys.readouterr().out)
+    assert delivery_preview["mode"] == "inbox"
+    assert delivery_preview["markdown"]
+
+    log_target = tmp_path / "trust-delivery.md"
+    autonomous_mode.cli(
+        [
+            "trust-delivery",
+            "send",
+            "--runs-root",
+            str(runs_root),
+            "--mode",
+            "inbox",
+            "--format",
+            "markdown",
+            "--target",
+            f"log:{log_target}",
+            "--dry-run",
+            "false",
+        ]
+    )
+    delivery_send = capsys.readouterr().out
+    assert "# Trust Delivery" in delivery_send
+    assert log_target.exists()
+
 def test_extract_autonomous_summary_builds_operator_guidance_with_fallbacks(tmp_path: Path) -> None:
     run_dir = tmp_path / "run-guidance-fallback"
     artifacts = run_dir / ".autodev"

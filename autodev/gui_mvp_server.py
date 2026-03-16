@@ -37,7 +37,7 @@ from .gui_audit import persist_audit_event, resolve_audit_dir
 from .gui_failure_hints import build_run_control_fix_hints
 from .gui_mvp_dto import normalize_run_comparison_summary, normalize_run_trace, normalize_tasks, normalize_validation
 from .run_status import normalize_run_status
-from .trust_intelligence import build_trust_intelligence_packet, build_trust_summary
+from .trust_intelligence import TRUST_WORKFLOW_JSON, build_trust_intelligence_packet, build_trust_summary
 
 
 @dataclass
@@ -143,6 +143,26 @@ GUI_API_ROUTE_SECTIONS: list[dict[str, Any]] = [
                 "method": "POST",
                 "path": "/api/autonomous/trust/approvals",
                 "summary": "Record a trust approval, rejection, or acknowledgement for a run.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/autonomous/trust/workflow",
+                "summary": "Load trust approval workflow metadata for a run.",
+            },
+            {
+                "method": "PATCH",
+                "path": "/api/autonomous/trust/workflow",
+                "summary": "Update trust approval workflow assignment, due date, and escalation metadata.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/autonomous/trust/delivery/preview",
+                "summary": "Preview trust inbox, event, or run delivery payloads.",
+            },
+            {
+                "method": "POST",
+                "path": "/api/autonomous/trust/delivery/send",
+                "summary": "Deliver trust inbox, event, or run payloads to configured targets.",
             },
         ],
     },
@@ -1420,6 +1440,9 @@ def _trust_inbox(runs_root: Path, window: int) -> dict[str, Any]:
                 "risk_tier": policy.get("risk_tier"),
                 "policy_decision": decision,
                 "approval_state": approval_state,
+                "current_owner": governance.get("current_owner"),
+                "due_at": governance.get("due_at"),
+                "escalation_state": governance.get("escalation_state"),
                 "requires_human_review": summary.get("requires_human_review"),
                 "human_review_reasons": summary.get("human_review_reasons"),
                 "summary": summary.get("explainability_narrative") or summary.get("trust_explanation"),
@@ -1431,6 +1454,8 @@ def _trust_inbox(runs_root: Path, window: int) -> dict[str, Any]:
         key=lambda item: (
             priority_order.get(str(item.get("risk_tier") or "unknown"), 3),
             0 if str(item.get("policy_decision") or "") == "blocked" else 1,
+            0 if str(item.get("escalation_state") or "") == "escalated" else 1,
+            0 if str(item.get("approval_state") or "") == "expired" else 1,
             str(item.get("updated_at") or ""),
         )
     )
@@ -1468,6 +1493,18 @@ def _trust_events(runs_root: Path, window: int) -> dict[str, Any]:
                 "approval_state": governance.get("approval_state"),
             }
         )
+        if governance.get("due_at") or governance.get("current_owner") or governance.get("escalation_state"):
+            events.append(
+                {
+                    "timestamp": row["updated_at"],
+                    "type": "trust.workflow.state",
+                    "run_id": row["run_id"],
+                    "current_owner": governance.get("current_owner"),
+                    "due_at": governance.get("due_at"),
+                    "escalation_state": governance.get("escalation_state"),
+                    "approval_state": governance.get("approval_state"),
+                }
+            )
         approvals = governance.get("approvals") if isinstance(governance.get("approvals"), list) else []
         for approval in approvals:
             if not isinstance(approval, dict):
@@ -1503,6 +1540,96 @@ def _trust_approvals(run_dir: Path) -> dict[str, Any]:
         "governance": governance,
         "approvals": governance.get("approvals") if isinstance(governance.get("approvals"), list) else rows,
     }
+
+
+def _trust_workflow(run_dir: Path) -> dict[str, Any]:
+    workflow_path = run_dir / Path(TRUST_WORKFLOW_JSON)
+    workflow, error = _load_json(
+        workflow_path,
+        expected_type=dict,
+        artifact_name=workflow_path.name,
+    )
+    snapshot = extract_autonomous_summary(str(run_dir))
+    packet = build_trust_intelligence_packet(run_dir, summary=snapshot)
+    governance = packet.get("governance") if isinstance(packet.get("governance"), dict) else {}
+    return {
+        "run_id": run_dir.name,
+        "workflow_path": str(workflow_path),
+        "error": error,
+        "workflow": workflow if isinstance(workflow, dict) else {},
+        "governance": governance,
+    }
+
+
+def _normalize_workflow_people(raw: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if isinstance(raw, str):
+        values = [part.strip() for part in raw.split(",")]
+        for value in values:
+            if value:
+                out.append({"name": value, "role": "", "contact": ""})
+        return out
+    if not isinstance(raw, list):
+        return out
+    for row in raw:
+        if isinstance(row, str):
+            name = row.strip()
+            if name:
+                out.append({"name": name, "role": "", "contact": ""})
+            continue
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or row.get("id") or "").strip()
+        if not name:
+            continue
+        out.append(
+            {
+                "name": name,
+                "role": str(row.get("role") or "").strip().lower(),
+                "contact": str(row.get("contact") or "").strip(),
+            }
+        )
+    return out
+
+
+def _update_trust_workflow(
+    runs_root: Path,
+    *,
+    run_id: str,
+    assignees: Any = None,
+    due_at: Any = None,
+    current_owner: Any = None,
+    escalation_targets: Any = None,
+    notes: Any = None,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    normalized_run_id = str(run_id or "").strip()
+    if not normalized_run_id:
+        return {"error": _error_payload("missing_run_id", "run_id is required")}, HTTPStatus.BAD_REQUEST
+    run_dir = runs_root / normalized_run_id
+    if not run_dir.exists() or not run_dir.is_dir():
+        return {"error": _error_payload("run_not_found", f"run not found: {normalized_run_id}")}, HTTPStatus.NOT_FOUND
+    if not (run_dir / AUTONOMOUS_REPORT_JSON).exists():
+        return {"error": _error_payload("trust_not_available", "trust intelligence is not available for this run")}, HTTPStatus.BAD_REQUEST
+
+    workflow_path = run_dir / Path(TRUST_WORKFLOW_JSON)
+    existing, error = _load_json(workflow_path, expected_type=dict, artifact_name=workflow_path.name)
+    if error and error.get("code") not in {"artifact_read_failed"}:
+        return {"error": _error_payload("invalid_workflow_file", str(error.get("message") or error.get("code") or "invalid workflow file"))}, HTTPStatus.UNPROCESSABLE_ENTITY
+    payload = dict(existing) if isinstance(existing, dict) else {}
+    payload["schema_version"] = "autonomous_trust_workflow_v1"
+    if assignees is not None:
+        payload["assignees"] = _normalize_workflow_people(assignees)
+    if due_at is not None:
+        payload["due_at"] = str(due_at or "").strip()
+    if current_owner is not None:
+        payload["current_owner"] = str(current_owner or "").strip()
+    if escalation_targets is not None:
+        payload["escalation_targets"] = _normalize_compare_snapshot_tags(escalation_targets)
+    if notes is not None:
+        payload["notes"] = _normalize_compare_snapshot_tags(notes)
+    workflow_path.parent.mkdir(parents=True, exist_ok=True)
+    workflow_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return _trust_workflow(run_dir), HTTPStatus.OK
 
 
 def _append_trust_approval(
@@ -3126,6 +3253,38 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                 return
             self._json_response(_trust_approvals(run_dir))
             return
+        if path == "/api/autonomous/trust/workflow":
+            query = parse_qs(parsed.query)
+            run_id = str((query.get("run_id") or [""])[0]).strip()
+            if not run_id:
+                self._json_response(
+                    {"error": _error_payload("missing_run_id", "query param 'run_id' is required")},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            run_dir = self.config.runs_root / run_id
+            if not run_dir.exists() or not run_dir.is_dir():
+                self._json_response(
+                    {"error": _error_payload("run_not_found", f"run not found: {run_id}")},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            self._json_response(_trust_workflow(run_dir))
+            return
+        if path == "/api/autonomous/trust/delivery/preview":
+            query = parse_qs(parsed.query)
+            from .trust_delivery import preview_trust_delivery
+
+            self._json_response(
+                preview_trust_delivery(
+                    self.config.runs_root,
+                    mode=str((query.get("mode") or ["inbox"])[0] or "inbox"),
+                    run_id=str((query.get("run_id") or [""])[0]).strip() or None,
+                    window=_parse_trend_window(str((query.get("window") or ["10"])[0])),
+                    output_format=str((query.get("format") or ["json"])[0] or "json"),
+                )
+            )
+            return
 
         if path == "/api/runs":
             self._json_response({"runs": _list_runs(self.config.runs_root)})
@@ -3322,6 +3481,9 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/autonomous/trust/approvals":
             self._handle_trust_approval_record()
             return
+        if path == "/api/autonomous/trust/delivery/send":
+            self._handle_trust_delivery_send()
+            return
         snapshot_id = _parse_compare_snapshot_legacy_action_path(path, "metadata")
         if snapshot_id is not None:
             self._handle_compare_snapshot_metadata(snapshot_id)
@@ -3341,6 +3503,9 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         snapshot_id = _parse_compare_snapshot_item_path(path)
         if snapshot_id is not None:
             self._handle_compare_snapshot_metadata(snapshot_id)
+            return
+        if path == "/api/autonomous/trust/workflow":
+            self._handle_trust_workflow_update()
             return
         self._json_response({"error": "not found", "path": path}, status=HTTPStatus.NOT_FOUND)
 
@@ -3818,6 +3983,112 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                     "run_id": str(payload.get("run_id") or ""),
                     "decision": str(payload.get("decision") or ""),
                     "reviewer": reviewer,
+                },
+            },
+        )
+
+    def _handle_trust_workflow_update(self) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+        auth = _resolve_request_auth(headers=self.headers, payload=payload, action="trust_workflow_update")
+        if not _is_mutation_allowed(auth.role):
+            self._json_response(
+                {
+                    "error": _error_payload(
+                        "forbidden_role",
+                        f"Role '{auth.role}' cannot update trust workflow.",
+                        role=auth.role,
+                        allowed_roles=sorted(MUTATING_ROLES),
+                    )
+                },
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return
+
+        body, status = _update_trust_workflow(
+            self.config.runs_root,
+            run_id=str(payload.get("run_id") or ""),
+            assignees=payload.get("assignees"),
+            due_at=payload.get("due_at"),
+            current_owner=payload.get("current_owner"),
+            escalation_targets=payload.get("escalation_targets"),
+            notes=payload.get("notes"),
+        )
+        self._audit_then_respond(
+            body=body,
+            status=status,
+            audit_event={
+                "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "action": "trust_workflow_update",
+                "result_status": "updated" if status == HTTPStatus.OK else "failed",
+                "role": auth.role,
+                "auth": {
+                    "source": auth.source,
+                    "subject": auth.subject,
+                    "scope": auth.scope,
+                    "policy_name": auth.policy_name,
+                    "policy_allowed_roles": auth.policy_allowed_roles,
+                },
+                "payload": {
+                    "run_id": str(payload.get("run_id") or ""),
+                    "due_at": str(payload.get("due_at") or ""),
+                    "current_owner": str(payload.get("current_owner") or ""),
+                },
+            },
+        )
+
+    def _handle_trust_delivery_send(self) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+        auth = _resolve_request_auth(headers=self.headers, payload=payload, action="trust_delivery_send")
+        if not _is_mutation_allowed(auth.role):
+            self._json_response(
+                {
+                    "error": _error_payload(
+                        "forbidden_role",
+                        f"Role '{auth.role}' cannot send trust delivery payloads.",
+                        role=auth.role,
+                        allowed_roles=sorted(MUTATING_ROLES),
+                    )
+                },
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return
+        from .trust_delivery import send_trust_delivery
+
+        body = send_trust_delivery(
+            self.config.runs_root,
+            mode=str(payload.get("mode") or "inbox"),
+            run_id=str(payload.get("run_id") or "").strip() or None,
+            window=_parse_trend_window(str(payload.get("window") or 10)),
+            output_format=str(payload.get("format") or "json"),
+            targets=payload.get("targets"),
+            dry_run=bool(payload.get("dry_run", True)),
+            source=f"api:{auth.source}",
+        )
+        status = HTTPStatus.OK if not body.get("error") else HTTPStatus.BAD_REQUEST
+        self._audit_then_respond(
+            body=body,
+            status=status,
+            audit_event={
+                "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "action": "trust_delivery_send",
+                "result_status": "sent" if status == HTTPStatus.OK else "failed",
+                "role": auth.role,
+                "auth": {
+                    "source": auth.source,
+                    "subject": auth.subject,
+                    "scope": auth.scope,
+                    "policy_name": auth.policy_name,
+                    "policy_allowed_roles": auth.policy_allowed_roles,
+                },
+                "payload": {
+                    "mode": str(payload.get("mode") or "inbox"),
+                    "run_id": str(payload.get("run_id") or ""),
+                    "targets": payload.get("targets"),
+                    "dry_run": bool(payload.get("dry_run", True)),
                 },
             },
         )

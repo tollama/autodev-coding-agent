@@ -13,6 +13,7 @@ TRUST_INTELLIGENCE_SCHEMA_VERSION = "av3-trust-v1"
 TRUST_INTELLIGENCE_JSON = ".autodev/autonomous_trust_intelligence.json"
 TRUST_INTELLIGENCE_MD = ".autodev/autonomous_trust_intelligence.md"
 TRUST_ATTESTATION_JSON = ".autodev/autonomous_trust_attestation.json"
+TRUST_WORKFLOW_JSON = ".autodev/trust_workflow.json"
 
 
 def _utc_now() -> str:
@@ -60,6 +61,21 @@ def _safe_load_jsonl(path: Path) -> tuple[list[dict[str, Any]], str | None]:
     except Exception as exc:
         return [], f"invalid_jsonl: {exc}"
     return rows, None
+
+
+def _parse_iso8601(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _sha256_file(path: Path) -> str:
@@ -612,15 +628,66 @@ def _normalize_approval_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
     return out
 
 
+def _normalize_workflow_payload(
+    workflow_payload: Mapping[str, Any],
+    *,
+    approval_requirements: Mapping[str, Any],
+    policy_decision: str,
+) -> dict[str, Any]:
+    assignees_raw = workflow_payload.get("assignees")
+    assignees: list[dict[str, Any]] = []
+    if isinstance(assignees_raw, list):
+        for row in assignees_raw:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or row.get("id") or "").strip()
+            if not name:
+                continue
+            assignees.append(
+                {
+                    "name": name,
+                    "role": str(row.get("role") or "").strip().lower(),
+                    "contact": str(row.get("contact") or "").strip(),
+                }
+            )
+    elif isinstance(workflow_payload.get("assignee"), str) and str(workflow_payload.get("assignee") or "").strip():
+        assignees.append({"name": str(workflow_payload.get("assignee")).strip(), "role": "", "contact": ""})
+
+    escalation_targets = _normalize_string_list(workflow_payload.get("escalation_targets"))
+    due_at = str(workflow_payload.get("due_at") or "").strip()
+    workflow_status = str(workflow_payload.get("status") or "").strip().lower() or "pending"
+    current_owner = str(workflow_payload.get("current_owner") or "").strip() or (assignees[0]["name"] if assignees else "")
+
+    required_roles = _normalize_string_list(approval_requirements.get("required_roles"))
+    if not assignees and required_roles and policy_decision != "approved":
+        assignees = [{"name": role.title(), "role": role, "contact": ""} for role in required_roles]
+        current_owner = assignees[0]["name"]
+
+    return {
+        "assignees": assignees,
+        "due_at": due_at,
+        "current_owner": current_owner,
+        "escalation_targets": escalation_targets,
+        "status": workflow_status,
+        "notes": _normalize_string_list(workflow_payload.get("notes")),
+    }
+
+
 def _derive_governance_signal(
     policy_enforcement: Mapping[str, Any],
     approval_rows: list[dict[str, Any]],
+    workflow_payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     normalized = _normalize_approval_rows(approval_rows)
     requirements = _safe_dict(policy_enforcement.get("approval_requirements"))
     required_roles = _normalize_string_list(requirements.get("required_roles"))
     min_approvals = int(requirements.get("min_approvals") or 0)
     decision = str(policy_enforcement.get("decision") or "review_required")
+    workflow = _normalize_workflow_payload(
+        workflow_payload,
+        approval_requirements=requirements,
+        policy_decision=decision,
+    )
 
     approved = [row for row in normalized if row.get("decision") == "approve"]
     rejected = [row for row in normalized if row.get("decision") == "reject"]
@@ -651,6 +718,27 @@ def _derive_governance_signal(
             if missing_roles:
                 reasons.append(f"missing_roles={','.join(missing_roles)}")
 
+    due_at = str(workflow.get("due_at") or "")
+    due_dt = _parse_iso8601(due_at)
+    now = datetime.now(timezone.utc)
+    overdue = bool(due_dt and due_dt < now and state == "pending")
+    escalation_state = "clear"
+    if overdue:
+        state = "expired"
+        escalation_state = "escalated"
+        reasons.append("approval_due_at_expired")
+        score = min(score, 0.18)
+    elif state in {"pending", "blocked"} and workflow.get("escalation_targets"):
+        escalation_state = "watch"
+    elif state == "rejected":
+        escalation_state = "blocked"
+
+    next_approvers = [
+        assignee
+        for assignee in workflow.get("assignees") if isinstance(assignee, dict)
+        if not required_roles or str(assignee.get("role") or "").strip().lower() in {role.lower() for role in missing_roles or required_roles}
+    ]
+
     return {
         "score": round(score, 2),
         "status": _score_band(score),
@@ -662,6 +750,13 @@ def _derive_governance_signal(
         "required_roles": required_roles,
         "missing_roles": missing_roles,
         "approvals": normalized[-10:],
+        "workflow": workflow,
+        "due_at": due_at,
+        "overdue": overdue,
+        "escalation_state": escalation_state,
+        "next_approvers": next_approvers,
+        "current_owner": workflow.get("current_owner") or "",
+        "escalation_targets": workflow.get("escalation_targets"),
         "reasons": reasons,
     }
 
@@ -875,6 +970,7 @@ def build_trust_intelligence_packet(
     report_payload, _ = _safe_load_json(artifacts_dir / "autonomous_report.json")
     run_trace_payload, _ = _safe_load_json(artifacts_dir / "run_trace.json")
     run_metadata_payload, _ = _safe_load_json(artifacts_dir / "run_metadata.json")
+    workflow_payload, _ = _safe_load_json(artifacts_dir / Path(TRUST_WORKFLOW_JSON).name)
     experiment_rows, _ = _safe_load_jsonl(artifacts_dir / "experiment_log.jsonl")
     approval_rows, _ = _safe_load_jsonl(artifacts_dir / "trust_approvals.jsonl")
 
@@ -898,7 +994,7 @@ def build_trust_intelligence_packet(
         artifact_refs,
         _safe_dict(run_metadata_payload),
     )
-    governance = _derive_governance_signal(policy_enforcement, approval_rows)
+    governance = _derive_governance_signal(policy_enforcement, approval_rows, _safe_dict(workflow_payload))
     provenance_signal = _derive_provenance_signal(
         artifact_refs,
         _safe_dict(run_metadata_payload),
@@ -991,6 +1087,9 @@ def build_trust_intelligence_packet(
             "policy_decision": policy_enforcement.get("decision"),
             "risk_tier": policy_enforcement.get("risk_tier"),
             "approval_state": governance.get("approval_state"),
+            "current_owner": governance.get("current_owner"),
+            "due_at": governance.get("due_at"),
+            "escalation_state": governance.get("escalation_state"),
             "top_actions": [
                 {
                     "code": item.get("code"),
@@ -1007,6 +1106,7 @@ def build_trust_intelligence_packet(
             "run_trace_available": bool(run_trace_payload),
             "experiment_log_available": len(experiment_rows) > 0,
             "approval_log_available": len(approval_rows) > 0,
+            "workflow_available": bool(workflow_payload),
             "artifact_manifest": provenance_signal.get("artifact_manifest"),
             "manifest_sha256": provenance_signal.get("manifest_sha256"),
             "run_metadata_sha256": provenance_signal.get("run_metadata_sha256"),
@@ -1028,6 +1128,9 @@ def build_trust_intelligence_packet(
         "policy_decision": policy_enforcement.get("decision"),
         "risk_tier": policy_enforcement.get("risk_tier"),
         "approval_state": governance.get("approval_state"),
+        "current_owner": governance.get("current_owner"),
+        "due_at": governance.get("due_at"),
+        "escalation_state": governance.get("escalation_state"),
     }
     attestation_payload["packet_sha256"] = _sha256_bytes(_stable_json_bytes(packet))
     packet["attestation"] = attestation_payload
@@ -1145,6 +1248,11 @@ def build_trust_summary(packet: Mapping[str, Any]) -> dict[str, Any]:
         "approval_missing_roles": _safe_list(governance.get("missing_roles")),
         "approved_count": governance.get("approved_count"),
         "min_approvals": governance.get("min_approvals"),
+        "approval_due_at": governance.get("due_at"),
+        "approval_overdue": governance.get("overdue"),
+        "approval_escalation_state": governance.get("escalation_state"),
+        "approval_current_owner": governance.get("current_owner"),
+        "approval_next_approvers": _safe_list(governance.get("next_approvers")),
         "explainability_narrative": explainability.get("narrative"),
         "attestation_packet_sha256": attestation.get("packet_sha256"),
         "latest_quality_status": latest_quality.get("status"),
@@ -1192,6 +1300,9 @@ def render_trust_intelligence_packet(
         f"- risk_tier: {policy.get('risk_tier', '-')}",
         f"- policy_decision: {policy.get('decision', '-')}",
         f"- approval_state: {governance.get('approval_state', '-')}",
+        f"- approval_current_owner: {governance.get('current_owner', '-')}",
+        f"- approval_due_at: {governance.get('due_at', '-')}",
+        f"- approval_escalation_state: {governance.get('escalation_state', '-')}",
         f"- incident_owner_team: {operator_next.get('owner_team', '-')}",
         f"- incident_severity: {operator_next.get('severity', '-')}",
         f"- incident_target_sla: {operator_next.get('target_sla', '-')}",

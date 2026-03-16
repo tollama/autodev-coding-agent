@@ -1472,9 +1472,42 @@ def test_trust_analytics_model_eval_inbox_and_approvals_endpoints(gui_server):
     assert approvals_body["run_id"] == "run-trust-ops"
     assert approvals_body["governance"]["approved_count"] >= 1
 
+    workflow_patch_status, workflow_patch_body = _patch_json(
+        f"{base_url}/api/autonomous/trust/workflow",
+        {
+            "run_id": "run-trust-ops",
+            "assignees": [{"name": "alice", "role": "operator"}, {"name": "bob", "role": "developer"}],
+            "due_at": "2026-03-20T12:00:00Z",
+            "current_owner": "alice",
+            "escalation_targets": ["eng-oncall", "release-manager"],
+        },
+        headers={"X-Autodev-Role": "operator"},
+    )
+    assert workflow_patch_status == 200
+    assert workflow_patch_body["workflow"]["current_owner"] == "alice"
+
+    workflow_get_status, workflow_get_body = _get_json(f"{base_url}/api/autonomous/trust/workflow?run_id=run-trust-ops")
+    assert workflow_get_status == 200
+    assert workflow_get_body["workflow"]["due_at"] == "2026-03-20T12:00:00Z"
+    assert workflow_get_body["governance"]["current_owner"] == "alice"
+
     events_status, events_body = _get_json(f"{base_url}/api/autonomous/trust/events?window=5")
     assert events_status == 200
     assert any(event["run_id"] == "run-trust-ops" for event in events_body["events"])
+
+    preview_status, preview_body = _get_json(f"{base_url}/api/autonomous/trust/delivery/preview?mode=inbox&window=5")
+    assert preview_status == 200
+    assert preview_body["mode"] == "inbox"
+    assert preview_body["markdown"]
+
+    delivery_status, delivery_body = _post_json(
+        f"{base_url}/api/autonomous/trust/delivery/send",
+        {"mode": "inbox", "window": 5, "format": "json", "dry_run": True, "targets": ["stdout"]},
+        headers={"X-Autodev-Role": "operator"},
+    )
+    assert delivery_status == 200
+    assert delivery_body["dry_run"] is True
+    assert delivery_body["outcomes"][0]["status"] == "dry_run"
 
 
 def test_api_docs_routes_endpoint_and_static_reference_are_served(gui_server):
@@ -1495,6 +1528,9 @@ def test_api_docs_routes_endpoint_and_static_reference_are_served(gui_server):
     assert "/api/autonomous/trust/model-eval" in route_paths
     assert "/api/autonomous/trust/inbox" in route_paths
     assert "/api/autonomous/trust/approvals" in route_paths
+    assert "/api/autonomous/trust/workflow" in route_paths
+    assert "/api/autonomous/trust/delivery/preview" in route_paths
+    assert "/api/autonomous/trust/delivery/send" in route_paths
     assert "/api/runs/compare/snapshots/<snapshot_id>" in route_paths
     assert any(
         row["path"] == "/api/runs/compare/snapshots/<snapshot_id>/delete" and row["canonical_method"] == "DELETE"
@@ -1670,6 +1706,11 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="trustTrendEmpty"' in index_html
     assert 'id="trustTrendError"' in index_html
     assert 'id="trustOpsCards"' in index_html
+    assert 'id="trustWorkflowAssignees"' in index_html
+    assert 'id="trustWorkflowDueAt"' in index_html
+    assert 'id="trustWorkflowCurrentOwner"' in index_html
+    assert 'id="trustWorkflowEscalationTargets"' in index_html
+    assert 'id="trustWorkflowSaveBtn"' in index_html
     assert 'id="trustApprovalDecision"' in index_html
     assert 'id="trustApprovalRecordBtn"' in index_html
     assert 'id="trustApprovalHistory"' in index_html
@@ -1677,6 +1718,10 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="trustAnalyticsReasons"' in index_html
     assert 'id="trustModelEvalList"' in index_html
     assert 'id="trustInboxList"' in index_html
+    assert 'id="trustInboxExportJsonBtn"' in index_html
+    assert 'id="trustInboxExportMdBtn"' in index_html
+    assert 'id="trustInboxSendDryRunBtn"' in index_html
+    assert 'id="trustDeliveryStatus"' in index_html
     assert 'id="compareTrustPanel"' in index_html
     assert 'id="compareTrustEmpty"' in index_html
     assert 'id="compareTrustDiffPanel"' in index_html
@@ -1747,6 +1792,7 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "function refreshTrustModelEvalWidget({ silent = false } = {})" in app_js
     assert "function refreshTrustInboxWidget({ silent = false } = {})" in app_js
     assert "function refreshTrustApprovalsWidget({ silent = false } = {})" in app_js
+    assert "function refreshTrustWorkflowWidget({ silent = false } = {})" in app_js
     assert "function initTrustOpsControls()" in app_js
     assert "function renderDeprecationNotice()" in app_js
     assert "function refreshDeprecationNotice({ silent = false } = {})" in app_js
@@ -1815,6 +1861,9 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "/api/autonomous/trust/model-eval" in app_js
     assert "/api/autonomous/trust/inbox" in app_js
     assert "/api/autonomous/trust/approvals" in app_js
+    assert "/api/autonomous/trust/workflow" in app_js
+    assert "/api/autonomous/trust/delivery/preview" in app_js
+    assert "/api/autonomous/trust/delivery/send" in app_js
     assert "/api/scorecard/latest" in app_js
     assert "/api/autonomous/trust/latest" in app_js
     assert "human_review_reasons" in app_js
@@ -1822,6 +1871,8 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "policy_decision" in app_js
     assert "approval_state" in app_js
     assert "attestation_packet_sha256" in app_js
+    assert "approval_due_at" in app_js
+    assert "approval_escalation_state" in app_js
     assert "/api/runs/compare/snapshots/${encodeURIComponent(snapshotId)}/metadata" not in app_js
     assert "/api/runs/compare/snapshots/${encodeURIComponent(snapshotId)}/rename" not in app_js
     assert "/api/runs/compare/snapshots/${encodeURIComponent(snapshotId)}/delete" not in app_js

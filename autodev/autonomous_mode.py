@@ -3353,6 +3353,22 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     trust_inbox.add_argument("--window", type=int, default=10)
     trust_inbox.add_argument("--format", choices=["json", "text"], default="json")
 
+    trust_workflow = sub.add_parser("trust-workflow", help="show or update trust approval workflow metadata")
+    trust_workflow_sub = trust_workflow.add_subparsers(dest="trust_workflow_action", required=True)
+
+    trust_workflow_show = trust_workflow_sub.add_parser("show", help="show trust workflow for a run")
+    trust_workflow_show.add_argument("--run-dir", required=True)
+    trust_workflow_show.add_argument("--format", choices=["json", "text"], default="json")
+
+    trust_workflow_update = trust_workflow_sub.add_parser("update", help="update trust workflow for a run")
+    trust_workflow_update.add_argument("--run-dir", required=True)
+    trust_workflow_update.add_argument("--assignees", default=None, help="comma-separated assignee names")
+    trust_workflow_update.add_argument("--due-at", default=None)
+    trust_workflow_update.add_argument("--current-owner", default=None)
+    trust_workflow_update.add_argument("--escalation-targets", default=None, help="comma-separated escalation targets")
+    trust_workflow_update.add_argument("--notes", default=None, help="comma-separated workflow notes")
+    trust_workflow_update.add_argument("--format", choices=["json", "text"], default="json")
+
     trust_approvals = sub.add_parser("trust-approvals", help="list or record trust approval decisions")
     trust_approvals_sub = trust_approvals.add_subparsers(dest="trust_approvals_action", required=True)
 
@@ -3367,6 +3383,25 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     trust_approvals_record.add_argument("--role", default="operator")
     trust_approvals_record.add_argument("--note", default="")
     trust_approvals_record.add_argument("--format", choices=["json", "text"], default="json")
+
+    trust_delivery = sub.add_parser("trust-delivery", help="preview or send trust inbox/event/run delivery payloads")
+    trust_delivery_sub = trust_delivery.add_subparsers(dest="trust_delivery_action", required=True)
+
+    trust_delivery_preview = trust_delivery_sub.add_parser("preview", help="preview trust delivery payload")
+    trust_delivery_preview.add_argument("--runs-root", required=True)
+    trust_delivery_preview.add_argument("--mode", choices=["inbox", "events", "run"], default="inbox")
+    trust_delivery_preview.add_argument("--run-id", default=None)
+    trust_delivery_preview.add_argument("--window", type=int, default=10)
+    trust_delivery_preview.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    trust_delivery_send = trust_delivery_sub.add_parser("send", help="send trust delivery payload")
+    trust_delivery_send.add_argument("--runs-root", required=True)
+    trust_delivery_send.add_argument("--mode", choices=["inbox", "events", "run"], default="inbox")
+    trust_delivery_send.add_argument("--run-id", default=None)
+    trust_delivery_send.add_argument("--window", type=int, default=10)
+    trust_delivery_send.add_argument("--format", choices=["json", "markdown"], default="json")
+    trust_delivery_send.add_argument("--target", action="append", default=None, help="stdout, log:/path, or webhook:<url>")
+    trust_delivery_send.add_argument("--dry-run", default="true", type=_parse_cli_bool)
 
     compare_snapshots = sub.add_parser("compare-snapshots", help="manage persisted compare snapshots")
     compare_snapshots_sub = compare_snapshots.add_subparsers(dest="compare_action", required=True)
@@ -4823,6 +4858,51 @@ def _render_trust_approvals_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _render_trust_workflow_text(payload: dict[str, Any]) -> str:
+    governance = payload.get("governance") if isinstance(payload.get("governance"), dict) else {}
+    workflow = payload.get("workflow") if isinstance(payload.get("workflow"), dict) else {}
+    assignees = workflow.get("assignees") if isinstance(workflow.get("assignees"), list) else []
+    lines = [
+        "# Trust Workflow",
+        f"- run_id: {payload.get('run_id') or '-'}",
+        f"- approval_state: {governance.get('approval_state', '-')}",
+        f"- current_owner: {governance.get('current_owner', '-')}",
+        f"- due_at: {governance.get('due_at', '-')}",
+        f"- escalation_state: {governance.get('escalation_state', '-')}",
+    ]
+    if assignees:
+        lines.append("- assignees:")
+        for row in assignees:
+            if not isinstance(row, dict):
+                continue
+            lines.append(f"  - {row.get('name') or '-'} [{row.get('role') or '-'}]")
+    else:
+        lines.append("- assignees: -")
+    return "\n".join(lines)
+
+
+def _render_trust_delivery_text(payload: dict[str, Any]) -> str:
+    preview = payload.get("preview") if isinstance(payload.get("preview"), dict) else payload
+    lines = [
+        "# Trust Delivery",
+        f"- mode: {preview.get('mode') or '-'}",
+        f"- generated_at: {preview.get('generated_at') or payload.get('generated_at') or '-'}",
+    ]
+    if isinstance(payload.get("targets"), list):
+        lines.append(f"- targets: {', '.join(str(item) for item in payload.get('targets', [])) or '-'}")
+    outcomes = payload.get("outcomes") if isinstance(payload.get("outcomes"), list) else []
+    if outcomes:
+        lines.append("- outcomes:")
+        for row in outcomes:
+            if not isinstance(row, dict):
+                continue
+            lines.append(f"  - {row.get('target') or '-'}: {row.get('status') or '-'}")
+    markdown = str(preview.get("markdown") or "").strip()
+    if markdown:
+        lines.extend(["", markdown])
+    return "\n".join(lines)
+
+
 def _trust_analytics(argv: list[str]) -> None:
     parser = _build_cli_parser()
     args = parser.parse_args(["trust-analytics", *argv])
@@ -4888,6 +4968,74 @@ def _trust_approvals(argv: list[str]) -> None:
     approvals = payload.get("approvals") if isinstance(payload.get("approvals"), dict) else {}
     if args.format == "text":
         print(_render_trust_approvals_text(approvals))
+        return
+    print(json_dumps(payload))
+
+
+def _trust_workflow(argv: list[str]) -> None:
+    parser = _build_cli_parser()
+    args = parser.parse_args(["trust-workflow", *argv])
+    from .gui_mvp_server import _trust_workflow as _server_trust_workflow, _update_trust_workflow as _server_update_trust_workflow
+
+    run_dir = Path(str(args.run_dir)).expanduser().resolve()
+    if args.trust_workflow_action == "show":
+        payload = _server_trust_workflow(run_dir)
+        if args.format == "text":
+            print(_render_trust_workflow_text(payload))
+            return
+        print(json_dumps(payload))
+        return
+
+    payload, status = _server_update_trust_workflow(
+        run_dir.parent,
+        run_id=run_dir.name,
+        assignees=[item.strip() for item in str(args.assignees or "").split(",") if item.strip()] if args.assignees is not None else None,
+        due_at=args.due_at,
+        current_owner=args.current_owner,
+        escalation_targets=[item.strip() for item in str(args.escalation_targets or "").split(",") if item.strip()] if args.escalation_targets is not None else None,
+        notes=[item.strip() for item in str(args.notes or "").split(",") if item.strip()] if args.notes is not None else None,
+    )
+    if status != HTTPStatus.OK:
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        raise SystemExit(str(error.get("message") or "trust workflow update failed"))
+    if args.format == "text":
+        print(_render_trust_workflow_text(payload))
+        return
+    print(json_dumps(payload))
+
+
+def _trust_delivery(argv: list[str]) -> None:
+    parser = _build_cli_parser()
+    args = parser.parse_args(["trust-delivery", *argv])
+    from .trust_delivery import preview_trust_delivery, send_trust_delivery
+
+    runs_root = Path(str(args.runs_root)).expanduser().resolve()
+    if args.trust_delivery_action == "preview":
+        payload = preview_trust_delivery(
+            runs_root,
+            mode=str(args.mode),
+            run_id=args.run_id,
+            window=int(args.window),
+            output_format=str(args.format),
+        )
+        if args.format == "markdown":
+            print(payload.get("markdown") or "")
+            return
+        print(json_dumps(payload))
+        return
+
+    payload = send_trust_delivery(
+        runs_root,
+        mode=str(args.mode),
+        run_id=args.run_id,
+        window=int(args.window),
+        output_format=str(args.format),
+        targets=args.target,
+        dry_run=bool(args.dry_run),
+        source="cli",
+    )
+    if args.format == "markdown":
+        print(_render_trust_delivery_text(payload))
         return
     print(json_dumps(payload))
 
@@ -5233,7 +5381,7 @@ def _incident_replay(argv: list[str]) -> None:
 
 def cli(argv: list[str]) -> None:
     if not argv:
-        raise SystemExit("Usage: autodev autonomous <start|status|summary|triage-summary|trust-summary|trust-analytics|trust-model-eval|trust-inbox|trust-approvals|compare-snapshots|incident-export|incident-send|ticket-draft|issue-export|incident-replay> ...")
+        raise SystemExit("Usage: autodev autonomous <start|status|summary|triage-summary|trust-summary|trust-analytics|trust-model-eval|trust-inbox|trust-workflow|trust-approvals|trust-delivery|compare-snapshots|incident-export|incident-send|ticket-draft|issue-export|incident-replay> ...")
     action = argv[0]
     if action == "start":
         _start(argv[1:])
@@ -5259,8 +5407,14 @@ def cli(argv: list[str]) -> None:
     if action == "trust-inbox":
         _trust_inbox(argv[1:])
         return
+    if action == "trust-workflow":
+        _trust_workflow(argv[1:])
+        return
     if action == "trust-approvals":
         _trust_approvals(argv[1:])
+        return
+    if action == "trust-delivery":
+        _trust_delivery(argv[1:])
         return
     if action == "compare-snapshots":
         _compare_snapshots(argv[1:])

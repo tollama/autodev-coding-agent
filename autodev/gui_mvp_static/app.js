@@ -65,6 +65,10 @@ const state = {
   trustApprovalsError: '',
   trustApprovalsLoading: false,
   trustApprovalStatus: '',
+  trustWorkflowPayload: null,
+  trustWorkflowError: '',
+  trustWorkflowLoading: false,
+  trustDeliveryStatus: '',
   deprecationNoticePayload: null,
   deprecationNoticeError: '',
   deprecationNoticeLoading: false,
@@ -784,6 +788,28 @@ function buildMockTrustApprovalsPayload(runId = 'mock-run-001') {
   };
 }
 
+function buildMockTrustWorkflowPayload(runId = 'mock-run-001') {
+  return {
+    run_id: runId,
+    workflow: {
+      assignees: runId === 'mock-run-001'
+        ? [{ name: 'alice', role: 'operator' }, { name: 'bob', role: 'developer' }]
+        : [],
+      due_at: runId === 'mock-run-001' ? new Date(Date.now() + 4 * 3600_000).toISOString() : '',
+      current_owner: runId === 'mock-run-001' ? 'alice' : '',
+      escalation_targets: runId === 'mock-run-001' ? ['eng-oncall', 'release-manager'] : [],
+      notes: [],
+    },
+    governance: {
+      approval_state: runId === 'mock-run-001' ? 'pending' : 'not_required',
+      current_owner: runId === 'mock-run-001' ? 'alice' : '',
+      due_at: runId === 'mock-run-001' ? new Date(Date.now() + 4 * 3600_000).toISOString() : '',
+      escalation_state: runId === 'mock-run-001' ? 'watch' : 'clear',
+      next_approvers: runId === 'mock-run-001' ? [{ name: 'bob', role: 'developer' }] : [],
+    },
+  };
+}
+
 function buildMockDetailTrust(detail) {
   const runId = String(detail?.run_id || '');
   if (runId === 'mock-run-001') {
@@ -1356,6 +1382,10 @@ function renderTrustOpsWidget() {
   const errorNode = el('trustOpsError');
   const historyNode = el('trustApprovalHistory');
   const statusNode = el('trustApprovalStatus');
+  const assigneesInput = el('trustWorkflowAssignees');
+  const dueAtInput = el('trustWorkflowDueAt');
+  const currentOwnerInput = el('trustWorkflowCurrentOwner');
+  const escalationTargetsInput = el('trustWorkflowEscalationTargets');
   if (!cardsNode || !metaNode || !emptyNode || !errorNode || !historyNode || !statusNode) return;
 
   cardsNode.innerHTML = '';
@@ -1372,11 +1402,11 @@ function renderTrustOpsWidget() {
     return;
   }
 
-  if (state.trustApprovalsError) {
+  if (state.trustApprovalsError || state.trustWorkflowError) {
     cardsNode.classList.add('hidden');
     emptyNode.classList.add('hidden');
     errorNode.classList.remove('hidden');
-    errorNode.textContent = state.trustApprovalsError;
+    errorNode.textContent = state.trustApprovalsError || state.trustWorkflowError;
     metaNode.textContent = '';
     return;
   }
@@ -1384,7 +1414,9 @@ function renderTrustOpsWidget() {
   const summary = state.detail?.trust_summary || state.trustPayload?.summary || null;
   const packet = state.detail?.trust_packet || state.trustPayload?.packet || null;
   const approvalsPayload = state.trustApprovalsPayload || {};
+  const workflowPayload = state.trustWorkflowPayload || {};
   const governance = packet?.governance || approvalsPayload?.governance || {};
+  const workflow = workflowPayload?.workflow || governance?.workflow || {};
   if (!summary) {
     cardsNode.classList.add('hidden');
     emptyNode.classList.remove('hidden');
@@ -1399,6 +1431,8 @@ function renderTrustOpsWidget() {
     ['Change Surface', summary.policy_change_surface || '-'],
     ['Approval State', summary.approval_state || '-'],
     ['Approvals', `${summary.approved_count ?? 0}/${summary.min_approvals ?? 0}`],
+    ['Owner', summary.approval_current_owner || '-'],
+    ['Escalation', summary.approval_escalation_state || '-'],
     ['Attestation', summary.attestation_packet_sha256 ? String(summary.attestation_packet_sha256).slice(0, 12) : '-'],
   ];
   cardDefs.forEach(([label, value]) => {
@@ -1416,7 +1450,23 @@ function renderTrustOpsWidget() {
   if (Array.isArray(summary.approval_missing_roles) && summary.approval_missing_roles.length) {
     metaParts.push(`roles=${summary.approval_missing_roles.join(',')}`);
   }
+  if (summary.approval_due_at) metaParts.push(`due=${summary.approval_due_at}`);
   metaNode.textContent = metaParts.join(' • ');
+
+  if (assigneesInput && document.activeElement !== assigneesInput) {
+    const assignees = Array.isArray(workflow?.assignees) ? workflow.assignees : [];
+    assigneesInput.value = assignees.map((row) => (row?.name || '')).filter(Boolean).join(', ');
+  }
+  if (dueAtInput && document.activeElement !== dueAtInput) {
+    dueAtInput.value = String(workflow?.due_at || governance?.due_at || '');
+  }
+  if (currentOwnerInput && document.activeElement !== currentOwnerInput) {
+    currentOwnerInput.value = String(workflow?.current_owner || governance?.current_owner || '');
+  }
+  if (escalationTargetsInput && document.activeElement !== escalationTargetsInput) {
+    const targets = Array.isArray(workflow?.escalation_targets) ? workflow.escalation_targets : [];
+    escalationTargetsInput.value = targets.join(', ');
+  }
 
   const approvals = Array.isArray(governance?.approvals)
     ? governance.approvals
@@ -1567,11 +1617,13 @@ function renderTrustInboxWidget() {
   const metaNode = el('trustInboxMeta');
   const emptyNode = el('trustInboxEmpty');
   const errorNode = el('trustInboxError');
-  if (!listNode || !metaNode || !emptyNode || !errorNode) return;
+  const statusNode = el('trustDeliveryStatus');
+  if (!listNode || !metaNode || !emptyNode || !errorNode || !statusNode) return;
 
   listNode.innerHTML = '';
   errorNode.classList.add('hidden');
   errorNode.textContent = '';
+  statusNode.textContent = state.trustDeliveryStatus || '';
 
   if (state.trustInboxLoading) {
     listNode.classList.add('hidden');
@@ -1688,6 +1740,32 @@ async function refreshTrustApprovalsWidget({ silent = false } = {}) {
     state.trustApprovalsError = `Trust approvals unavailable: ${err.message || 'request failed'}`;
   } finally {
     state.trustApprovalsLoading = false;
+    renderTrustOpsWidget();
+  }
+}
+
+async function refreshTrustWorkflowWidget({ silent = false } = {}) {
+  const runId = state.selectedRunId;
+  if (!runId) {
+    state.trustWorkflowPayload = null;
+    state.trustWorkflowError = '';
+    state.trustWorkflowLoading = false;
+    renderTrustOpsWidget();
+    return;
+  }
+  state.trustWorkflowLoading = true;
+  if (!silent) state.trustWorkflowError = '';
+  renderTrustOpsWidget();
+  try {
+    state.trustWorkflowPayload = state.useMock
+      ? buildMockTrustWorkflowPayload(runId)
+      : await fetchJson(`/api/autonomous/trust/workflow?run_id=${encodeURIComponent(runId)}`);
+    state.trustWorkflowError = '';
+  } catch (err) {
+    state.trustWorkflowPayload = null;
+    state.trustWorkflowError = `Trust workflow unavailable: ${err.message || 'request failed'}`;
+  } finally {
+    state.trustWorkflowLoading = false;
     renderTrustOpsWidget();
   }
 }
@@ -5415,6 +5493,7 @@ function setupPolling() {
     await refreshTrustModelEvalWidget({ silent: true });
     await refreshTrustInboxWidget({ silent: true });
     await refreshTrustApprovalsWidget({ silent: true });
+    await refreshTrustWorkflowWidget({ silent: true });
     if (state.selectedProcessDetail) {
       setProcessStaleIndicator(state.selectedProcessDetail, state.selectedProcessHistory);
     }
@@ -5479,6 +5558,7 @@ async function loadRuns() {
     await refreshTrustModelEvalWidget({ silent: true });
     await refreshTrustInboxWidget({ silent: true });
     await refreshTrustApprovalsWidget({ silent: true });
+    await refreshTrustWorkflowWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     await refreshDeprecationNotice({ silent: true });
@@ -5518,6 +5598,7 @@ async function loadRuns() {
     await refreshTrustModelEvalWidget({ silent: true });
     await refreshTrustInboxWidget({ silent: true });
     await refreshTrustApprovalsWidget({ silent: true });
+    await refreshTrustWorkflowWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     await refreshDeprecationNotice({ silent: true });
@@ -5573,6 +5654,10 @@ async function loadRuns() {
     state.trustApprovalsError = 'Trust approvals unavailable: unable to load runs list.';
     state.trustApprovalsLoading = false;
     renderTrustOpsWidget();
+    state.trustWorkflowPayload = null;
+    state.trustWorkflowError = 'Trust workflow unavailable: unable to load runs list.';
+    state.trustWorkflowLoading = false;
+    renderTrustOpsWidget();
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     setupPolling();
@@ -5609,6 +5694,8 @@ async function selectRun(runId, options = { rerenderList: true }) {
   state.selectedRun = state.runs.find((run) => run.run_id === runId) || null;
   state.detailLoading = true;
   state.detailError = '';
+  state.trustApprovalsPayload = null;
+  state.trustWorkflowPayload = null;
   renderOverviewState();
   renderValidationPanels(state.detail || {});
   if (state.selectedRun?.run_dir) {
@@ -5629,11 +5716,13 @@ async function selectRun(runId, options = { rerenderList: true }) {
     state.detailError = '';
     renderDetail(detail);
     await refreshTrustApprovalsWidget({ silent: true });
+    await refreshTrustWorkflowWidget({ silent: true });
   } catch (err) {
     state.detailLoading = false;
     state.detailError = String(err?.message || 'request failed');
     renderDetail({ run_id: runId, status: 'unknown', phase_timeline: [], tasks: [], blockers: [] });
     await refreshTrustApprovalsWidget({ silent: true });
+    await refreshTrustWorkflowWidget({ silent: true });
     el('statusLine').textContent = `Failed to load detail for ${runId}: ${err.message}`;
   }
 }
@@ -6640,6 +6729,14 @@ function initTrustOpsControls() {
   const noteInput = el('trustApprovalNote');
   const decisionSelect = el('trustApprovalDecision');
   const recordBtn = el('trustApprovalRecordBtn');
+  const assigneesInput = el('trustWorkflowAssignees');
+  const dueAtInput = el('trustWorkflowDueAt');
+  const currentOwnerInput = el('trustWorkflowCurrentOwner');
+  const escalationTargetsInput = el('trustWorkflowEscalationTargets');
+  const saveWorkflowBtn = el('trustWorkflowSaveBtn');
+  const exportInboxJsonBtn = el('trustInboxExportJsonBtn');
+  const exportInboxMdBtn = el('trustInboxExportMdBtn');
+  const sendInboxDryRunBtn = el('trustInboxSendDryRunBtn');
   if (!decisionSelect || !recordBtn) return;
 
   recordBtn.addEventListener('click', async () => {
@@ -6666,6 +6763,70 @@ function initTrustOpsControls() {
     } catch (err) {
       state.trustApprovalStatus = `Trust approval failed: ${err.message || 'request failed'}`;
       renderTrustOpsWidget();
+    }
+  });
+
+  saveWorkflowBtn?.addEventListener('click', async () => {
+    if (!state.selectedRunId) {
+      state.trustApprovalStatus = 'Select a run first.';
+      renderTrustOpsWidget();
+      return;
+    }
+    try {
+      state.trustApprovalStatus = 'Saving trust workflow…';
+      renderTrustOpsWidget();
+      await patchJson('/api/autonomous/trust/workflow', {
+        run_id: state.selectedRunId,
+        assignees: (assigneesInput?.value || '').split(',').map((item) => item.trim()).filter(Boolean),
+        due_at: dueAtInput?.value || '',
+        current_owner: currentOwnerInput?.value || '',
+        escalation_targets: (escalationTargetsInput?.value || '').split(',').map((item) => item.trim()).filter(Boolean),
+      });
+      state.trustApprovalStatus = `Updated workflow for ${state.selectedRunId}.`;
+      await refreshTrustWorkflowWidget({ silent: true });
+      if (state.selectedRunId) {
+        await selectRun(state.selectedRunId, { rerenderList: false });
+      }
+    } catch (err) {
+      state.trustApprovalStatus = `Trust workflow update failed: ${err.message || 'request failed'}`;
+      renderTrustOpsWidget();
+    }
+  });
+
+  exportInboxJsonBtn?.addEventListener('click', () => {
+    const payload = state.trustInboxPayload || {};
+    downloadTextFile(JSON.stringify(payload, null, 2), 'autodev-trust-inbox.json', 'application/json');
+    state.trustDeliveryStatus = 'Exported trust inbox JSON.';
+    renderTrustInboxWidget();
+  });
+
+  exportInboxMdBtn?.addEventListener('click', async () => {
+    try {
+      const payload = state.useMock
+        ? { markdown: '# Trust Delivery\n\n- mode: inbox\n' }
+        : await fetchJson('/api/autonomous/trust/delivery/preview?mode=inbox&window=10&format=markdown');
+      downloadTextFile(String(payload.markdown || ''), 'autodev-trust-inbox.md', 'text/markdown');
+      state.trustDeliveryStatus = 'Exported trust inbox markdown.';
+      renderTrustInboxWidget();
+    } catch (err) {
+      state.trustDeliveryStatus = `Trust inbox markdown export failed: ${err.message || 'request failed'}`;
+      renderTrustInboxWidget();
+    }
+  });
+
+  sendInboxDryRunBtn?.addEventListener('click', async () => {
+    try {
+      const payload = state.useMock
+        ? { outcomes: [{ target: 'stdout', status: 'dry_run' }] }
+        : await postJson('/api/autonomous/trust/delivery/send', { mode: 'inbox', window: 10, format: 'json', dry_run: true, targets: ['stdout'] });
+      const outcomes = Array.isArray(payload?.outcomes) ? payload.outcomes : [];
+      state.trustDeliveryStatus = outcomes.length
+        ? `Trust delivery dry-run: ${outcomes.map((row) => `${row.target}:${row.status}`).join(', ')}`
+        : 'Trust delivery dry-run completed.';
+      renderTrustInboxWidget();
+    } catch (err) {
+      state.trustDeliveryStatus = `Trust delivery dry-run failed: ${err.message || 'request failed'}`;
+      renderTrustInboxWidget();
     }
   });
 }

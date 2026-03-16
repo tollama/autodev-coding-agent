@@ -17,8 +17,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from autodev.browser_automation import run_safari_gui_smoke
 
 
 def _now_stamp() -> str:
@@ -404,7 +407,7 @@ def _build_compare_snapshot_payload(
     right_packet = right_detail.get("trust_packet") if isinstance(right_detail.get("trust_packet"), dict) else {}
     left_score = float(left_trust.get("score") or 0.0)
     right_score = float(right_trust.get("score") or 0.0)
-    generated_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     return {
         "snapshot": {
@@ -458,7 +461,7 @@ def _build_compare_snapshot_payload(
     }
 
 
-def run_smoke(*, artifacts_dir: Path, keep_tmp: bool) -> Path:
+def run_smoke(*, artifacts_dir: Path, keep_tmp: bool, browser_automation: str) -> Path:
     run_stamp = _now_stamp()
     run_artifacts = artifacts_dir / run_stamp
     run_artifacts.mkdir(parents=True, exist_ok=True)
@@ -714,6 +717,19 @@ def run_smoke(*, artifacts_dir: Path, keep_tmp: bool) -> Path:
             if isinstance(remaining_rows, list) and any(str(row.get("snapshot_id") or "") == snapshot_id for row in remaining_rows if isinstance(row, dict)):
                 raise RuntimeError(f"deleted compare snapshot still present in list response: {compare_list_after_delete}")
 
+            browser_required = str(browser_automation or "auto").strip().lower() == "required"
+            if str(browser_automation or "auto").strip().lower() != "off":
+                browser_result = run_safari_gui_smoke(
+                    base_url=base_url,
+                    artifact_dir=run_artifacts,
+                    require_available=browser_required,
+                )
+            else:
+                browser_result = {"status": "skipped", "reason": "browser_automation_disabled"}
+            snapshots["browser_automation"] = browser_result
+            if browser_result.get("status") == "failed":
+                raise RuntimeError(f"browser automation failed: {browser_result}")
+
             _write_json(
                 run_artifacts / "result.json",
                 {
@@ -769,6 +785,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="keep temporary generated workspace for debugging",
     )
+    ap.add_argument(
+        "--browser-automation",
+        choices=["off", "auto", "required"],
+        default="auto",
+        help="attempt Safari-based browser automation smoke when available",
+    )
     return ap.parse_args()
 
 
@@ -778,7 +800,11 @@ def main() -> int:
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        run_artifacts = run_smoke(artifacts_dir=artifacts_dir, keep_tmp=bool(args.keep_tmp))
+        run_artifacts = run_smoke(
+            artifacts_dir=artifacts_dir,
+            keep_tmp=bool(args.keep_tmp),
+            browser_automation=str(args.browser_automation),
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"[NXT-007 smoke] FAIL: {exc}")
         print(f"[NXT-007 smoke] See artifacts: {artifacts_dir}")

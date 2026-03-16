@@ -144,6 +144,13 @@
             <div id="trustOpsMeta" class="muted"></div>
             <div id="trustOpsCards" class="scorecard-grid hidden"></div>
             <div class="run-controls-grid compact">
+              <input id="trustWorkflowAssignees" type="text" placeholder="Assignees (comma-separated)" />
+              <input id="trustWorkflowDueAt" type="text" placeholder="Due at (ISO-8601)" />
+              <input id="trustWorkflowCurrentOwner" type="text" placeholder="Current owner" />
+              <input id="trustWorkflowEscalationTargets" type="text" placeholder="Escalation targets (comma-separated)" />
+              <button id="trustWorkflowSaveBtn" type="button">Save workflow</button>
+            </div>
+            <div class="run-controls-grid compact">
               <select id="trustApprovalDecision" aria-label="Trust approval decision">
                 <option value="approve">Approve</option>
                 <option value="acknowledge">Acknowledge</option>
@@ -179,6 +186,12 @@
           <section>
             <h3>Trust Inbox</h3>
             <div id="trustInboxMeta" class="muted"></div>
+            <div class="api-notice-actions">
+              <button id="trustInboxExportJsonBtn" type="button">Export Inbox JSON</button>
+              <button id="trustInboxExportMdBtn" type="button">Export Inbox Markdown</button>
+              <button id="trustInboxSendDryRunBtn" type="button">Dry-run Delivery</button>
+            </div>
+            <div id="trustDeliveryStatus" class="empty subtle"></div>
             <div id="trustInboxList" class="simple-list hidden"></div>
             <div id="trustInboxEmpty" class="empty">Loading trust inbox…</div>
             <div id="trustInboxError" class="empty error-text hidden"></div>
