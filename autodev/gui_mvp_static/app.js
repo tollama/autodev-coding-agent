@@ -827,25 +827,30 @@ function buildMockTrustDeliveryAuditPayload() {
       events_total: 2,
       sent_count: 1,
       dry_run_count: 1,
-      failed_count: 0,
+      failed_count: 1,
+      retry_count: 1,
       latest_at: new Date().toISOString(),
-      modes: ['inbox'],
-      targets: ['stdout', 'log:/tmp/mock-trust.md'],
     },
     events: [
       {
+        delivery_id: 'del-failed-001',
         timestamp: new Date().toISOString(),
         mode: 'inbox',
-        dry_run: true,
-        targets: ['stdout'],
-        outcomes: [{ target: 'stdout', status: 'dry_run' }],
+        dry_run: false,
+        target: 'webhook:https://example.invalid/trust',
+        status: 'failed',
+        attempt: 1,
+        retry_of: '',
       },
       {
+        delivery_id: 'del-retry-002',
         timestamp: new Date(Date.now() - 3600_000).toISOString(),
         mode: 'inbox',
         dry_run: false,
-        targets: ['log:/tmp/mock-trust.md'],
-        outcomes: [{ target: 'log:/tmp/mock-trust.md', status: 'sent' }],
+        target: 'ticket-json:/tmp/mock-trust-ticket.json',
+        status: 'sent',
+        attempt: 2,
+        retry_of: 'del-failed-001',
       },
     ],
   };
@@ -1780,17 +1785,16 @@ function renderTrustDeliveryAuditWidget() {
 
   rows.slice(0, 5).forEach((row) => {
     const item = document.createElement('article');
-    const outcomes = Array.isArray(row?.outcomes) ? row.outcomes : [];
     item.className = 'simple-list-item';
     item.innerHTML = `
-      <div class="title">${escapeHtml(String(row?.mode || '-'))} • ${escapeHtml(row?.dry_run ? 'dry-run' : 'sent')}</div>
-      <div class="meta">${escapeHtml(formatTime(row?.timestamp || ''))} • targets=${escapeHtml((Array.isArray(row?.targets) ? row.targets.join(', ') : '-') || '-')}</div>
-      <div class="body">${escapeHtml(outcomes.map((entry) => `${entry?.target || '-'}:${entry?.status || '-'}`).join(', ') || 'No outcomes recorded.')}</div>
+      <div class="title">${escapeHtml(String(row?.delivery_id || '-'))} • ${escapeHtml(String(row?.status || '-'))}</div>
+      <div class="meta">${escapeHtml(formatTime(row?.timestamp || ''))} • target=${escapeHtml(String(row?.target || '-'))} • attempt=${escapeHtml(String(row?.attempt ?? 0))}</div>
+      <div class="body">${escapeHtml(`mode=${row?.mode || '-'}${row?.retry_of ? ` • retry_of=${row.retry_of}` : ''}${row?.error ? ` • ${row.error}` : ''}`)}</div>
     `;
     listNode.appendChild(item);
   });
 
-  metaNode.textContent = `events=${payload?.summary?.events_total || rows.length} • sent=${payload?.summary?.sent_count || 0} • dry_run=${payload?.summary?.dry_run_count || 0} • failed=${payload?.summary?.failed_count || 0}`;
+  metaNode.textContent = `events=${payload?.summary?.events_total || rows.length} • sent=${payload?.summary?.sent_count || 0} • dry_run=${payload?.summary?.dry_run_count || 0} • failed=${payload?.summary?.failed_count || 0} • retries=${payload?.summary?.retry_count || 0}`;
   emptyNode.classList.add('hidden');
   listNode.classList.remove('hidden');
 }
@@ -1978,7 +1982,7 @@ async function refreshTrustDeliveryAuditWidget({ silent = false } = {}) {
   try {
     state.trustDeliveryAuditPayload = state.useMock
       ? buildMockTrustDeliveryAuditPayload()
-      : await fetchJson('/api/autonomous/trust/delivery/audit?window=10');
+      : await fetchJson('/api/autonomous/trust/delivery/state?window=10');
     state.trustDeliveryAuditError = '';
   } catch (err) {
     state.trustDeliveryAuditPayload = null;
@@ -6991,6 +6995,7 @@ function initTrustOpsControls() {
   const exportInboxJsonBtn = el('trustInboxExportJsonBtn');
   const exportInboxMdBtn = el('trustInboxExportMdBtn');
   const sendInboxDryRunBtn = el('trustInboxSendDryRunBtn');
+  const retryLatestDeliveryBtn = el('trustDeliveryRetryLatestBtn');
   if (!decisionSelect || !recordBtn) return;
 
   async function applyWorkflowAction(action, extra = {}) {
@@ -7126,6 +7131,26 @@ function initTrustOpsControls() {
       renderTrustInboxWidget();
     } catch (err) {
       state.trustDeliveryStatus = `Trust delivery dry-run failed: ${err.message || 'request failed'}`;
+      renderTrustInboxWidget();
+    }
+  });
+
+  retryLatestDeliveryBtn?.addEventListener('click', async () => {
+    const rows = Array.isArray(state.trustDeliveryAuditPayload?.events) ? state.trustDeliveryAuditPayload.events : [];
+    const failed = rows.find((row) => String(row?.status || '') === 'failed' && String(row?.delivery_id || '').trim());
+    if (!failed) {
+      state.trustDeliveryStatus = 'No failed trust deliveries to retry.';
+      renderTrustInboxWidget();
+      return;
+    }
+    try {
+      const payload = state.useMock
+        ? { delivery_id: 'del-retry-003', retry_of: failed.delivery_id, outcomes: [{ target: failed.target, status: 'sent' }] }
+        : await postJson('/api/autonomous/trust/delivery/retry', { delivery_id: failed.delivery_id, dry_run: false });
+      state.trustDeliveryStatus = `Retried delivery ${payload?.retry_of || failed.delivery_id}.`;
+      await refreshTrustDeliveryAuditWidget({ silent: true });
+    } catch (err) {
+      state.trustDeliveryStatus = `Trust delivery retry failed: ${err.message || 'request failed'}`;
       renderTrustInboxWidget();
     }
   });

@@ -662,6 +662,11 @@ def run_smoke(*, artifacts_dir: Path, keep_tmp: bool, browser_automation: str) -
             if trust_delivery_audit.get("empty") is True:
                 raise RuntimeError(f"expected trust delivery audit activity after send: {trust_delivery_audit}")
 
+            trust_delivery_state = _http_json("GET", f"{base_url}/api/autonomous/trust/delivery/state?window=5")
+            snapshots["trust_delivery_state"] = trust_delivery_state
+            if trust_delivery_state.get("empty") is True:
+                raise RuntimeError(f"expected trust delivery state activity after send: {trust_delivery_state}")
+
             baseline_detail = _http_json("GET", f"{base_url}/api/runs/{baseline_run_id}")
             candidate_detail = _http_json("GET", f"{base_url}/api/runs/{run_id}")
             snapshots["baseline_run_detail"] = baseline_detail

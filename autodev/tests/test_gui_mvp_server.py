@@ -1530,6 +1530,38 @@ def test_trust_analytics_model_eval_inbox_and_approvals_endpoints(gui_server):
     assert delivery_audit_body["empty"] is False
     assert delivery_audit_body["summary"]["dry_run_count"] >= 1
 
+    ticket_path = runs_root / "trust-ticket.json"
+    delivery_ticket_status, delivery_ticket_body = _post_json(
+        f"{base_url}/api/autonomous/trust/delivery/send",
+        {"mode": "inbox", "window": 5, "format": "json", "dry_run": False, "targets": [f"ticket-json:{ticket_path}"]},
+        headers={"X-Autodev-Role": "operator"},
+    )
+    assert delivery_ticket_status == 200
+    assert delivery_ticket_body["outcomes"][0]["status"] == "sent"
+    assert ticket_path.exists()
+
+    delivery_failed_status, delivery_failed_body = _post_json(
+        f"{base_url}/api/autonomous/trust/delivery/send",
+        {"mode": "inbox", "window": 5, "format": "json", "dry_run": False, "targets": ["unsupported-target"]},
+        headers={"X-Autodev-Role": "operator"},
+    )
+    assert delivery_failed_status == 200
+    assert delivery_failed_body["outcomes"][0]["status"] == "failed"
+
+    delivery_state_status, delivery_state_body = _get_json(f"{base_url}/api/autonomous/trust/delivery/state?window=5")
+    assert delivery_state_status == 200
+    assert delivery_state_body["empty"] is False
+    assert delivery_state_body["summary"]["failed_count"] >= 1
+
+    retry_status, retry_body = _post_json(
+        f"{base_url}/api/autonomous/trust/delivery/retry",
+        {"delivery_id": delivery_failed_body["delivery_id"], "dry_run": True},
+        headers={"X-Autodev-Role": "operator"},
+    )
+    assert retry_status == 200
+    assert retry_body["retry_of"] == delivery_failed_body["delivery_id"]
+    assert retry_body["outcomes"][0]["status"] == "dry_run"
+
     browser_status, browser_body = _get_json(f"{base_url}/api/autonomous/browser-automation/latest")
     assert browser_status == 200
     assert browser_body["empty"] is False
@@ -1559,7 +1591,9 @@ def test_api_docs_routes_endpoint_and_static_reference_are_served(gui_server):
     assert "/api/autonomous/trust/workflow/actions" in route_paths
     assert "/api/autonomous/trust/delivery/preview" in route_paths
     assert "/api/autonomous/trust/delivery/audit" in route_paths
+    assert "/api/autonomous/trust/delivery/state" in route_paths
     assert "/api/autonomous/trust/delivery/send" in route_paths
+    assert "/api/autonomous/trust/delivery/retry" in route_paths
     assert "/api/autonomous/browser-automation/latest" in route_paths
     assert "/api/runs/compare/snapshots/<snapshot_id>" in route_paths
     assert any(
@@ -1755,6 +1789,7 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="trustInboxExportMdBtn"' in index_html
     assert 'id="trustInboxSendDryRunBtn"' in index_html
     assert 'id="trustDeliveryStatus"' in index_html
+    assert 'id="trustDeliveryRetryLatestBtn"' in index_html
     assert 'id="trustDeliveryAuditList"' in index_html
     assert 'id="browserAutomationCards"' in index_html
     assert 'id="browserAutomationList"' in index_html
@@ -1900,8 +1935,9 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "/api/autonomous/trust/workflow" in app_js
     assert "/api/autonomous/trust/workflow/actions" in app_js
     assert "/api/autonomous/trust/delivery/preview" in app_js
-    assert "/api/autonomous/trust/delivery/audit" in app_js
+    assert "/api/autonomous/trust/delivery/state" in app_js
     assert "/api/autonomous/trust/delivery/send" in app_js
+    assert "/api/autonomous/trust/delivery/retry" in app_js
     assert "/api/autonomous/browser-automation/latest" in app_js
     assert "/api/scorecard/latest" in app_js
     assert "/api/autonomous/trust/latest" in app_js

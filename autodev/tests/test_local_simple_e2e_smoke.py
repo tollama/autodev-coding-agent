@@ -49,6 +49,7 @@ def test_local_simple_e2e_smoke_script_covers_trust_compare_and_saved_snapshots(
     assert snapshots["static_index"]["has_deprecation_notice"] is True
     assert snapshots["static_index"]["has_api_reference_loader"] is True
     assert snapshots["trust_delivery_audit"]["empty"] is False
+    assert snapshots["trust_delivery_state"]["empty"] is False
     assert snapshots["browser_automation"]["status"] in {"passed", "skipped"}
     assert snapshots["browser_automation_latest"]["empty"] is False
 

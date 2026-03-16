@@ -732,10 +732,71 @@ def test_trust_cli_supports_analytics_inbox_and_approvals(tmp_path: Path, capsys
     assert "# Trust Delivery" in delivery_send
     assert log_target.exists()
 
+    ticket_target = tmp_path / "trust-ticket.json"
+    autonomous_mode.cli(
+        [
+            "trust-delivery",
+            "send",
+            "--runs-root",
+            str(runs_root),
+            "--mode",
+            "inbox",
+            "--format",
+            "json",
+            "--target",
+            f"ticket-json:{ticket_target}",
+            "--dry-run",
+            "false",
+        ]
+    )
+    delivery_ticket = json.loads(capsys.readouterr().out)
+    assert delivery_ticket["outcomes"][0]["status"] == "sent"
+    assert ticket_target.exists()
+
+    autonomous_mode.cli(
+        [
+            "trust-delivery",
+            "send",
+            "--runs-root",
+            str(runs_root),
+            "--mode",
+            "inbox",
+            "--format",
+            "json",
+            "--target",
+            "unsupported-target",
+            "--dry-run",
+            "false",
+        ]
+    )
+    failed_delivery = json.loads(capsys.readouterr().out)
+    assert failed_delivery["outcomes"][0]["status"] == "failed"
+
     autonomous_mode.cli(["trust-delivery", "audit", "--runs-root", str(runs_root), "--format", "text"])
     delivery_audit = capsys.readouterr().out
     assert "# Trust Delivery Audit" in delivery_audit
     assert "events_total" in delivery_audit
+
+    autonomous_mode.cli(["trust-delivery", "state", "--runs-root", str(runs_root), "--format", "text"])
+    delivery_state = capsys.readouterr().out
+    assert "# Trust Delivery State" in delivery_state
+    assert "failed_count" in delivery_state
+
+    autonomous_mode.cli(
+        [
+            "trust-delivery",
+            "retry",
+            "--runs-root",
+            str(runs_root),
+            "--delivery-id",
+            str(failed_delivery["delivery_id"]),
+            "--dry-run",
+            "true",
+        ]
+    )
+    retried_delivery = json.loads(capsys.readouterr().out)
+    assert retried_delivery["retry_of"] == failed_delivery["delivery_id"]
+    assert retried_delivery["outcomes"][0]["status"] == "dry_run"
 
     autonomous_mode.cli(["browser-automation-status", "--runs-root", str(runs_root), "--format", "text"])
     browser_status = capsys.readouterr().out

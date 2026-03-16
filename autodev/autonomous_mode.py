@@ -3417,6 +3417,18 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     trust_delivery_audit.add_argument("--window", type=int, default=10)
     trust_delivery_audit.add_argument("--format", choices=["json", "text"], default="json")
 
+    trust_delivery_state = trust_delivery_sub.add_parser("state", help="inspect persisted trust delivery attempt state")
+    trust_delivery_state.add_argument("--runs-root", required=True)
+    trust_delivery_state.add_argument("--window", type=int, default=10)
+    trust_delivery_state.add_argument("--status", default=None)
+    trust_delivery_state.add_argument("--format", choices=["json", "text"], default="json")
+
+    trust_delivery_retry = trust_delivery_sub.add_parser("retry", help="retry failed targets from a previous trust delivery")
+    trust_delivery_retry.add_argument("--runs-root", required=True)
+    trust_delivery_retry.add_argument("--delivery-id", required=True)
+    trust_delivery_retry.add_argument("--dry-run", default="false", type=_parse_cli_bool)
+    trust_delivery_retry.add_argument("--format", choices=["json", "text"], default="json")
+
     browser_automation_status = sub.add_parser("browser-automation-status", help="show the latest persisted browser automation result")
     browser_automation_status.add_argument("--runs-root", required=True)
     browser_automation_status.add_argument("--format", choices=["json", "text"], default="json")
@@ -4955,6 +4967,31 @@ def _render_trust_delivery_audit_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _render_trust_delivery_state_text(payload: dict[str, Any]) -> str:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    events = payload.get("events") if isinstance(payload.get("events"), list) else []
+    lines = [
+        "# Trust Delivery State",
+        f"- events_total: {summary.get('events_total', 0)}",
+        f"- sent_count: {summary.get('sent_count', 0)}",
+        f"- dry_run_count: {summary.get('dry_run_count', 0)}",
+        f"- failed_count: {summary.get('failed_count', 0)}",
+        f"- retry_count: {summary.get('retry_count', 0)}",
+    ]
+    if events:
+        lines.append("- events:")
+        for row in events:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"  - {row.get('delivery_id') or '-'} target={row.get('target') or '-'} "
+                f"status={row.get('status') or '-'} attempt={row.get('attempt') or 0}"
+            )
+    else:
+        lines.append("- events: -")
+    return "\n".join(lines)
+
+
 def _render_browser_automation_text(payload: dict[str, Any]) -> str:
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
@@ -5099,7 +5136,7 @@ def _trust_workflow(argv: list[str]) -> None:
 def _trust_delivery(argv: list[str]) -> None:
     parser = _build_cli_parser()
     args = parser.parse_args(["trust-delivery", *argv])
-    from .trust_delivery import load_trust_delivery_audit, preview_trust_delivery, send_trust_delivery
+    from .trust_delivery import load_trust_delivery_audit, load_trust_delivery_state, preview_trust_delivery, retry_trust_delivery, send_trust_delivery
 
     runs_root = Path(str(args.runs_root)).expanduser().resolve()
     if args.trust_delivery_action == "preview":
@@ -5119,6 +5156,27 @@ def _trust_delivery(argv: list[str]) -> None:
         payload = load_trust_delivery_audit(runs_root, window=int(args.window))
         if args.format == "text":
             print(_render_trust_delivery_audit_text(payload))
+            return
+        print(json_dumps(payload))
+        return
+    if args.trust_delivery_action == "state":
+        payload = load_trust_delivery_state(runs_root, window=int(args.window), status=args.status)
+        if args.format == "text":
+            print(_render_trust_delivery_state_text(payload))
+            return
+        print(json_dumps(payload))
+        return
+    if args.trust_delivery_action == "retry":
+        payload = retry_trust_delivery(
+            runs_root,
+            delivery_id=str(args.delivery_id),
+            dry_run=bool(args.dry_run),
+            source="cli-retry",
+        )
+        if args.format == "text":
+            if payload.get("error"):
+                raise SystemExit(str((payload.get("error") or {}).get("message") or "trust delivery retry failed"))
+            print(_render_trust_delivery_text(payload))
             return
         print(json_dumps(payload))
         return

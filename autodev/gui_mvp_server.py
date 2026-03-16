@@ -171,9 +171,19 @@ GUI_API_ROUTE_SECTIONS: list[dict[str, Any]] = [
                 "summary": "Inspect recent trust delivery activity and outcomes.",
             },
             {
+                "method": "GET",
+                "path": "/api/autonomous/trust/delivery/state",
+                "summary": "Inspect persisted trust delivery attempts and retry state.",
+            },
+            {
                 "method": "POST",
                 "path": "/api/autonomous/trust/delivery/send",
                 "summary": "Deliver trust inbox, event, or run payloads to configured targets.",
+            },
+            {
+                "method": "POST",
+                "path": "/api/autonomous/trust/delivery/retry",
+                "summary": "Retry failed targets from a previous trust delivery.",
             },
             {
                 "method": "GET",
@@ -1548,6 +1558,12 @@ def _trust_delivery_audit(runs_root: Path, window: int) -> dict[str, Any]:
     from .trust_delivery import load_trust_delivery_audit
 
     return load_trust_delivery_audit(runs_root, window=window)
+
+
+def _trust_delivery_state(runs_root: Path, window: int, *, status: str | None = None) -> dict[str, Any]:
+    from .trust_delivery import load_trust_delivery_state
+
+    return load_trust_delivery_state(runs_root, window=window, status=status)
 
 
 def _browser_automation_latest(runs_root: Path) -> dict[str, Any]:
@@ -3433,6 +3449,12 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             window = _parse_trend_window(str((query.get("window") or ["10"])[0]))
             self._json_response(_trust_delivery_audit(self.config.runs_root, window))
             return
+        if path == "/api/autonomous/trust/delivery/state":
+            query = parse_qs(parsed.query)
+            window = _parse_trend_window(str((query.get("window") or ["10"])[0]))
+            status_filter = str((query.get("status") or [""])[0]).strip() or None
+            self._json_response(_trust_delivery_state(self.config.runs_root, window, status=status_filter))
+            return
         if path == "/api/autonomous/browser-automation/latest":
             self._json_response(_browser_automation_latest(self.config.runs_root))
             return
@@ -3637,6 +3659,9 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/autonomous/trust/delivery/send":
             self._handle_trust_delivery_send()
+            return
+        if path == "/api/autonomous/trust/delivery/retry":
+            self._handle_trust_delivery_retry()
             return
         snapshot_id = _parse_compare_snapshot_legacy_action_path(path, "metadata")
         if snapshot_id is not None:
@@ -4296,6 +4321,55 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                     "run_id": str(payload.get("run_id") or ""),
                     "targets": payload.get("targets"),
                     "dry_run": bool(payload.get("dry_run", True)),
+                },
+            },
+        )
+
+    def _handle_trust_delivery_retry(self) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+        auth = _resolve_request_auth(headers=self.headers, payload=payload, action="trust_delivery_retry")
+        if not _is_mutation_allowed(auth.role):
+            self._json_response(
+                {
+                    "error": _error_payload(
+                        "forbidden_role",
+                        f"Role '{auth.role}' cannot retry trust delivery payloads.",
+                        role=auth.role,
+                        allowed_roles=sorted(MUTATING_ROLES),
+                    )
+                },
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return
+        from .trust_delivery import retry_trust_delivery
+
+        body = retry_trust_delivery(
+            self.config.runs_root,
+            delivery_id=str(payload.get("delivery_id") or ""),
+            dry_run=bool(payload.get("dry_run") if payload.get("dry_run") is not None else False),
+            source=f"api-retry:{auth.source}",
+        )
+        status = HTTPStatus.OK if not body.get("error") else HTTPStatus.BAD_REQUEST
+        self._audit_then_respond(
+            body=body,
+            status=status,
+            audit_event={
+                "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "action": "trust_delivery_retry",
+                "result_status": "sent" if status == HTTPStatus.OK else "failed",
+                "role": auth.role,
+                "auth": {
+                    "source": auth.source,
+                    "subject": auth.subject,
+                    "scope": auth.scope,
+                    "policy_name": auth.policy_name,
+                    "policy_allowed_roles": auth.policy_allowed_roles,
+                },
+                "payload": {
+                    "delivery_id": str(payload.get("delivery_id") or ""),
+                    "dry_run": bool(payload.get("dry_run") if payload.get("dry_run") is not None else False),
                 },
             },
         )
