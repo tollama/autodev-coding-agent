@@ -604,20 +604,31 @@ def test_compare_snapshot_persist_list_and_reload(gui_server):
     assert "baseline_run: run-a" in detail_body["markdown"]
     assert detail_body["meta"]["audit_log_path"].endswith(".jsonl")
 
-    rename_status, rename_body = _post_json(
+    rename_status, rename_body, rename_headers = _request_json_with_headers(
         f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/rename",
-        {"display_name": "Release gating compare"},
+        method="POST",
+        payload={"display_name": "Release gating compare"},
     )
     assert rename_status == 200
     assert rename_body["snapshot"]["display_name"] == "Release gating compare"
+    assert rename_body["meta"]["deprecation"]["deprecated"] is True
+    assert rename_body["meta"]["deprecation"]["canonical_method"] == "PATCH"
+    assert rename_body["meta"]["deprecation"]["canonical_path"] == f"/api/runs/compare/snapshots/{snapshot_id}"
+    assert rename_headers["X-AutoDev-Deprecated"] == "true"
+    assert rename_headers["X-AutoDev-Canonical-Method"] == "PATCH"
 
-    metadata_status, metadata_body = _post_json(
+    metadata_status, metadata_body, metadata_headers = _request_json_with_headers(
         f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/metadata",
-        {"pinned": True, "tags": ["release", "gate", "release"]},
+        method="POST",
+        payload={"pinned": True, "tags": ["release", "gate", "release"]},
     )
     assert metadata_status == 200
     assert metadata_body["snapshot"]["pinned"] is True
     assert metadata_body["snapshot"]["tags"] == ["release", "gate"]
+    assert metadata_body["meta"]["deprecation"]["deprecated"] is True
+    assert metadata_body["meta"]["deprecation"]["canonical_method"] == "PATCH"
+    assert metadata_headers["X-AutoDev-Deprecated"] == "true"
+    assert metadata_headers["X-AutoDev-Canonical-Path"] == f"/api/runs/compare/snapshots/{snapshot_id}"
 
     renamed_status, renamed_list = _get_json(f"{base_url}/api/runs/compare/snapshots")
     assert renamed_status == 200
@@ -625,12 +636,17 @@ def test_compare_snapshot_persist_list_and_reload(gui_server):
     assert renamed_list["snapshots"][0]["pinned"] is True
     assert renamed_list["snapshots"][0]["tags"] == ["release", "gate"]
 
-    delete_status, delete_body = _post_json(
+    delete_status, delete_body, delete_headers = _request_json_with_headers(
         f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/delete",
-        {},
+        method="POST",
+        payload={},
     )
     assert delete_status == 200
     assert delete_body["deleted"] is True
+    assert delete_body["meta"]["deprecation"]["deprecated"] is True
+    assert delete_body["meta"]["deprecation"]["canonical_method"] == "DELETE"
+    assert delete_headers["X-AutoDev-Deprecated"] == "true"
+    assert delete_headers["X-AutoDev-Canonical-Method"] == "DELETE"
     assert not (snapshot_dir / f"{snapshot_id}.json").exists()
     assert not (snapshot_dir / f"{snapshot_id}.md").exists()
 
@@ -740,6 +756,44 @@ def test_compare_snapshot_server_side_filters_bulk_and_rest_endpoints(gui_server
     assert "compare_snapshot_metadata" in actions
     assert "compare_snapshot_bulk" in actions
     assert "compare_snapshot_delete" in actions
+
+
+def test_compare_snapshot_rest_item_routes_are_strict_and_do_not_accept_helper_suffixes(gui_server):
+    base_url, _ = gui_server
+
+    payload = {
+        "snapshot": {
+            "generated_at": "2026-03-15T12:00:00Z",
+            "source": "api",
+            "left": {"run_id": "run-a", "status": "failed", "trust": {"status": "low", "score": 0.21}},
+            "right": {"run_id": "run-b", "status": "ok", "trust": {"status": "high", "score": 0.92}},
+        },
+        "markdown": "# Compare Trust Snapshot\n",
+        "compare_payload": {
+            "left": {"run_id": "run-a", "status": "failed", "trust": {"status": "low", "score": 0.21}},
+            "right": {"run_id": "run-b", "status": "ok", "trust": {"status": "high", "score": 0.92}},
+            "delta": {"trust_score": 0.71, "trust_status_changed": True},
+        },
+    }
+
+    save_status, save_body = _post_json(f"{base_url}/api/runs/compare/snapshots", payload)
+    assert save_status == 200
+    snapshot_id = save_body["snapshot"]["snapshot_id"]
+
+    bad_get_status, bad_get_body = _get_json(f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/delete")
+    assert bad_get_status == 404
+    assert bad_get_body["error"] == "not found"
+
+    bad_patch_status, bad_patch_body = _patch_json(
+        f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/delete",
+        {"display_name": "should-not-work"},
+    )
+    assert bad_patch_status == 404
+    assert bad_patch_body["error"] == "not found"
+
+    bad_delete_status, bad_delete_body = _delete_json(f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/metadata")
+    assert bad_delete_status == 404
+    assert bad_delete_body["error"] == "not found"
 
 
 def test_compare_snapshot_integrity_and_duplicate_detection(gui_server):
@@ -1843,6 +1897,30 @@ def _request_json(url: str, *, method: str = "GET", payload: dict | None = None,
     except error.HTTPError as exc:
         body = json.loads(exc.read().decode("utf-8"))
         return exc.code, body
+
+
+def _request_json_with_headers(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: dict | None = None,
+    headers: dict[str, str] | None = None,
+):
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = request.Request(url, data=data, method=method)
+    if payload is not None:
+        req.add_header("Content-Type", "application/json")
+    if headers:
+        for k, v in headers.items():
+            req.add_header(k, v)
+
+    try:
+        with request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            return resp.status, body, dict(resp.headers.items())
+    except error.HTTPError as exc:
+        body = json.loads(exc.read().decode("utf-8"))
+        return exc.code, body, dict(exc.headers.items())
 
 
 def _post_json(url: str, payload: dict, headers: dict[str, str] | None = None):

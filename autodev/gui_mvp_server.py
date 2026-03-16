@@ -1742,6 +1742,36 @@ def _parse_compare_snapshot_filter_datetime(raw: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _parse_compare_snapshot_item_path(path: str) -> str | None:
+    prefix = "/api/runs/compare/snapshots/"
+    if not path.startswith(prefix):
+        return None
+    tail = unquote(path.removeprefix(prefix)).strip("/")
+    if not tail or "/" in tail:
+        return None
+    return tail
+
+
+def _parse_compare_snapshot_legacy_action_path(path: str, action: str) -> str | None:
+    prefix = "/api/runs/compare/snapshots/"
+    suffix = f"/{action}"
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return None
+    tail = unquote(path.removeprefix(prefix).removesuffix(suffix)).strip("/")
+    if not tail or "/" in tail:
+        return None
+    return tail
+
+
+def _legacy_compare_snapshot_route_meta(*, canonical_method: str, canonical_path: str) -> dict[str, Any]:
+    return {
+        "deprecated": True,
+        "canonical_method": canonical_method,
+        "canonical_path": canonical_path,
+        "message": f"Use {canonical_method} {canonical_path} instead.",
+    }
+
+
 def _compare_snapshot_passes_filters(
     metadata: dict[str, Any],
     *,
@@ -2506,8 +2536,8 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if path.startswith("/api/runs/compare/snapshots/"):
-            snapshot_id = unquote(path.removeprefix("/api/runs/compare/snapshots/")).strip("/")
+        snapshot_id = _parse_compare_snapshot_item_path(path)
+        if snapshot_id is not None:
             payload, status = _get_compare_snapshot(self.config.runs_root, snapshot_id)
             self._audit_then_respond(
                 body=payload,
@@ -2518,6 +2548,9 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                     result_status="opened" if status == HTTPStatus.OK else "failed",
                 ),
             )
+            return
+        if path.startswith("/api/runs/compare/snapshots/"):
+            self._json_response({"error": "not found", "path": path}, status=HTTPStatus.NOT_FOUND)
             return
 
         if path == "/api/runs/compare":
@@ -2648,32 +2681,32 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/runs/compare/snapshots/retention/apply":
             self._handle_compare_snapshot_retention()
             return
-        if path.startswith("/api/runs/compare/snapshots/") and path.endswith("/metadata"):
-            snapshot_id = unquote(path.removeprefix("/api/runs/compare/snapshots/").removesuffix("/metadata")).strip("/")
+        snapshot_id = _parse_compare_snapshot_legacy_action_path(path, "metadata")
+        if snapshot_id is not None:
             self._handle_compare_snapshot_metadata(snapshot_id)
             return
-        if path.startswith("/api/runs/compare/snapshots/") and path.endswith("/rename"):
-            snapshot_id = unquote(path.removeprefix("/api/runs/compare/snapshots/").removesuffix("/rename")).strip("/")
+        snapshot_id = _parse_compare_snapshot_legacy_action_path(path, "rename")
+        if snapshot_id is not None:
             self._handle_compare_snapshot_rename(snapshot_id)
             return
-        if path.startswith("/api/runs/compare/snapshots/") and path.endswith("/delete"):
-            snapshot_id = unquote(path.removeprefix("/api/runs/compare/snapshots/").removesuffix("/delete")).strip("/")
+        snapshot_id = _parse_compare_snapshot_legacy_action_path(path, "delete")
+        if snapshot_id is not None:
             self._handle_compare_snapshot_delete(snapshot_id)
             return
         self._json_response({"error": "not found", "path": path}, status=HTTPStatus.NOT_FOUND)
 
     def do_PATCH(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
-        if path.startswith("/api/runs/compare/snapshots/"):
-            snapshot_id = unquote(path.removeprefix("/api/runs/compare/snapshots/")).strip("/")
+        snapshot_id = _parse_compare_snapshot_item_path(path)
+        if snapshot_id is not None:
             self._handle_compare_snapshot_metadata(snapshot_id)
             return
         self._json_response({"error": "not found", "path": path}, status=HTTPStatus.NOT_FOUND)
 
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
-        if path.startswith("/api/runs/compare/snapshots/"):
-            snapshot_id = unquote(path.removeprefix("/api/runs/compare/snapshots/")).strip("/")
+        snapshot_id = _parse_compare_snapshot_item_path(path)
+        if snapshot_id is not None:
             self._handle_compare_snapshot_delete(snapshot_id)
             return
         self._json_response({"error": "not found", "path": path}, status=HTTPStatus.NOT_FOUND)
@@ -2948,6 +2981,12 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             return
         display_name = str(payload.get("display_name") or "")
         body, status = _rename_compare_snapshot(self.config.runs_root, snapshot_id, display_name)
+        body.setdefault("meta", {})
+        if isinstance(body.get("meta"), dict):
+            body["meta"]["deprecation"] = _legacy_compare_snapshot_route_meta(
+                canonical_method="PATCH",
+                canonical_path=f"/api/runs/compare/snapshots/{snapshot_id}",
+            )
         self._audit_then_respond(
             body=body,
             status=status,
@@ -2956,6 +2995,11 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                 payload={"snapshot_id": snapshot_id, "display_name": display_name},
                 result_status="updated" if status == HTTPStatus.OK else "failed",
             ),
+            headers={
+                "X-AutoDev-Deprecated": "true",
+                "X-AutoDev-Canonical-Method": "PATCH",
+                "X-AutoDev-Canonical-Path": f"/api/runs/compare/snapshots/{snapshot_id}",
+            },
         )
 
     def _handle_compare_snapshot_metadata(self, snapshot_id: str) -> None:
@@ -2970,6 +3014,20 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             archived=payload.get("archived"),
             tags=payload.get("tags"),
         )
+        is_legacy_helper = urlparse(self.path).path.endswith("/metadata")
+        headers = None
+        if is_legacy_helper:
+            body.setdefault("meta", {})
+            if isinstance(body.get("meta"), dict):
+                body["meta"]["deprecation"] = _legacy_compare_snapshot_route_meta(
+                    canonical_method="PATCH",
+                    canonical_path=f"/api/runs/compare/snapshots/{snapshot_id}",
+                )
+            headers = {
+                "X-AutoDev-Deprecated": "true",
+                "X-AutoDev-Canonical-Method": "PATCH",
+                "X-AutoDev-Canonical-Path": f"/api/runs/compare/snapshots/{snapshot_id}",
+            }
         self._audit_then_respond(
             body=body,
             status=status,
@@ -2984,10 +3042,25 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                 },
                 result_status="updated" if status == HTTPStatus.OK else "failed",
             ),
+            headers=headers,
         )
 
     def _handle_compare_snapshot_delete(self, snapshot_id: str) -> None:
         body, status = _delete_compare_snapshot(self.config.runs_root, snapshot_id)
+        is_legacy_helper = urlparse(self.path).path.endswith("/delete")
+        headers = None
+        if is_legacy_helper:
+            body.setdefault("meta", {})
+            if isinstance(body.get("meta"), dict):
+                body["meta"]["deprecation"] = _legacy_compare_snapshot_route_meta(
+                    canonical_method="DELETE",
+                    canonical_path=f"/api/runs/compare/snapshots/{snapshot_id}",
+                )
+            headers = {
+                "X-AutoDev-Deprecated": "true",
+                "X-AutoDev-Canonical-Method": "DELETE",
+                "X-AutoDev-Canonical-Path": f"/api/runs/compare/snapshots/{snapshot_id}",
+            }
         self._audit_then_respond(
             body=body,
             status=status,
@@ -2996,6 +3069,7 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                 payload={"snapshot_id": snapshot_id},
                 result_status="deleted" if status == HTTPStatus.OK else "failed",
             ),
+            headers=headers,
         )
 
     def _handle_compare_snapshot_bulk(self) -> None:
@@ -3054,7 +3128,14 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
 
         return dict(parsed)
 
-    def _audit_then_respond(self, *, body: dict[str, Any], status: HTTPStatus, audit_event: dict[str, Any]) -> None:
+    def _audit_then_respond(
+        self,
+        *,
+        body: dict[str, Any],
+        status: HTTPStatus,
+        audit_event: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> None:
         try:
             audit_path = _append_audit_event(audit_event)
         except OSError as exc:
@@ -3074,7 +3155,7 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         body.setdefault("meta", {})
         if isinstance(body["meta"], dict):
             body["meta"]["audit_log_path"] = str(audit_path)
-        self._json_response(body, status=status)
+        self._json_response(body, status=status, headers=headers)
 
     def _serve_static(self, filename: str) -> None:
         file_path = self.config.static_root / filename
@@ -3097,11 +3178,20 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _json_response(self, payload: Any, *, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _json_response(
+        self,
+        payload: Any,
+        *,
+        status: HTTPStatus = HTTPStatus.OK,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        if isinstance(headers, dict):
+            for key, value in headers.items():
+                self.send_header(str(key), str(value))
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
