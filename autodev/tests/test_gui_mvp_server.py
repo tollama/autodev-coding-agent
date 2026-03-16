@@ -1446,7 +1446,60 @@ def test_api_docs_routes_endpoint_and_static_reference_are_served(gui_server):
         assert resp.status == 200
     assert "AutoDev API Reference" in html
     assert "/api/docs/routes" in html
-    assert "PATCH /api/runs/compare/snapshots/&lt;snapshot_id&gt;" in html
+    assert "loadApiReference()" in html
+
+
+def test_api_deprecations_endpoint_reports_recent_legacy_snapshot_helper_usage(gui_server, tmp_path, monkeypatch):
+    base_url, _ = gui_server
+    audit_dir = tmp_path / "audit"
+    monkeypatch.setenv("AUTODEV_GUI_AUDIT_DIR", str(audit_dir))
+
+    payload = {
+        "snapshot": {
+            "generated_at": "2026-03-15T12:00:00Z",
+            "source": "api",
+            "left": {"run_id": "run-a", "status": "failed", "trust": {"status": "low", "score": 0.21}},
+            "right": {"run_id": "run-b", "status": "ok", "trust": {"status": "high", "score": 0.92}},
+        },
+        "markdown": "# Compare Trust Snapshot\n",
+        "compare_payload": {
+            "left": {"run_id": "run-a", "status": "failed", "trust": {"status": "low", "score": 0.21}},
+            "right": {"run_id": "run-b", "status": "ok", "trust": {"status": "high", "score": 0.92}},
+            "delta": {"trust_score": 0.71, "trust_status_changed": True},
+        },
+    }
+
+    save_status, save_body = _post_json(f"{base_url}/api/runs/compare/snapshots", payload)
+    assert save_status == 200
+    snapshot_id = save_body["snapshot"]["snapshot_id"]
+
+    empty_status, empty_body = _get_json(f"{base_url}/api/docs/deprecations/latest")
+    assert empty_status == 200
+    assert empty_body["empty"] is True
+    assert empty_body["summary"]["deprecated_usage_count"] == 0
+
+    rename_status, _, _ = _request_json_with_headers(
+        f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/rename",
+        method="POST",
+        payload={"display_name": "Legacy rename"},
+    )
+    assert rename_status == 200
+
+    metadata_status, _, _ = _request_json_with_headers(
+        f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/metadata",
+        method="POST",
+        payload={"pinned": True},
+    )
+    assert metadata_status == 200
+
+    deprecated_status, deprecated_body = _get_json(f"{base_url}/api/docs/deprecations/latest")
+    assert deprecated_status == 200
+    assert deprecated_body["empty"] is False
+    assert deprecated_body["summary"]["deprecated_usage_count"] >= 2
+    assert "/api/runs/compare/snapshots/<snapshot_id>/metadata" not in deprecated_body["summary"]["routes"]
+    assert any(entry["legacy_path"].endswith("/metadata") for entry in deprecated_body["entries"])
+    assert any(entry["legacy_path"].endswith("/rename") for entry in deprecated_body["entries"])
+    assert all(entry["snapshot_id"] == snapshot_id for entry in deprecated_body["entries"])
 
 
 def test_artifact_read_endpoint_returns_json_payload(gui_server):
@@ -1532,6 +1585,7 @@ def test_overview_scorecard_static_contract(gui_server):
         index_html = resp.read().decode("utf-8")
     assert 'id="apiReferenceLink"' in index_html
     assert 'href="/api-reference.html"' in index_html
+    assert 'id="deprecationNotice"' in index_html
     assert 'id="scorecardCards"' in index_html
     assert 'id="scorecardEmpty"' in index_html
     assert 'id="scorecardError"' in index_html
@@ -1605,6 +1659,8 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "function buildMockTrustTrendPayload()" in app_js
     assert "function renderTrustTrendWidget()" in app_js
     assert "function refreshTrustTrendWidget({ silent = false } = {})" in app_js
+    assert "function renderDeprecationNotice()" in app_js
+    assert "function refreshDeprecationNotice({ silent = false } = {})" in app_js
     assert "function renderCompareTrustDrilldown(payload)" in app_js
     assert "function renderCompareTrustPacketDiff(payload)" in app_js
     assert "function buildTrustPacketDiffRows(leftPacket, rightPacket)" in app_js
@@ -1655,6 +1711,7 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "/api/runs/compare/snapshots/bulk" in app_js
     assert "/api/runs/compare/snapshots/import" in app_js
     assert "/api/runs/compare/snapshots/retention/apply" in app_js
+    assert "/api/docs/deprecations/latest" in app_js
     assert "method: 'PATCH'" in app_js
     assert "method: 'DELETE'" in app_js
     assert ".autodev/autonomous_trust_intelligence.json" in app_js
@@ -1666,8 +1723,8 @@ def test_overview_scorecard_static_contract(gui_server):
     with request.urlopen(f"{base_url}/api-reference.html", timeout=5) as resp:
         api_reference_html = resp.read().decode("utf-8")
     assert "Canonical Routes" in api_reference_html
-    assert "/api/runs/compare/snapshots/&lt;snapshot_id&gt;" in api_reference_html
     assert "/api/docs/routes" in api_reference_html
+    assert "loadApiReference()" in api_reference_html
 
 
 def test_artifact_read_endpoint_rejects_invalid_query(gui_server):

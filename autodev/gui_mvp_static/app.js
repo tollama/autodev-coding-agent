@@ -49,6 +49,9 @@ const state = {
   trustTrendPayload: null,
   trustTrendError: '',
   trustTrendLoading: false,
+  deprecationNoticePayload: null,
+  deprecationNoticeError: '',
+  deprecationNoticeLoading: false,
   lastProcessId: '',
   trendPayload: null,
   artifactViewerPath: '',
@@ -1212,6 +1215,38 @@ function renderOverviewState() {
   renderTabStateBox('overview', { show: false });
 }
 
+function renderDeprecationNotice() {
+  const banner = el('deprecationNotice');
+  if (!banner) return;
+
+  if (state.deprecationNoticeLoading) {
+    banner.textContent = 'Checking deprecated API helper usage…';
+    banner.classList.remove('hidden');
+    return;
+  }
+
+  if (state.deprecationNoticeError) {
+    banner.textContent = `Deprecated API helper notice unavailable: ${state.deprecationNoticeError}`;
+    banner.classList.remove('hidden');
+    return;
+  }
+
+  const payload = state.deprecationNoticePayload;
+  const summary = payload && typeof payload === 'object' ? payload.summary : null;
+  const count = Number(summary?.deprecated_usage_count || 0);
+  if (!payload || payload.empty || count < 1) {
+    banner.textContent = '';
+    banner.classList.add('hidden');
+    return;
+  }
+
+  const routes = Array.isArray(summary?.routes) ? summary.routes.filter(Boolean).slice(0, 2) : [];
+  const routeText = routes.length ? ` ${routes.join(' • ')}` : '';
+  const latestAt = summary?.latest_at ? new Date(summary.latest_at).toLocaleTimeString() : 'recently';
+  banner.textContent = `Deprecated snapshot helper usage detected (${count}) at ${latestAt}.${routeText}`;
+  banner.classList.remove('hidden');
+}
+
 function renderProcessTabState() {
   const filtered = filterProcesses(state.processes);
 
@@ -1556,6 +1591,33 @@ async function refreshHealthBanner() {
   };
   state.healthSnapshot = snapshot;
   renderHealthBanner(snapshot);
+}
+
+async function refreshDeprecationNotice({ silent = false } = {}) {
+  if (state.useMock) {
+    state.deprecationNoticeLoading = false;
+    state.deprecationNoticeError = '';
+    state.deprecationNoticePayload = { empty: true, summary: { deprecated_usage_count: 0, latest_at: '', routes: [] }, entries: [] };
+    renderDeprecationNotice();
+    return;
+  }
+
+  if (!silent) {
+    state.deprecationNoticeLoading = true;
+    state.deprecationNoticeError = '';
+    renderDeprecationNotice();
+  }
+
+  try {
+    const payload = await fetchJson('/api/docs/deprecations/latest');
+    state.deprecationNoticePayload = payload;
+    state.deprecationNoticeError = '';
+  } catch (err) {
+    state.deprecationNoticeError = String(err?.message || 'request failed');
+  } finally {
+    state.deprecationNoticeLoading = false;
+    renderDeprecationNotice();
+  }
 }
 
 function buildRunPayload(action) {
@@ -4559,6 +4621,7 @@ function setupPolling() {
 
   state.pollTimer = setInterval(async () => {
     await refreshCurrentRun({ silent: true });
+    await refreshDeprecationNotice({ silent: true });
     if (state.selectedProcessDetail) {
       setProcessStaleIndicator(state.selectedProcessDetail, state.selectedProcessHistory);
     }
@@ -4620,6 +4683,7 @@ async function loadRuns() {
     await refreshTrustTrendWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
+    await refreshDeprecationNotice({ silent: true });
     state.runsLoading = false;
     state.runsError = '';
     renderOverviewState();
@@ -4652,6 +4716,7 @@ async function loadRuns() {
     await refreshTrustTrendWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
+    await refreshDeprecationNotice({ silent: true });
     state.runsLoading = false;
     state.runsError = '';
     renderOverviewState();
@@ -4668,6 +4733,10 @@ async function loadRuns() {
     await loadCompareSnapshots({ preserveSelection: false, silent: true });
     renderTrends(null);
     state.scorecardPayload = null;
+    state.deprecationNoticePayload = null;
+    state.deprecationNoticeError = '';
+    state.deprecationNoticeLoading = false;
+    renderDeprecationNotice();
     state.scorecardError = 'Latest scorecard unavailable: unable to load runs list.';
     state.scorecardLoading = false;
     renderScorecardWidget();

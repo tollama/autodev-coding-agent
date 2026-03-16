@@ -19,163 +19,96 @@
       <section class="docs-panel">
         <h2>Canonical Routes</h2>
         <p class="muted">
-          The GUI consumes these routes directly. Saved compare snapshot item mutations should use the canonical
-          <code>PATCH</code> and <code>DELETE</code> resource routes.
+          This page renders from the machine-readable route catalog at <code>/api/docs/routes</code>. Saved compare
+          snapshot item mutations should use the canonical <code>PATCH</code> and <code>DELETE</code> resource routes.
         </p>
       </section>
 
-      <section class="docs-panel">
-        <h3>Run Detail</h3>
-        <div class="docs-route-list">
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method">GET</span>
-              <span class="docs-route-path">/api/runs</span>
-            </div>
-            <div>List dashboard runs.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method">GET</span>
-              <span class="docs-route-path">/api/runs/&lt;run_id&gt;</span>
-            </div>
-            <div>Load selected run detail and trust context.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method">GET</span>
-              <span class="docs-route-path">/api/runs/&lt;run_id&gt;/artifacts/read</span>
-            </div>
-            <div>Read `.autodev` artifacts in the Validation tab.</div>
-          </article>
-        </div>
-      </section>
-
-      <section class="docs-panel">
-        <h3>Trust Intelligence</h3>
-        <div class="docs-route-list">
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method">GET</span>
-              <span class="docs-route-path">/api/autonomous/quality-gate/latest</span>
-            </div>
-            <div>Latest autonomous quality-gate summary.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method">GET</span>
-              <span class="docs-route-path">/api/autonomous/trust/latest</span>
-            </div>
-            <div>Latest trust summary and full trust packet.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method">GET</span>
-              <span class="docs-route-path">/api/autonomous/trust/trends</span>
-            </div>
-            <div>Historical trust trend summary.</div>
-          </article>
-        </div>
-      </section>
-
-      <section class="docs-panel">
-        <h3>Compare Snapshots</h3>
-        <div class="docs-route-list">
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method">GET</span>
-              <span class="docs-route-path">/api/runs/compare</span>
-            </div>
-            <div>Compare two runs across trust, validation, and execution metrics.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method docs-method-post">POST</span>
-              <span class="docs-route-path">/api/runs/compare/snapshots</span>
-            </div>
-            <div>Persist a compare payload as a saved snapshot.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method">GET</span>
-              <span class="docs-route-path">/api/runs/compare/snapshots</span>
-            </div>
-            <div>List saved snapshots with query, tag, date, pinned, archive, and pagination filters.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method">GET</span>
-              <span class="docs-route-path">/api/runs/compare/snapshots/&lt;snapshot_id&gt;</span>
-            </div>
-            <div>Open one saved snapshot.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method docs-method-patch">PATCH</span>
-              <span class="docs-route-path">/api/runs/compare/snapshots/&lt;snapshot_id&gt;</span>
-            </div>
-            <div>Canonical route for rename and metadata updates.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method docs-method-delete">DELETE</span>
-              <span class="docs-route-path">/api/runs/compare/snapshots/&lt;snapshot_id&gt;</span>
-            </div>
-            <div>Canonical route for deleting a saved snapshot.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method docs-method-post">POST</span>
-              <span class="docs-route-path">/api/runs/compare/snapshots/import</span>
-            </div>
-            <div>Import an exported compare snapshot payload.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method docs-method-post">POST</span>
-              <span class="docs-route-path">/api/runs/compare/snapshots/bulk</span>
-            </div>
-            <div>Bulk metadata updates or deletes.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method docs-method-post">POST</span>
-              <span class="docs-route-path">/api/runs/compare/snapshots/retention/apply</span>
-            </div>
-            <div>Preview or apply retention cleanup.</div>
-          </article>
-        </div>
-      </section>
-
-      <section class="docs-panel">
-        <h3>Deprecated Helpers</h3>
-        <div class="docs-route-list">
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method docs-method-post">POST</span>
-              <span class="docs-route-path">/api/runs/compare/snapshots/&lt;snapshot_id&gt;/rename</span>
-            </div>
-            <div>Deprecated helper. Use <code>PATCH /api/runs/compare/snapshots/&lt;snapshot_id&gt;</code>.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method docs-method-post">POST</span>
-              <span class="docs-route-path">/api/runs/compare/snapshots/&lt;snapshot_id&gt;/metadata</span>
-            </div>
-            <div>Deprecated helper. Use <code>PATCH /api/runs/compare/snapshots/&lt;snapshot_id&gt;</code>.</div>
-          </article>
-          <article class="docs-route-card">
-            <div class="docs-route-meta">
-              <span class="docs-method docs-method-post">POST</span>
-              <span class="docs-route-path">/api/runs/compare/snapshots/&lt;snapshot_id&gt;/delete</span>
-            </div>
-            <div>Deprecated helper. Use <code>DELETE /api/runs/compare/snapshots/&lt;snapshot_id&gt;</code>.</div>
-          </article>
-        </div>
-        <div class="docs-note">
-          Legacy helper responses include deprecation metadata and canonical replacement guidance.
-        </div>
+      <section id="apiReferenceContent" class="docs-panel">
+        <div class="empty">Loading route catalog…</div>
       </section>
     </main>
+
+    <script>
+      function methodClass(method) {
+        const normalized = String(method || '').trim().toLowerCase();
+        if (normalized === 'post') return 'docs-method docs-method-post';
+        if (normalized === 'patch') return 'docs-method docs-method-patch';
+        if (normalized === 'delete') return 'docs-method docs-method-delete';
+        return 'docs-method';
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
+
+      function renderRouteCard(route) {
+        return `
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="${methodClass(route.method)}">${escapeHtml(route.method)}</span>
+              <span class="docs-route-path">${escapeHtml(route.path)}</span>
+            </div>
+            <div>${escapeHtml(route.summary || '')}</div>
+          </article>
+        `;
+      }
+
+      function renderDeprecatedCard(route) {
+        return `
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="${methodClass(route.method)}">${escapeHtml(route.method)}</span>
+              <span class="docs-route-path">${escapeHtml(route.path)}</span>
+            </div>
+            <div>
+              Deprecated helper. Use <code>${escapeHtml(route.canonical_method)} ${escapeHtml(route.canonical_path)}</code>.
+            </div>
+          </article>
+        `;
+      }
+
+      async function loadApiReference() {
+        const root = document.getElementById('apiReferenceContent');
+        try {
+          const response = await fetch('/api/docs/routes');
+          if (!response.ok) {
+            throw new Error(`/api/docs/routes -> ${response.status}`);
+          }
+          const payload = await response.json();
+          const sections = Array.isArray(payload.sections) ? payload.sections : [];
+          const deprecated = Array.isArray(payload.deprecated_routes) ? payload.deprecated_routes : [];
+
+          root.innerHTML = `
+            ${sections.map((section) => `
+              <section class="docs-panel">
+                <h3>${escapeHtml(section.name || 'Routes')}</h3>
+                <div class="docs-route-list">
+                  ${(Array.isArray(section.routes) ? section.routes : []).map(renderRouteCard).join('')}
+                </div>
+              </section>
+            `).join('')}
+            <section class="docs-panel">
+              <h3>Deprecated Helpers</h3>
+              <div class="docs-route-list">
+                ${deprecated.map(renderDeprecatedCard).join('')}
+              </div>
+              <div class="docs-note">
+                Legacy helper responses include deprecation metadata and canonical replacement guidance.
+              </div>
+            </section>
+          `;
+        } catch (error) {
+          root.innerHTML = `<div class="empty error-text">Failed to load API reference: ${escapeHtml(error.message || error)}</div>`;
+        }
+      }
+
+      loadApiReference();
+    </script>
   </body>
 </html>

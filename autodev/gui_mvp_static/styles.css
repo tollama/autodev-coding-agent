@@ -39,6 +39,16 @@ body {
 .topbar-link:focus-visible {
   text-decoration: underline;
 }
+.deprecation-notice {
+  border: 1px solid #f59e0b;
+  background: #fffbeb;
+  color: #92400e;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  max-width: min(100%, 680px);
+}
 .live-update-toggle {
   display: inline-flex;
   align-items: center;

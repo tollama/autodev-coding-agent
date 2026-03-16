@@ -33,7 +33,7 @@ from .gui_api import (
     validate_resume_target,
 )
 from .gui_artifact_schema import summarize_schema_markers
-from .gui_audit import persist_audit_event
+from .gui_audit import persist_audit_event, resolve_audit_dir
 from .gui_failure_hints import build_run_control_fix_hints
 from .gui_mvp_dto import normalize_run_comparison_summary, normalize_run_trace, normalize_tasks, normalize_validation
 from .run_status import normalize_run_status
@@ -77,6 +77,119 @@ COMPARE_SNAPSHOT_EXPORT_VERSION = "compare-trust-snapshot-v1"
 DEFAULT_COMPARE_SNAPSHOT_PAGE_SIZE = 20
 MAX_COMPARE_SNAPSHOT_PAGE_SIZE = 100
 COMPARE_SNAPSHOT_SORTS = {"newest", "oldest", "name", "baseline", "candidate"}
+
+GUI_API_ROUTE_SECTIONS: list[dict[str, Any]] = [
+    {
+        "name": "Run Detail",
+        "routes": [
+            {"method": "GET", "path": "/api/runs", "summary": "List runs for the dashboard."},
+            {
+                "method": "GET",
+                "path": "/api/runs/<run_id>",
+                "summary": "Load selected run detail, including trust summary when available.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/runs/<run_id>/artifacts/read",
+                "summary": "Read an artifact from a run directory.",
+            },
+        ],
+    },
+    {
+        "name": "Trust Intelligence",
+        "routes": [
+            {
+                "method": "GET",
+                "path": "/api/autonomous/quality-gate/latest",
+                "summary": "Latest autonomous quality gate snapshot.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/autonomous/trust/latest",
+                "summary": "Latest trust summary and full packet.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/autonomous/trust/trends",
+                "summary": "Historical trust trend summary across recent runs.",
+            },
+        ],
+    },
+    {
+        "name": "Compare Snapshots",
+        "routes": [
+            {
+                "method": "GET",
+                "path": "/api/runs/compare",
+                "summary": "Compare two runs by trust, validation, and execution metrics.",
+            },
+            {
+                "method": "POST",
+                "path": "/api/runs/compare/snapshots",
+                "summary": "Persist a compare payload as a saved snapshot.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/runs/compare/snapshots",
+                "summary": "List saved compare snapshots with filters and pagination.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/runs/compare/snapshots/<snapshot_id>",
+                "summary": "Open one saved compare snapshot.",
+            },
+            {
+                "method": "PATCH",
+                "path": "/api/runs/compare/snapshots/<snapshot_id>",
+                "summary": "Canonical route for rename and metadata updates.",
+            },
+            {
+                "method": "DELETE",
+                "path": "/api/runs/compare/snapshots/<snapshot_id>",
+                "summary": "Canonical route for deleting a saved snapshot.",
+            },
+            {
+                "method": "POST",
+                "path": "/api/runs/compare/snapshots/import",
+                "summary": "Import an exported compare snapshot payload.",
+            },
+            {
+                "method": "POST",
+                "path": "/api/runs/compare/snapshots/bulk",
+                "summary": "Bulk metadata updates or deletes for saved snapshots.",
+            },
+            {
+                "method": "POST",
+                "path": "/api/runs/compare/snapshots/retention/apply",
+                "summary": "Preview or apply retention cleanup for saved snapshots.",
+            },
+        ],
+    },
+]
+
+GUI_API_DEPRECATED_ROUTES: list[dict[str, Any]] = [
+    {
+        "method": "POST",
+        "path": "/api/runs/compare/snapshots/<snapshot_id>/rename",
+        "canonical_method": "PATCH",
+        "canonical_path": "/api/runs/compare/snapshots/<snapshot_id>",
+        "action": "compare_snapshot_rename",
+    },
+    {
+        "method": "POST",
+        "path": "/api/runs/compare/snapshots/<snapshot_id>/metadata",
+        "canonical_method": "PATCH",
+        "canonical_path": "/api/runs/compare/snapshots/<snapshot_id>",
+        "action": "compare_snapshot_metadata",
+    },
+    {
+        "method": "POST",
+        "path": "/api/runs/compare/snapshots/<snapshot_id>/delete",
+        "canonical_method": "DELETE",
+        "canonical_path": "/api/runs/compare/snapshots/<snapshot_id>",
+        "action": "compare_snapshot_delete",
+    },
+]
 
 SCORECARD_CARD_ORDER: list[tuple[str, str]] = [
     ("task_pass_rate_percent", "Pass Rate"),
@@ -1747,118 +1860,74 @@ def _gui_api_reference_payload() -> dict[str, Any]:
         "title": "AutoDev GUI API Reference",
         "version": "gui-mvp-v1",
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "sections": [
-            {
-                "name": "Run Detail",
-                "routes": [
-                    {
-                        "method": "GET",
-                        "path": "/api/runs",
-                        "summary": "List runs for the dashboard.",
-                    },
-                    {
-                        "method": "GET",
-                        "path": "/api/runs/<run_id>",
-                        "summary": "Load selected run detail, including trust summary when available.",
-                    },
-                    {
-                        "method": "GET",
-                        "path": "/api/runs/<run_id>/artifacts/read",
-                        "summary": "Read an artifact from a run directory.",
-                    },
-                ],
-            },
-            {
-                "name": "Trust Intelligence",
-                "routes": [
-                    {
-                        "method": "GET",
-                        "path": "/api/autonomous/quality-gate/latest",
-                        "summary": "Latest autonomous quality gate snapshot.",
-                    },
-                    {
-                        "method": "GET",
-                        "path": "/api/autonomous/trust/latest",
-                        "summary": "Latest trust summary and full packet.",
-                    },
-                    {
-                        "method": "GET",
-                        "path": "/api/autonomous/trust/trends",
-                        "summary": "Historical trust trend summary across recent runs.",
-                    },
-                ],
-            },
-            {
-                "name": "Compare Snapshots",
-                "routes": [
-                    {
-                        "method": "GET",
-                        "path": "/api/runs/compare",
-                        "summary": "Compare two runs by trust, validation, and execution metrics.",
-                    },
-                    {
-                        "method": "POST",
-                        "path": "/api/runs/compare/snapshots",
-                        "summary": "Persist a compare payload as a saved snapshot.",
-                    },
-                    {
-                        "method": "GET",
-                        "path": "/api/runs/compare/snapshots",
-                        "summary": "List saved compare snapshots with filters and pagination.",
-                    },
-                    {
-                        "method": "GET",
-                        "path": "/api/runs/compare/snapshots/<snapshot_id>",
-                        "summary": "Open one saved compare snapshot.",
-                    },
-                    {
-                        "method": "PATCH",
-                        "path": "/api/runs/compare/snapshots/<snapshot_id>",
-                        "summary": "Canonical route for rename and metadata updates.",
-                    },
-                    {
-                        "method": "DELETE",
-                        "path": "/api/runs/compare/snapshots/<snapshot_id>",
-                        "summary": "Canonical route for deleting a saved snapshot.",
-                    },
-                    {
-                        "method": "POST",
-                        "path": "/api/runs/compare/snapshots/import",
-                        "summary": "Import an exported compare snapshot payload.",
-                    },
-                    {
-                        "method": "POST",
-                        "path": "/api/runs/compare/snapshots/bulk",
-                        "summary": "Bulk metadata updates or deletes for saved snapshots.",
-                    },
-                    {
-                        "method": "POST",
-                        "path": "/api/runs/compare/snapshots/retention/apply",
-                        "summary": "Preview or apply retention cleanup for saved snapshots.",
-                    },
-                ],
-            },
-        ],
-        "deprecated_routes": [
-            {
-                "method": "POST",
-                "path": "/api/runs/compare/snapshots/<snapshot_id>/rename",
-                "canonical_method": "PATCH",
-                "canonical_path": "/api/runs/compare/snapshots/<snapshot_id>",
-            },
-            {
-                "method": "POST",
-                "path": "/api/runs/compare/snapshots/<snapshot_id>/metadata",
-                "canonical_method": "PATCH",
-                "canonical_path": "/api/runs/compare/snapshots/<snapshot_id>",
-            },
-            {
-                "method": "POST",
-                "path": "/api/runs/compare/snapshots/<snapshot_id>/delete",
-                "canonical_method": "DELETE",
-                "canonical_path": "/api/runs/compare/snapshots/<snapshot_id>",
-            },
-        ],
+        "sections": GUI_API_ROUTE_SECTIONS,
+        "deprecated_routes": GUI_API_DEPRECATED_ROUTES,
+    }
+
+
+def _latest_deprecated_route_activity(*, limit: int = 10) -> dict[str, Any]:
+    audit_dir = resolve_audit_dir(os.environ.get(AUDIT_DIR_ENV))
+    if not audit_dir.exists() or not audit_dir.is_dir():
+        return {
+            "empty": True,
+            "message": "No GUI audit directory found.",
+            "summary": {"deprecated_usage_count": 0, "latest_at": "", "routes": []},
+            "entries": [],
+        }
+
+    entries: list[dict[str, Any]] = []
+    files = sorted(audit_dir.glob("gui-audit-*.jsonl"), reverse=True)
+    for path in files[:7]:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            deprecated = payload.get("deprecated_route") if isinstance(payload.get("deprecated_route"), dict) else None
+            if not deprecated:
+                continue
+            entries.append(
+                {
+                    "timestamp": str(payload.get("timestamp") or ""),
+                    "action": str(payload.get("action") or ""),
+                    "result_status": str(payload.get("result_status") or ""),
+                    "role": str(payload.get("role") or ""),
+                    "auth_source": str((payload.get("auth") or {}).get("source") or ""),
+                    "canonical_method": str(deprecated.get("canonical_method") or ""),
+                    "canonical_path": str(deprecated.get("canonical_path") or ""),
+                    "legacy_path": str(deprecated.get("legacy_path") or ""),
+                    "snapshot_id": str((payload.get("payload") or {}).get("snapshot_id") or ""),
+                }
+            )
+            if len(entries) >= max(1, limit):
+                break
+        if len(entries) >= max(1, limit):
+            break
+
+    if not entries:
+        return {
+            "empty": True,
+            "message": "No deprecated snapshot helper usage detected recently.",
+            "summary": {"deprecated_usage_count": 0, "latest_at": "", "routes": []},
+            "entries": [],
+        }
+
+    route_set = sorted({str(entry.get("legacy_path") or "") for entry in entries if entry.get("legacy_path")})
+    return {
+        "empty": False,
+        "message": "",
+        "summary": {
+            "deprecated_usage_count": len(entries),
+            "latest_at": str(entries[0].get("timestamp") or ""),
+            "routes": route_set,
+        },
+        "entries": entries,
     }
 
 
@@ -1889,6 +1958,14 @@ def _legacy_compare_snapshot_route_meta(*, canonical_method: str, canonical_path
         "canonical_method": canonical_method,
         "canonical_path": canonical_path,
         "message": f"Use {canonical_method} {canonical_path} instead.",
+    }
+
+
+def _legacy_compare_snapshot_audit_meta(*, legacy_path: str, canonical_method: str, canonical_path: str) -> dict[str, Any]:
+    return {
+        "legacy_path": legacy_path,
+        "canonical_method": canonical_method,
+        "canonical_path": canonical_path,
     }
 
 
@@ -2626,6 +2703,10 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             self._json_response(_gui_api_reference_payload())
             return
 
+        if path == "/api/docs/deprecations/latest":
+            self._json_response(_latest_deprecated_route_activity())
+            return
+
         if path == "/api/runs/compare/snapshots":
             query = parse_qs(parsed.query)
             payload = _list_compare_snapshots(
@@ -3106,6 +3187,7 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             return
         display_name = str(payload.get("display_name") or "")
         body, status = _rename_compare_snapshot(self.config.runs_root, snapshot_id, display_name)
+        legacy_path = f"/api/runs/compare/snapshots/{snapshot_id}/rename"
         body.setdefault("meta", {})
         if isinstance(body.get("meta"), dict):
             body["meta"]["deprecation"] = _legacy_compare_snapshot_route_meta(
@@ -3115,11 +3197,18 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         self._audit_then_respond(
             body=body,
             status=status,
-            audit_event=self._build_compare_snapshot_audit_event(
+            audit_event={
+                **self._build_compare_snapshot_audit_event(
                 action="compare_snapshot_rename",
                 payload={"snapshot_id": snapshot_id, "display_name": display_name},
                 result_status="updated" if status == HTTPStatus.OK else "failed",
-            ),
+                ),
+                "deprecated_route": _legacy_compare_snapshot_audit_meta(
+                    legacy_path=legacy_path,
+                    canonical_method="PATCH",
+                    canonical_path=f"/api/runs/compare/snapshots/{snapshot_id}",
+                ),
+            },
             headers={
                 "X-AutoDev-Deprecated": "true",
                 "X-AutoDev-Canonical-Method": "PATCH",
@@ -3140,6 +3229,7 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             tags=payload.get("tags"),
         )
         is_legacy_helper = urlparse(self.path).path.endswith("/metadata")
+        legacy_path = f"/api/runs/compare/snapshots/{snapshot_id}/metadata"
         headers = None
         if is_legacy_helper:
             body.setdefault("meta", {})
@@ -3153,26 +3243,34 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                 "X-AutoDev-Canonical-Method": "PATCH",
                 "X-AutoDev-Canonical-Path": f"/api/runs/compare/snapshots/{snapshot_id}",
             }
+        audit_event = self._build_compare_snapshot_audit_event(
+            action="compare_snapshot_metadata",
+            payload={
+                "snapshot_id": snapshot_id,
+                "display_name": payload.get("display_name"),
+                "pinned": payload.get("pinned"),
+                "archived": payload.get("archived"),
+                "tags": _normalize_compare_snapshot_tags(payload.get("tags")),
+            },
+            result_status="updated" if status == HTTPStatus.OK else "failed",
+        )
+        if is_legacy_helper:
+            audit_event["deprecated_route"] = _legacy_compare_snapshot_audit_meta(
+                legacy_path=legacy_path,
+                canonical_method="PATCH",
+                canonical_path=f"/api/runs/compare/snapshots/{snapshot_id}",
+            )
         self._audit_then_respond(
             body=body,
             status=status,
-            audit_event=self._build_compare_snapshot_audit_event(
-                action="compare_snapshot_metadata",
-                payload={
-                    "snapshot_id": snapshot_id,
-                    "display_name": payload.get("display_name"),
-                    "pinned": payload.get("pinned"),
-                    "archived": payload.get("archived"),
-                    "tags": _normalize_compare_snapshot_tags(payload.get("tags")),
-                },
-                result_status="updated" if status == HTTPStatus.OK else "failed",
-            ),
+            audit_event=audit_event,
             headers=headers,
         )
 
     def _handle_compare_snapshot_delete(self, snapshot_id: str) -> None:
         body, status = _delete_compare_snapshot(self.config.runs_root, snapshot_id)
         is_legacy_helper = urlparse(self.path).path.endswith("/delete")
+        legacy_path = f"/api/runs/compare/snapshots/{snapshot_id}/delete"
         headers = None
         if is_legacy_helper:
             body.setdefault("meta", {})
@@ -3186,14 +3284,21 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                 "X-AutoDev-Canonical-Method": "DELETE",
                 "X-AutoDev-Canonical-Path": f"/api/runs/compare/snapshots/{snapshot_id}",
             }
+        audit_event = self._build_compare_snapshot_audit_event(
+            action="compare_snapshot_delete",
+            payload={"snapshot_id": snapshot_id},
+            result_status="deleted" if status == HTTPStatus.OK else "failed",
+        )
+        if is_legacy_helper:
+            audit_event["deprecated_route"] = _legacy_compare_snapshot_audit_meta(
+                legacy_path=legacy_path,
+                canonical_method="DELETE",
+                canonical_path=f"/api/runs/compare/snapshots/{snapshot_id}",
+            )
         self._audit_then_respond(
             body=body,
             status=status,
-            audit_event=self._build_compare_snapshot_audit_event(
-                action="compare_snapshot_delete",
-                payload={"snapshot_id": snapshot_id},
-                result_status="deleted" if status == HTTPStatus.OK else "failed",
-            ),
+            audit_event=audit_event,
             headers=headers,
         )
 
