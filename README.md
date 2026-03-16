@@ -331,29 +331,33 @@ Day-to-day command flow:
 ```yaml
 profiles:
   enterprise:
-    template_candidates: ["python_fastapi", "python_cli"]
+    template_candidates: ["python_fastapi", "python_cli", "python_library"]
     validators: ["ruff", "mypy", "pytest", "pip_audit", "bandit", "semgrep", "sbom", "docker_build"]
     security:
       audit_required: false
+    validator_policy:
+      per_task:
+        soft_fail: ["docker_build", "pip_audit", "semgrep", "sbom"]
+      final:
+        soft_fail: ["pip_audit", "sbom", "semgrep", "docker_build"]
     quality_profile:
       name: balanced
-      validator_policy:
-        per_task:
-          soft_fail: ["docker_build", "pip_audit", "sbom", "semgrep"]
-        final:
-          soft_fail: ["pip_audit", "sbom", "semgrep"]
-      per_task_soft: ["docker_build", "pip_audit", "sbom", "semgrep"]
+      per_task_soft: ["docker_build", "pip_audit", "sbom"]
       final_soft: ["pip_audit", "sbom", "semgrep"]
-      # Disabled by default until validator-graph stabilization is complete.
-      validator_graph:
-        enabled: false
-        mode: strict
-        skip_on_soft_fail: false
-        custom_edges: {}
       by_level:
+        minimal:
+          per_task_soft: ["docker_build", "pip_audit", "sbom", "semgrep"]
+          final_soft: ["pip_audit", "sbom", "semgrep"]
+        balanced:
+          per_task_soft: ["docker_build", "pip_audit", "sbom"]
+          final_soft: ["pip_audit", "sbom", "semgrep"]
         strict:
           per_task_soft: ["docker_build"]
           final_soft: []
+      escalation:
+        repeat_failure_guard:
+          enabled: true
+          max_retries_before_targeted_fix: 1
 ```
 
 ## Profiles
@@ -464,6 +468,70 @@ Replay a previous incident-send audit entry (dry-run by default):
 ```bash
 autodev autonomous incident-replay --run-dir ./generated_runs/<run_dir> --entry 1
 autodev autonomous incident-replay --run-dir ./generated_runs/<run_dir> --entry <audit_entry_id> --live
+```
+
+Send incident packet via pluggable delivery targets:
+```bash
+autodev autonomous incident-send --run-dir ./generated_runs/<run_dir> --target stdout --dry-run true
+autodev autonomous incident-send --run-dir ./generated_runs/<run_dir> --target webhook:https://hooks.example.com/alert --dry-run false
+```
+
+Print canonical operator triage summary:
+```bash
+autodev autonomous triage-summary --run-dir ./generated_runs/<run_dir>
+autodev autonomous triage-summary --run-dir ./generated_runs/<run_dir> --format text
+```
+
+Summarize trust analytics across recent runs:
+```bash
+autodev autonomous trust-analytics --runs-root ./generated_runs --window 10
+```
+
+Compare trust posture across models:
+```bash
+autodev autonomous trust-model-eval --runs-root ./generated_runs --window 10
+```
+
+List review-required trust inbox items:
+```bash
+autodev autonomous trust-inbox --runs-root ./generated_runs --window 10
+```
+
+Trust workflow management (show/update/action):
+```bash
+autodev autonomous trust-workflow show --run-dir ./generated_runs/<run_dir>
+autodev autonomous trust-workflow update --run-dir ./generated_runs/<run_dir> --assignees alice,bob --due-at 2026-03-20T17:00:00
+autodev autonomous trust-workflow action --run-dir ./generated_runs/<run_dir> --action escalate --reason "blocking release"
+```
+
+Trust approval recording:
+```bash
+autodev autonomous trust-approvals list --run-dir ./generated_runs/<run_dir>
+autodev autonomous trust-approvals record --run-dir ./generated_runs/<run_dir> --decision approve --reviewer alice --note "LGTM"
+```
+
+Trust delivery (preview/send/audit/state/retry):
+```bash
+autodev autonomous trust-delivery preview --runs-root ./generated_runs --mode inbox
+autodev autonomous trust-delivery send --runs-root ./generated_runs --target stdout --dry-run true
+autodev autonomous trust-delivery audit --runs-root ./generated_runs
+autodev autonomous trust-delivery state --runs-root ./generated_runs
+autodev autonomous trust-delivery retry --runs-root ./generated_runs --delivery-id <id>
+```
+
+Browser automation status:
+```bash
+autodev autonomous browser-automation-status --runs-root ./generated_runs
+```
+
+Compare snapshots management:
+```bash
+autodev autonomous compare-snapshots list --runs-root ./generated_runs
+autodev autonomous compare-snapshots show --runs-root ./generated_runs --snapshot-id <id>
+autodev autonomous compare-snapshots import --runs-root ./generated_runs --file snapshot.json
+autodev autonomous compare-snapshots update --runs-root ./generated_runs --snapshot-id <id> --pinned true
+autodev autonomous compare-snapshots delete --runs-root ./generated_runs --snapshot-id <id>
+autodev autonomous compare-snapshots retention --runs-root ./generated_runs --max-age-days 30
 ```
 
 Autonomous artifacts are written under the run directory:
@@ -680,11 +748,22 @@ See `examples/PRD.md` for a concrete input.
 ## Key Modules
 - `autodev/main.py`: CLI entrypoint and run directory resolution.
 - `autodev/loop.py`: orchestration loop (plan, implement, validate, fix).
-- `autodev/roles.py`: LLM role prompts.
-- `autodev/schemas.py`: JSON schemas for PRD, plan, and changesets.
-- `autodev/validators.py`: validation command wiring.
+- `autodev/autonomous_mode.py`: fully autonomous execution with policy controls.
+- `autodev/roles.py`: LLM role prompts (10 roles: prd_analyst, prd_normalizer, planner, acceptance_test_generator, implementer, fixer, architect, api_spec_generator, db_schema_generator, reviewer).
+- `autodev/schemas.py`: JSON schemas (PRD, PLAN, CHANGESET, ARCHITECTURE, REVIEW, OPENAPI_SPEC, DB_SCHEMA, ACCEPTANCE_TEST, TOOL_RESULT, PRD_ANALYSIS).
+- `autodev/validators.py`: registry-based validation dispatch (ruff, mypy, pytest, pip_audit, bandit, semgrep, sbom, docker_build).
 - `autodev/exec_kernel.py`: allowlisted command runner.
 - `autodev/workspace.py`: safe file operations and patch application.
+- `autodev/llm_client.py`: OpenAI-compatible API client with multi-endpoint routing and fallback.
+- `autodev/trust_intelligence.py`: evidence-backed trust assessment and XAI delivery.
+- `autodev/trust_delivery.py`: pluggable trust delivery with retry support and signed webhooks.
+- `autodev/gui_mvp_server.py`: web server with REST API for GUI.
+- `autodev/gui_api.py`: API business logic (runs, artifacts, scorecard, trends).
+- `autodev/gui_process_manager.py`: process lifecycle tracking for run control.
+- `autodev/context_engine.py`: code context indexing and smart selection.
+- `autodev/template_registry.py`: template discovery and manifest-based selection.
+- `autodev/patch_utils.py`: unified diff validation and application with rollback.
+- `autodev/browser_automation.py`: browser control for delivery workflows.
 
 ## Security Boundaries
 - No `shell=True`; commands are executed as argv lists.
@@ -692,6 +771,7 @@ See `examples/PRD.md` for a concrete input.
 - Workspace file operations prevent escaping the run root.
 
 ## Known Limits
-- Current planner supports two template families: `python_fastapi`, `python_cli`.
+- Current planner supports three Python template families: `python_fastapi`, `python_cli`, `python_library`.
+- `go_api` and `typescript_api` templates exist but their validators (`go_vet`, `golangci_lint`, `go_test`, `eslint`, `tsc`, `jest`) are not yet registered in the validator registry. These templates cannot pass validation until the validators are implemented.
 - Quality depends on PRD clarity and model quality.
 - Some checks require network or local tool availability (`pip_audit`, Docker).

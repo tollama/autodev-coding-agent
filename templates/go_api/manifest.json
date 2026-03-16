@@ -2,6 +2,8 @@
   "language": "go",
   "runtime": "go",
   "validators": ["go_vet", "golangci_lint", "go_test"],
+  "validators_status": "planned",
+  "validators_note": "go_vet, golangci_lint, go_test are not yet registered in autodev/validators.py; this template cannot pass validation until they are implemented.",
   "test_command": "go test ./...",
   "lint_command": "golangci-lint run",
   "type_check_command": "go vet ./...",

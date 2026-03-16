@@ -2,6 +2,8 @@
   "language": "typescript",
   "runtime": "node",
   "validators": ["eslint", "tsc", "jest"],
+  "validators_status": "planned",
+  "validators_note": "eslint, tsc, jest are not yet registered in autodev/validators.py; this template cannot pass validation until they are implemented.",
   "test_command": "npx jest",
   "lint_command": "npx eslint src/",
   "type_check_command": "npx tsc --noEmit",
