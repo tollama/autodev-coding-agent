@@ -44,9 +44,13 @@ def test_local_simple_e2e_smoke_script_covers_trust_compare_and_saved_snapshots(
     assert snapshots["static_index"]["has_saved_comparisons_panel"] is True
     assert snapshots["static_index"]["has_trust_diff_filter"] is True
     assert snapshots["static_index"]["has_api_notice_panel"] is True
+    assert snapshots["static_index"]["has_delivery_activity_panel"] is True
+    assert snapshots["static_index"]["has_browser_automation_panel"] is True
     assert snapshots["static_index"]["has_deprecation_notice"] is True
     assert snapshots["static_index"]["has_api_reference_loader"] is True
+    assert snapshots["trust_delivery_audit"]["empty"] is False
     assert snapshots["browser_automation"]["status"] in {"passed", "skipped"}
+    assert snapshots["browser_automation_latest"]["empty"] is False
 
     assert snapshots["api_docs"]["title"] == "AutoDev GUI API Reference"
     assert snapshots["deprecations_empty"]["empty"] is True

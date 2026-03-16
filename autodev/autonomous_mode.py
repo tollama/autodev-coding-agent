@@ -3403,6 +3403,15 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     trust_delivery_send.add_argument("--target", action="append", default=None, help="stdout, log:/path, or webhook:<url>")
     trust_delivery_send.add_argument("--dry-run", default="true", type=_parse_cli_bool)
 
+    trust_delivery_audit = trust_delivery_sub.add_parser("audit", help="inspect recorded trust delivery activity")
+    trust_delivery_audit.add_argument("--runs-root", required=True)
+    trust_delivery_audit.add_argument("--window", type=int, default=10)
+    trust_delivery_audit.add_argument("--format", choices=["json", "text"], default="json")
+
+    browser_automation_status = sub.add_parser("browser-automation-status", help="show the latest persisted browser automation result")
+    browser_automation_status.add_argument("--runs-root", required=True)
+    browser_automation_status.add_argument("--format", choices=["json", "text"], default="json")
+
     compare_snapshots = sub.add_parser("compare-snapshots", help="manage persisted compare snapshots")
     compare_snapshots_sub = compare_snapshots.add_subparsers(dest="compare_action", required=True)
 
@@ -4903,6 +4912,47 @@ def _render_trust_delivery_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _render_trust_delivery_audit_text(payload: dict[str, Any]) -> str:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    events = payload.get("events") if isinstance(payload.get("events"), list) else []
+    lines = [
+        "# Trust Delivery Audit",
+        f"- events_total: {summary.get('events_total', 0)}",
+        f"- sent_count: {summary.get('sent_count', 0)}",
+        f"- dry_run_count: {summary.get('dry_run_count', 0)}",
+        f"- failed_count: {summary.get('failed_count', 0)}",
+    ]
+    if events:
+        lines.append("- events:")
+        for row in events:
+            if not isinstance(row, dict):
+                continue
+            targets = ", ".join(str(item) for item in row.get("targets", []) if str(item).strip()) or "-"
+            lines.append(
+                f"  - {row.get('timestamp') or '-'} mode={row.get('mode') or '-'} "
+                f"dry_run={row.get('dry_run')} targets={targets}"
+            )
+    else:
+        lines.append("- events: -")
+    return "\n".join(lines)
+
+
+def _render_browser_automation_text(payload: dict[str, Any]) -> str:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    lines = [
+        "# Browser Automation",
+        f"- run_id: {payload.get('run_id') or '-'}",
+        f"- status: {summary.get('status') or '-'}",
+        f"- reason: {summary.get('reason') or '-'}",
+        f"- elapsed_ms: {summary.get('elapsed_ms') if summary.get('elapsed_ms') is not None else '-'}",
+        f"- has_screenshot: {summary.get('has_screenshot') if summary else False}",
+    ]
+    if result.get("screenshot_path"):
+        lines.append(f"- screenshot_path: {result.get('screenshot_path')}")
+    return "\n".join(lines)
+
+
 def _trust_analytics(argv: list[str]) -> None:
     parser = _build_cli_parser()
     args = parser.parse_args(["trust-analytics", *argv])
@@ -5007,7 +5057,7 @@ def _trust_workflow(argv: list[str]) -> None:
 def _trust_delivery(argv: list[str]) -> None:
     parser = _build_cli_parser()
     args = parser.parse_args(["trust-delivery", *argv])
-    from .trust_delivery import preview_trust_delivery, send_trust_delivery
+    from .trust_delivery import load_trust_delivery_audit, preview_trust_delivery, send_trust_delivery
 
     runs_root = Path(str(args.runs_root)).expanduser().resolve()
     if args.trust_delivery_action == "preview":
@@ -5020,6 +5070,13 @@ def _trust_delivery(argv: list[str]) -> None:
         )
         if args.format == "markdown":
             print(payload.get("markdown") or "")
+            return
+        print(json_dumps(payload))
+        return
+    if args.trust_delivery_action == "audit":
+        payload = load_trust_delivery_audit(runs_root, window=int(args.window))
+        if args.format == "text":
+            print(_render_trust_delivery_audit_text(payload))
             return
         print(json_dumps(payload))
         return
@@ -5036,6 +5093,18 @@ def _trust_delivery(argv: list[str]) -> None:
     )
     if args.format == "markdown":
         print(_render_trust_delivery_text(payload))
+        return
+    print(json_dumps(payload))
+
+
+def _browser_automation_status(argv: list[str]) -> None:
+    parser = _build_cli_parser()
+    args = parser.parse_args(["browser-automation-status", *argv])
+    from .gui_mvp_server import _browser_automation_latest as _server_browser_automation_latest
+
+    payload = _server_browser_automation_latest(Path(str(args.runs_root)).expanduser().resolve())
+    if args.format == "text":
+        print(_render_browser_automation_text(payload))
         return
     print(json_dumps(payload))
 
@@ -5381,7 +5450,7 @@ def _incident_replay(argv: list[str]) -> None:
 
 def cli(argv: list[str]) -> None:
     if not argv:
-        raise SystemExit("Usage: autodev autonomous <start|status|summary|triage-summary|trust-summary|trust-analytics|trust-model-eval|trust-inbox|trust-workflow|trust-approvals|trust-delivery|compare-snapshots|incident-export|incident-send|ticket-draft|issue-export|incident-replay> ...")
+        raise SystemExit("Usage: autodev autonomous <start|status|summary|triage-summary|trust-summary|trust-analytics|trust-model-eval|trust-inbox|trust-workflow|trust-approvals|trust-delivery|browser-automation-status|compare-snapshots|incident-export|incident-send|ticket-draft|issue-export|incident-replay> ...")
     action = argv[0]
     if action == "start":
         _start(argv[1:])
@@ -5415,6 +5484,9 @@ def cli(argv: list[str]) -> None:
         return
     if action == "trust-delivery":
         _trust_delivery(argv[1:])
+        return
+    if action == "browser-automation-status":
+        _browser_automation_status(argv[1:])
         return
     if action == "compare-snapshots":
         _compare_snapshots(argv[1:])

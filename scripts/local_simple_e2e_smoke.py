@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from autodev.browser_automation import run_safari_gui_smoke
+from autodev.browser_automation import persist_browser_automation_result, run_safari_gui_smoke
 
 
 def _now_stamp() -> str:
@@ -523,6 +523,8 @@ def run_smoke(*, artifacts_dir: Path, keep_tmp: bool, browser_automation: str) -
                 "has_saved_comparisons_panel": "Saved Comparisons" in index_html,
                 "has_trust_diff_filter": "compareTrustDiffSeveritySelect" in index_html,
                 "has_api_notice_panel": "API Notices" in index_html,
+                "has_delivery_activity_panel": "Delivery Activity" in index_html,
+                "has_browser_automation_panel": "Browser Automation" in index_html,
                 "has_deprecation_notice": 'id="deprecationNotice"' in index_html,
                 "has_api_reference_loader": "loadApiReference()" in api_reference_html,
             }
@@ -646,6 +648,20 @@ def run_smoke(*, artifacts_dir: Path, keep_tmp: bool, browser_automation: str) -
             if not isinstance(trend_summary, dict) or int(trend_summary.get("runs_considered", 0)) < 2:
                 raise RuntimeError(f"expected trust trends to consider at least 2 runs: {trust_trends}")
 
+            trust_delivery_send = _http_json(
+                "POST",
+                f"{base_url}/api/autonomous/trust/delivery/send",
+                payload={"mode": "inbox", "window": 5, "format": "json", "dry_run": True, "targets": ["stdout"]},
+            )
+            snapshots["trust_delivery_send"] = trust_delivery_send
+            if not isinstance(trust_delivery_send.get("outcomes"), list):
+                raise RuntimeError(f"expected trust delivery send outcomes: {trust_delivery_send}")
+
+            trust_delivery_audit = _http_json("GET", f"{base_url}/api/autonomous/trust/delivery/audit?window=5")
+            snapshots["trust_delivery_audit"] = trust_delivery_audit
+            if trust_delivery_audit.get("empty") is True:
+                raise RuntimeError(f"expected trust delivery audit activity after send: {trust_delivery_audit}")
+
             baseline_detail = _http_json("GET", f"{base_url}/api/runs/{baseline_run_id}")
             candidate_detail = _http_json("GET", f"{base_url}/api/runs/{run_id}")
             snapshots["baseline_run_detail"] = baseline_detail
@@ -727,8 +743,14 @@ def run_smoke(*, artifacts_dir: Path, keep_tmp: bool, browser_automation: str) -
             else:
                 browser_result = {"status": "skipped", "reason": "browser_automation_disabled"}
             snapshots["browser_automation"] = browser_result
+            persist_browser_automation_result(candidate_run_dir, browser_result)
             if browser_result.get("status") == "failed":
                 raise RuntimeError(f"browser automation failed: {browser_result}")
+
+            browser_latest = _http_json("GET", f"{base_url}/api/autonomous/browser-automation/latest")
+            snapshots["browser_automation_latest"] = browser_latest
+            if browser_latest.get("empty") is True:
+                raise RuntimeError(f"expected browser automation latest payload after persistence: {browser_latest}")
 
             _write_json(
                 run_artifacts / "result.json",

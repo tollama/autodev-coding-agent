@@ -69,6 +69,12 @@ const state = {
   trustWorkflowError: '',
   trustWorkflowLoading: false,
   trustDeliveryStatus: '',
+  trustDeliveryAuditPayload: null,
+  trustDeliveryAuditError: '',
+  trustDeliveryAuditLoading: false,
+  browserAutomationPayload: null,
+  browserAutomationError: '',
+  browserAutomationLoading: false,
   deprecationNoticePayload: null,
   deprecationNoticeError: '',
   deprecationNoticeLoading: false,
@@ -806,6 +812,59 @@ function buildMockTrustWorkflowPayload(runId = 'mock-run-001') {
       due_at: runId === 'mock-run-001' ? new Date(Date.now() + 4 * 3600_000).toISOString() : '',
       escalation_state: runId === 'mock-run-001' ? 'watch' : 'clear',
       next_approvers: runId === 'mock-run-001' ? [{ name: 'bob', role: 'developer' }] : [],
+    },
+  };
+}
+
+function buildMockTrustDeliveryAuditPayload() {
+  return {
+    empty: false,
+    summary: {
+      events_total: 2,
+      sent_count: 1,
+      dry_run_count: 1,
+      failed_count: 0,
+      latest_at: new Date().toISOString(),
+      modes: ['inbox'],
+      targets: ['stdout', 'log:/tmp/mock-trust.md'],
+    },
+    events: [
+      {
+        timestamp: new Date().toISOString(),
+        mode: 'inbox',
+        dry_run: true,
+        targets: ['stdout'],
+        outcomes: [{ target: 'stdout', status: 'dry_run' }],
+      },
+      {
+        timestamp: new Date(Date.now() - 3600_000).toISOString(),
+        mode: 'inbox',
+        dry_run: false,
+        targets: ['log:/tmp/mock-trust.md'],
+        outcomes: [{ target: 'log:/tmp/mock-trust.md', status: 'sent' }],
+      },
+    ],
+  };
+}
+
+function buildMockBrowserAutomationPayload() {
+  return {
+    empty: false,
+    run_id: 'mock-run-002',
+    summary: {
+      status: 'passed',
+      reason: '',
+      elapsed_ms: 1820,
+      has_screenshot: true,
+    },
+    result: {
+      status: 'passed',
+      elapsed_ms: 1820,
+      screenshot_path: '/tmp/mock-browser-safari.png',
+      page: {
+        readyState: 'complete',
+        activeTab: 'compare',
+      },
     },
   };
 }
@@ -1664,6 +1723,130 @@ function renderTrustInboxWidget() {
   listNode.classList.remove('hidden');
 }
 
+function renderTrustDeliveryAuditWidget() {
+  const listNode = el('trustDeliveryAuditList');
+  const metaNode = el('trustDeliveryAuditMeta');
+  const emptyNode = el('trustDeliveryAuditEmpty');
+  const errorNode = el('trustDeliveryAuditError');
+  if (!listNode || !metaNode || !emptyNode || !errorNode) return;
+
+  listNode.innerHTML = '';
+  errorNode.classList.add('hidden');
+  errorNode.textContent = '';
+
+  if (state.trustDeliveryAuditLoading) {
+    listNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = 'Loading trust delivery activity…';
+    metaNode.textContent = '';
+    return;
+  }
+  if (state.trustDeliveryAuditError) {
+    listNode.classList.add('hidden');
+    emptyNode.classList.add('hidden');
+    errorNode.classList.remove('hidden');
+    errorNode.textContent = state.trustDeliveryAuditError;
+    metaNode.textContent = '';
+    return;
+  }
+
+  const payload = state.trustDeliveryAuditPayload;
+  const rows = Array.isArray(payload?.events) ? payload.events : [];
+  if (!rows.length) {
+    listNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = payload?.message || 'No trust delivery activity recorded yet.';
+    metaNode.textContent = '';
+    return;
+  }
+
+  rows.slice(0, 5).forEach((row) => {
+    const item = document.createElement('article');
+    const outcomes = Array.isArray(row?.outcomes) ? row.outcomes : [];
+    item.className = 'simple-list-item';
+    item.innerHTML = `
+      <div class="title">${escapeHtml(String(row?.mode || '-'))} • ${escapeHtml(row?.dry_run ? 'dry-run' : 'sent')}</div>
+      <div class="meta">${escapeHtml(formatTime(row?.timestamp || ''))} • targets=${escapeHtml((Array.isArray(row?.targets) ? row.targets.join(', ') : '-') || '-')}</div>
+      <div class="body">${escapeHtml(outcomes.map((entry) => `${entry?.target || '-'}:${entry?.status || '-'}`).join(', ') || 'No outcomes recorded.')}</div>
+    `;
+    listNode.appendChild(item);
+  });
+
+  metaNode.textContent = `events=${payload?.summary?.events_total || rows.length} • sent=${payload?.summary?.sent_count || 0} • dry_run=${payload?.summary?.dry_run_count || 0} • failed=${payload?.summary?.failed_count || 0}`;
+  emptyNode.classList.add('hidden');
+  listNode.classList.remove('hidden');
+}
+
+function renderBrowserAutomationWidget() {
+  const cardsNode = el('browserAutomationCards');
+  const listNode = el('browserAutomationList');
+  const metaNode = el('browserAutomationMeta');
+  const emptyNode = el('browserAutomationEmpty');
+  const errorNode = el('browserAutomationError');
+  if (!cardsNode || !listNode || !metaNode || !emptyNode || !errorNode) return;
+
+  cardsNode.innerHTML = '';
+  listNode.innerHTML = '';
+  errorNode.classList.add('hidden');
+  errorNode.textContent = '';
+
+  if (state.browserAutomationLoading) {
+    cardsNode.classList.add('hidden');
+    listNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = 'Loading browser automation status…';
+    metaNode.textContent = '';
+    return;
+  }
+  if (state.browserAutomationError) {
+    cardsNode.classList.add('hidden');
+    listNode.classList.add('hidden');
+    emptyNode.classList.add('hidden');
+    errorNode.classList.remove('hidden');
+    errorNode.textContent = state.browserAutomationError;
+    metaNode.textContent = '';
+    return;
+  }
+
+  const payload = state.browserAutomationPayload;
+  const summary = payload?.summary || null;
+  const result = payload?.result || null;
+  if (!payload || payload.empty || !summary || !result) {
+    cardsNode.classList.add('hidden');
+    listNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = payload?.message || 'No browser automation result has been persisted yet.';
+    metaNode.textContent = '';
+    return;
+  }
+
+  [
+    ['Status', summary.status || '-'],
+    ['Reason', summary.reason || '-'],
+    ['Elapsed ms', summary.elapsed_ms ?? '-'],
+    ['Screenshot', summary.has_screenshot ? 'Available' : 'None'],
+  ].forEach(([label, value]) => {
+    const article = document.createElement('article');
+    article.className = `scorecard-card tone-${summary.status === 'passed' ? 'ok' : summary.status === 'skipped' ? 'warning' : 'danger'}`;
+    article.innerHTML = `<div class="value">${escapeHtml(String(value))}</div><div class="label">${escapeHtml(String(label))}</div>`;
+    cardsNode.appendChild(article);
+  });
+
+  const item = document.createElement('article');
+  item.className = 'simple-list-item';
+  item.innerHTML = `
+    <div class="title">${escapeHtml(String(payload?.run_id || '-'))} • ${escapeHtml(String(result?.page?.activeTab || '-'))}</div>
+    <div class="meta">${escapeHtml(String(result?.screenshot_path || 'no screenshot path'))}</div>
+    <div class="body">${escapeHtml(String(result?.stderr || result?.reason || 'Browser automation result available.'))}</div>
+  `;
+  listNode.appendChild(item);
+
+  metaNode.textContent = `latest_run=${payload?.run_id || '-'} • artifact=${payload?.artifact_path || '-'}`;
+  emptyNode.classList.add('hidden');
+  cardsNode.classList.remove('hidden');
+  listNode.classList.remove('hidden');
+}
+
 async function refreshTrustAnalyticsWidget({ silent = false } = {}) {
   state.trustAnalyticsLoading = true;
   if (!silent) state.trustAnalyticsError = '';
@@ -1767,6 +1950,42 @@ async function refreshTrustWorkflowWidget({ silent = false } = {}) {
   } finally {
     state.trustWorkflowLoading = false;
     renderTrustOpsWidget();
+  }
+}
+
+async function refreshTrustDeliveryAuditWidget({ silent = false } = {}) {
+  state.trustDeliveryAuditLoading = true;
+  if (!silent) state.trustDeliveryAuditError = '';
+  renderTrustDeliveryAuditWidget();
+  try {
+    state.trustDeliveryAuditPayload = state.useMock
+      ? buildMockTrustDeliveryAuditPayload()
+      : await fetchJson('/api/autonomous/trust/delivery/audit?window=10');
+    state.trustDeliveryAuditError = '';
+  } catch (err) {
+    state.trustDeliveryAuditPayload = null;
+    state.trustDeliveryAuditError = `Trust delivery audit unavailable: ${err.message || 'request failed'}`;
+  } finally {
+    state.trustDeliveryAuditLoading = false;
+    renderTrustDeliveryAuditWidget();
+  }
+}
+
+async function refreshBrowserAutomationWidget({ silent = false } = {}) {
+  state.browserAutomationLoading = true;
+  if (!silent) state.browserAutomationError = '';
+  renderBrowserAutomationWidget();
+  try {
+    state.browserAutomationPayload = state.useMock
+      ? buildMockBrowserAutomationPayload()
+      : await fetchJson('/api/autonomous/browser-automation/latest');
+    state.browserAutomationError = '';
+  } catch (err) {
+    state.browserAutomationPayload = null;
+    state.browserAutomationError = `Browser automation status unavailable: ${err.message || 'request failed'}`;
+  } finally {
+    state.browserAutomationLoading = false;
+    renderBrowserAutomationWidget();
   }
 }
 
@@ -5494,6 +5713,8 @@ function setupPolling() {
     await refreshTrustInboxWidget({ silent: true });
     await refreshTrustApprovalsWidget({ silent: true });
     await refreshTrustWorkflowWidget({ silent: true });
+    await refreshTrustDeliveryAuditWidget({ silent: true });
+    await refreshBrowserAutomationWidget({ silent: true });
     if (state.selectedProcessDetail) {
       setProcessStaleIndicator(state.selectedProcessDetail, state.selectedProcessHistory);
     }
@@ -5559,6 +5780,8 @@ async function loadRuns() {
     await refreshTrustInboxWidget({ silent: true });
     await refreshTrustApprovalsWidget({ silent: true });
     await refreshTrustWorkflowWidget({ silent: true });
+    await refreshTrustDeliveryAuditWidget({ silent: true });
+    await refreshBrowserAutomationWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     await refreshDeprecationNotice({ silent: true });
@@ -5599,6 +5822,8 @@ async function loadRuns() {
     await refreshTrustInboxWidget({ silent: true });
     await refreshTrustApprovalsWidget({ silent: true });
     await refreshTrustWorkflowWidget({ silent: true });
+    await refreshTrustDeliveryAuditWidget({ silent: true });
+    await refreshBrowserAutomationWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     await refreshDeprecationNotice({ silent: true });
@@ -5658,6 +5883,14 @@ async function loadRuns() {
     state.trustWorkflowError = 'Trust workflow unavailable: unable to load runs list.';
     state.trustWorkflowLoading = false;
     renderTrustOpsWidget();
+    state.trustDeliveryAuditPayload = null;
+    state.trustDeliveryAuditError = 'Trust delivery audit unavailable: unable to load runs list.';
+    state.trustDeliveryAuditLoading = false;
+    renderTrustDeliveryAuditWidget();
+    state.browserAutomationPayload = null;
+    state.browserAutomationError = 'Browser automation status unavailable: unable to load runs list.';
+    state.browserAutomationLoading = false;
+    renderBrowserAutomationWidget();
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     setupPolling();

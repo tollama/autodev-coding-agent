@@ -535,6 +535,7 @@ python scripts/local_simple_e2e_smoke.py --artifacts-dir ./artifacts/local-simpl
 ```
 Smoke artifacts are persisted under `./artifacts/local-simple-e2e-smoke/<timestamp>/` (server stdout/stderr logs + API snapshots) so failures remain debuggable.
 This lane now also verifies the trust overview APIs, run-to-run trust compare, and saved compare snapshot lifecycle used by the GUI Compare tab.
+It now also exercises trust delivery audit history plus persisted browser automation status, which surface in the Overview tab as **Delivery Activity** and **Browser Automation** panels.
 The canonical saved-snapshot REST item routes are `GET /api/runs/compare/snapshots/<snapshot_id>`, `PATCH /api/runs/compare/snapshots/<snapshot_id>`, and `DELETE /api/runs/compare/snapshots/<snapshot_id>`; older POST helper routes remain as deprecated compatibility shims.
 The shipped GUI itself uses only the canonical REST item routes, and recent deprecated helper usage now surfaces in the Overview tab’s API Notices panel.
 

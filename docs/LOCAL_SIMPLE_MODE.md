@@ -135,6 +135,7 @@ Legacy compatibility note:
 
 These legacy helper routes still work for older clients, but they are deprecated. Responses now include canonical replacement guidance pointing to the preferred `PATCH` or `DELETE` item route.
 The shipped GUI uses only the canonical `PATCH` and `DELETE` item routes. If older external clients still hit the helper routes, the Overview tab now surfaces that activity in the API Notices panel.
+The same Overview area now also exposes trust delivery audit history and the latest persisted browser automation result through `GET /api/autonomous/trust/delivery/audit` and `GET /api/autonomous/browser-automation/latest`.
 
 Failure artifacts:
 - Stored under `artifacts/local-simple-e2e-smoke/<timestamp>/`

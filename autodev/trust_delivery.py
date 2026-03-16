@@ -111,6 +111,75 @@ def _append_delivery_audit(root: Path, row: dict[str, Any]) -> str:
     return str(audit_path)
 
 
+def load_trust_delivery_audit(
+    runs_root: str | Path,
+    *,
+    window: int = 20,
+    mode: str | None = None,
+    target: str | None = None,
+) -> dict[str, Any]:
+    root = Path(runs_root).expanduser().resolve()
+    audit_path = root / TRUST_DELIVERY_AUDIT_JSONL
+    if not audit_path.exists() or not audit_path.is_file():
+        return {
+            "empty": True,
+            "message": "No trust delivery activity recorded yet.",
+            "summary": {"events_total": 0, "sent_count": 0, "dry_run_count": 0, "failed_count": 0},
+            "events": [],
+            "audit_log_path": str(audit_path),
+        }
+
+    mode_filter = str(mode or "").strip().lower()
+    target_filter = str(target or "").strip().lower()
+    rows: list[dict[str, Any]] = []
+    for raw_line in audit_path.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip():
+            continue
+        try:
+            row = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        row_mode = str(row.get("mode") or "").strip().lower()
+        targets = [str(item or "").strip() for item in row.get("targets", []) if str(item or "").strip()]
+        if mode_filter and row_mode != mode_filter:
+            continue
+        if target_filter and target_filter not in {item.lower() for item in targets}:
+            continue
+        rows.append(row)
+
+    rows.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+    limited = rows[: max(int(window or 20), 1)]
+    summary = {
+        "events_total": len(limited),
+        "sent_count": sum(1 for row in limited if row.get("dry_run") is False),
+        "dry_run_count": sum(1 for row in limited if row.get("dry_run") is True),
+        "failed_count": sum(
+            1
+            for row in limited
+            if any(str(item.get("status") or "") == "failed" for item in (row.get("outcomes") or []) if isinstance(item, dict))
+        ),
+        "latest_at": limited[0].get("timestamp") if limited else "",
+        "modes": sorted({str(row.get("mode") or "") for row in limited if str(row.get("mode") or "").strip()}),
+        "targets": sorted(
+            {
+                str(item or "")
+                for row in limited
+                for item in (row.get("targets") or [])
+                if str(item or "").strip()
+            }
+        ),
+    }
+    return {
+        "empty": len(limited) == 0,
+        "message": "No trust delivery activity matched the filter." if rows and not limited else "",
+        "summary": summary,
+        "events": limited,
+        "audit_log_path": str(audit_path),
+    }
+
+
 def send_trust_delivery(
     runs_root: str | Path,
     *,

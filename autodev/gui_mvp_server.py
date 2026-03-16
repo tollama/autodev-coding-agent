@@ -160,9 +160,19 @@ GUI_API_ROUTE_SECTIONS: list[dict[str, Any]] = [
                 "summary": "Preview trust inbox, event, or run delivery payloads.",
             },
             {
+                "method": "GET",
+                "path": "/api/autonomous/trust/delivery/audit",
+                "summary": "Inspect recent trust delivery activity and outcomes.",
+            },
+            {
                 "method": "POST",
                 "path": "/api/autonomous/trust/delivery/send",
                 "summary": "Deliver trust inbox, event, or run payloads to configured targets.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/autonomous/browser-automation/latest",
+                "summary": "Load the most recent persisted browser automation result across runs.",
             },
         ],
     },
@@ -1525,6 +1535,40 @@ def _trust_events(runs_root: Path, window: int) -> dict[str, Any]:
         "empty": len(events) == 0,
         "events": events[:100],
         "warnings": base["warnings"],
+    }
+
+
+def _trust_delivery_audit(runs_root: Path, window: int) -> dict[str, Any]:
+    from .trust_delivery import load_trust_delivery_audit
+
+    return load_trust_delivery_audit(runs_root, window=window)
+
+
+def _browser_automation_latest(runs_root: Path) -> dict[str, Any]:
+    from .browser_automation import BROWSER_AUTOMATION_JSON, load_browser_automation_result
+
+    run_dirs = sorted((p for p in runs_root.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
+    for run_dir in run_dirs:
+        payload = load_browser_automation_result(run_dir)
+        if not payload:
+            continue
+        return {
+            "empty": False,
+            "run_id": run_dir.name,
+            "artifact_path": str(run_dir / BROWSER_AUTOMATION_JSON),
+            "summary": {
+                "status": payload.get("status"),
+                "reason": payload.get("reason") or "",
+                "elapsed_ms": payload.get("elapsed_ms"),
+                "has_screenshot": bool(payload.get("screenshot_path")),
+            },
+            "result": payload,
+        }
+    return {
+        "empty": True,
+        "message": "No browser automation result has been persisted yet.",
+        "summary": {},
+        "result": {},
     }
 
 
@@ -3284,6 +3328,14 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                     output_format=str((query.get("format") or ["json"])[0] or "json"),
                 )
             )
+            return
+        if path == "/api/autonomous/trust/delivery/audit":
+            query = parse_qs(parsed.query)
+            window = _parse_trend_window(str((query.get("window") or ["10"])[0]))
+            self._json_response(_trust_delivery_audit(self.config.runs_root, window))
+            return
+        if path == "/api/autonomous/browser-automation/latest":
+            self._json_response(_browser_automation_latest(self.config.runs_root))
             return
 
         if path == "/api/runs":

@@ -626,6 +626,7 @@ def test_trust_cli_supports_analytics_inbox_and_approvals(tmp_path: Path, capsys
     _write_json(artifacts / "autonomous_guard_decisions.json", {"decisions": [{"decision": "stop"}], "latest": {"decision": "stop"}})
     _write_json(artifacts / "run_trace.json", {"events": [{"event_type": "quality_score.computed"}], "phases": [], "llm_metrics": {}})
     _write_json(artifacts / "run_metadata.json", {"model": "gpt-test"})
+    _write_json(artifacts / "browser_automation.json", {"status": "passed", "elapsed_ms": 1200, "screenshot_path": "/tmp/browser.png"})
 
     autonomous_mode.cli(["trust-analytics", "--runs-root", str(runs_root), "--format", "text"])
     analytics_text = capsys.readouterr().out
@@ -712,6 +713,16 @@ def test_trust_cli_supports_analytics_inbox_and_approvals(tmp_path: Path, capsys
     delivery_send = capsys.readouterr().out
     assert "# Trust Delivery" in delivery_send
     assert log_target.exists()
+
+    autonomous_mode.cli(["trust-delivery", "audit", "--runs-root", str(runs_root), "--format", "text"])
+    delivery_audit = capsys.readouterr().out
+    assert "# Trust Delivery Audit" in delivery_audit
+    assert "events_total" in delivery_audit
+
+    autonomous_mode.cli(["browser-automation-status", "--runs-root", str(runs_root), "--format", "text"])
+    browser_status = capsys.readouterr().out
+    assert "# Browser Automation" in browser_status
+    assert "run-trust-cli" in browser_status
 
 def test_extract_autonomous_summary_builds_operator_guidance_with_fallbacks(tmp_path: Path) -> None:
     run_dir = tmp_path / "run-guidance-fallback"

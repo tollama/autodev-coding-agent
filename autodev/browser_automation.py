@@ -10,6 +10,7 @@ from typing import Any
 
 SAFARI_APP_NAME = "Safari"
 APPLE_EVENTS_JS_DISABLED = "allow javascript from apple events"
+BROWSER_AUTOMATION_JSON = ".autodev/browser_automation.json"
 
 
 def _run_command(args: list[str], *, timeout: float = 10.0) -> subprocess.CompletedProcess[str]:
@@ -154,3 +155,21 @@ def run_safari_gui_smoke(
     if require_available and result["status"] != "passed":
         result["required"] = True
     return result
+
+
+def persist_browser_automation_result(run_dir: str | Path, payload: dict[str, Any]) -> str:
+    target = Path(run_dir).expanduser().resolve() / BROWSER_AUTOMATION_JSON
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return str(target)
+
+
+def load_browser_automation_result(run_dir: str | Path) -> dict[str, Any]:
+    target = Path(run_dir).expanduser().resolve() / BROWSER_AUTOMATION_JSON
+    if not target.exists() or not target.is_file():
+        return {}
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}

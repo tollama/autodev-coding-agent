@@ -1442,6 +1442,7 @@ def test_trust_analytics_model_eval_inbox_and_approvals_endpoints(gui_server):
     _write_json(run / ".autodev" / "autonomous_guard_decisions.json", {"decisions": [{"decision": "stop"}], "latest": {"decision": "stop"}})
     _write_json(run / ".autodev" / "run_trace.json", {"events": [{"event_type": "quality_score.computed"}], "phases": [], "llm_metrics": {}})
     _write_json(run / ".autodev" / "run_metadata.json", {"model": "gpt-test"})
+    _write_json(run / ".autodev" / "browser_automation.json", {"status": "passed", "elapsed_ms": 1500, "screenshot_path": "/tmp/browser.png"})
 
     analytics_status, analytics_body = _get_json(f"{base_url}/api/autonomous/trust/analytics?window=5")
     assert analytics_status == 200
@@ -1509,6 +1510,17 @@ def test_trust_analytics_model_eval_inbox_and_approvals_endpoints(gui_server):
     assert delivery_body["dry_run"] is True
     assert delivery_body["outcomes"][0]["status"] == "dry_run"
 
+    delivery_audit_status, delivery_audit_body = _get_json(f"{base_url}/api/autonomous/trust/delivery/audit?window=5")
+    assert delivery_audit_status == 200
+    assert delivery_audit_body["empty"] is False
+    assert delivery_audit_body["summary"]["dry_run_count"] >= 1
+
+    browser_status, browser_body = _get_json(f"{base_url}/api/autonomous/browser-automation/latest")
+    assert browser_status == 200
+    assert browser_body["empty"] is False
+    assert browser_body["run_id"] == "run-trust-ops"
+    assert browser_body["summary"]["status"] == "passed"
+
 
 def test_api_docs_routes_endpoint_and_static_reference_are_served(gui_server):
     base_url, _ = gui_server
@@ -1530,7 +1542,9 @@ def test_api_docs_routes_endpoint_and_static_reference_are_served(gui_server):
     assert "/api/autonomous/trust/approvals" in route_paths
     assert "/api/autonomous/trust/workflow" in route_paths
     assert "/api/autonomous/trust/delivery/preview" in route_paths
+    assert "/api/autonomous/trust/delivery/audit" in route_paths
     assert "/api/autonomous/trust/delivery/send" in route_paths
+    assert "/api/autonomous/browser-automation/latest" in route_paths
     assert "/api/runs/compare/snapshots/<snapshot_id>" in route_paths
     assert any(
         row["path"] == "/api/runs/compare/snapshots/<snapshot_id>/delete" and row["canonical_method"] == "DELETE"
@@ -1722,6 +1736,9 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="trustInboxExportMdBtn"' in index_html
     assert 'id="trustInboxSendDryRunBtn"' in index_html
     assert 'id="trustDeliveryStatus"' in index_html
+    assert 'id="trustDeliveryAuditList"' in index_html
+    assert 'id="browserAutomationCards"' in index_html
+    assert 'id="browserAutomationList"' in index_html
     assert 'id="compareTrustPanel"' in index_html
     assert 'id="compareTrustEmpty"' in index_html
     assert 'id="compareTrustDiffPanel"' in index_html
@@ -1863,7 +1880,9 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "/api/autonomous/trust/approvals" in app_js
     assert "/api/autonomous/trust/workflow" in app_js
     assert "/api/autonomous/trust/delivery/preview" in app_js
+    assert "/api/autonomous/trust/delivery/audit" in app_js
     assert "/api/autonomous/trust/delivery/send" in app_js
+    assert "/api/autonomous/browser-automation/latest" in app_js
     assert "/api/scorecard/latest" in app_js
     assert "/api/autonomous/trust/latest" in app_js
     assert "human_review_reasons" in app_js
@@ -1873,6 +1892,8 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "attestation_packet_sha256" in app_js
     assert "approval_due_at" in app_js
     assert "approval_escalation_state" in app_js
+    assert "trustDeliveryAuditList" in app_js
+    assert "browserAutomationCards" in app_js
     assert "/api/runs/compare/snapshots/${encodeURIComponent(snapshotId)}/metadata" not in app_js
     assert "/api/runs/compare/snapshots/${encodeURIComponent(snapshotId)}/rename" not in app_js
     assert "/api/runs/compare/snapshots/${encodeURIComponent(snapshotId)}/delete" not in app_js
