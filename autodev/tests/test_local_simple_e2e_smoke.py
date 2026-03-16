@@ -43,10 +43,18 @@ def test_local_simple_e2e_smoke_script_covers_trust_compare_and_saved_snapshots(
     assert snapshots["static_index"]["has_trust_trend_cards"] is True
     assert snapshots["static_index"]["has_saved_comparisons_panel"] is True
     assert snapshots["static_index"]["has_trust_diff_filter"] is True
+    assert snapshots["static_index"]["has_api_notice_panel"] is True
+    assert snapshots["static_index"]["has_deprecation_notice"] is True
+    assert snapshots["static_index"]["has_api_reference_loader"] is True
+
+    assert snapshots["api_docs"]["title"] == "AutoDev GUI API Reference"
+    assert snapshots["deprecations_empty"]["empty"] is True
 
     trust_latest = snapshots["trust_latest"]
     assert trust_latest["empty"] is False
     assert trust_latest["summary"]["trust_status"] in {"high", "moderate", "low", "unknown"}
+    assert isinstance(trust_latest["summary"]["human_review_reasons"], list)
+    assert "residual_risk_summary" in trust_latest["summary"]
 
     trust_trends = snapshots["trust_trends"]
     assert trust_trends["summary"]["runs_considered"] >= 2
@@ -69,6 +77,13 @@ def test_local_simple_e2e_smoke_script_covers_trust_compare_and_saved_snapshots(
     assert compare_update["snapshot"]["display_name"] == "Smoke compare snapshot"
     assert compare_update["snapshot"]["pinned"] is True
     assert compare_update["snapshot"]["tags"] == ["smoke", "trust"]
+
+    compare_legacy_update = snapshots["compare_snapshot_legacy_update"]
+    assert compare_legacy_update["meta"]["deprecation"]["deprecated"] is True
+
+    deprecations_after_legacy = snapshots["deprecations_after_legacy"]
+    assert deprecations_after_legacy["empty"] is False
+    assert deprecations_after_legacy["summary"]["deprecated_usage_count"] >= 1
 
     compare_delete = snapshots["compare_snapshot_delete"]
     assert compare_delete["deleted"] is True

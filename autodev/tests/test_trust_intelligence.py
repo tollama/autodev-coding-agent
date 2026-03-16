@@ -14,6 +14,7 @@ for name in list(sys.modules):
 import autodev.autonomous_mode as autonomous_mode  # noqa: E402
 from autodev.trust_intelligence import (  # noqa: E402
     build_trust_intelligence_packet,
+    build_trust_summary,
     persist_trust_intelligence_artifacts,
 )
 
@@ -337,6 +338,21 @@ def test_trust_packet_includes_calibrated_review_reasons_for_failed_run(tmp_path
     assert validation_signal["quality_score_normalized"] == 0.42
     assert validation_signal["gate_pass_rate"] == 0.0
     assert packet["operator_next"]["review_reasons"] == overall["review_reasons"]
+
+
+def test_build_trust_summary_includes_explanation_and_residual_risk(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-failed-summary"
+    _seed_failed_review_run(run_dir)
+
+    summary = autonomous_mode.extract_autonomous_summary(str(run_dir))
+    packet = build_trust_intelligence_packet(run_dir, summary=summary)
+    trust_summary = build_trust_summary(packet)
+
+    assert trust_summary["requires_human_review"] is True
+    assert isinstance(trust_summary["human_review_reasons"], list)
+    assert trust_summary["trust_explanation"]
+    assert trust_summary["residual_risk_level"] == "high"
+    assert "Human review remains required" in trust_summary["residual_risk_summary"]
 
 
 def test_trust_summary_cli_outputs_json_and_text(tmp_path: Path, capsys) -> None:

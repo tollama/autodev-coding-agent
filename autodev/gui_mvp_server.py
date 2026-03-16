@@ -1914,11 +1914,16 @@ def _latest_deprecated_route_activity(*, limit: int = 10) -> dict[str, Any]:
         return {
             "empty": True,
             "message": "No deprecated snapshot helper usage detected recently.",
-            "summary": {"deprecated_usage_count": 0, "latest_at": "", "routes": []},
+            "summary": {"deprecated_usage_count": 0, "latest_at": "", "routes": [], "route_counts": {}},
             "entries": [],
         }
 
     route_set = sorted({str(entry.get("legacy_path") or "") for entry in entries if entry.get("legacy_path")})
+    route_counts: dict[str, int] = {}
+    for entry in entries:
+        route = str(entry.get("legacy_path") or "")
+        if route:
+            route_counts[route] = route_counts.get(route, 0) + 1
     return {
         "empty": False,
         "message": "",
@@ -1926,6 +1931,7 @@ def _latest_deprecated_route_activity(*, limit: int = 10) -> dict[str, Any]:
             "deprecated_usage_count": len(entries),
             "latest_at": str(entries[0].get("timestamp") or ""),
             "routes": route_set,
+            "route_counts": route_counts,
         },
         "entries": entries,
     }

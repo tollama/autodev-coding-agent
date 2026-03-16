@@ -39,6 +39,9 @@ const state = {
   compareSnapshotTotalPages: 1,
   compareSnapshotSelection: [],
   guiContext: null,
+  apiDocsPayload: null,
+  apiDocsError: '',
+  apiDocsLoading: false,
   healthSnapshot: null,
   scorecardPayload: null,
   scorecardError: '',
@@ -594,6 +597,10 @@ function buildMockTrustPayload() {
       trust_status: 'moderate',
       trust_score: 0.58,
       requires_human_review: true,
+      human_review_reasons: ['latest_quality_status=advisory_warning', 'failed_run_requires_review'],
+      trust_explanation: 'Validation quality is below target and the run remains operator-gated.',
+      residual_risk_level: 'high',
+      residual_risk_summary: 'Tests remain unstable and operator approval is still required before closure.',
       latest_quality_status: 'advisory_warning',
       latest_quality_score: 42,
       incident_owner_team: 'Feature Engineering',
@@ -641,8 +648,12 @@ function buildMockTrustTrendPayload() {
         run_id: 'mock-run-001',
         trust_status: 'moderate',
         trust_score: 0.58,
-        requires_human_review: true,
-        latest_quality_status: 'advisory_warning',
+      requires_human_review: true,
+      human_review_reasons: ['latest_quality_status=advisory_warning', 'failed_run_requires_review'],
+      trust_explanation: 'Validation quality is below target and the run remains operator-gated.',
+      residual_risk_level: 'high',
+      residual_risk_summary: 'Tests remain unstable and operator approval is still required before closure.',
+      latest_quality_status: 'advisory_warning',
         incident_owner_team: 'Feature Engineering',
         updated_at: new Date().toISOString(),
       },
@@ -699,6 +710,10 @@ function buildMockDetailTrust(detail) {
       trust_status: 'high',
       trust_score: 0.93,
       requires_human_review: false,
+      human_review_reasons: [],
+      trust_explanation: 'Evidence is complete and the latest validation signals are stable.',
+      residual_risk_level: 'low',
+      residual_risk_summary: 'No material residual risk detected from current trust signals.',
       latest_quality_status: 'passed',
       latest_quality_score: 96,
       incident_owner_team: 'Autonomy On-Call',
@@ -720,6 +735,56 @@ function buildMockDetailTrust(detail) {
       },
     },
     trust_message: '',
+  };
+}
+
+function buildMockApiDocsPayload() {
+  return {
+    title: 'AutoDev GUI API Reference',
+    sections: [
+      { name: 'Trust Intelligence', routes: [{ method: 'GET', path: '/api/autonomous/trust/latest', summary: 'Latest trust packet.' }] },
+      { name: 'Compare Snapshots', routes: [{ method: 'PATCH', path: '/api/runs/compare/snapshots/<snapshot_id>', summary: 'Canonical metadata update route.' }] },
+    ],
+    deprecated_routes: [
+      {
+        method: 'POST',
+        path: '/api/runs/compare/snapshots/<snapshot_id>/metadata',
+        canonical_method: 'PATCH',
+        canonical_path: '/api/runs/compare/snapshots/<snapshot_id>',
+      },
+    ],
+  };
+}
+
+function buildMockDeprecationNoticePayload() {
+  return {
+    empty: false,
+    message: '',
+    summary: {
+      deprecated_usage_count: 2,
+      latest_at: new Date().toISOString(),
+      routes: [
+        '/api/runs/compare/snapshots/mock-run-001/metadata',
+        '/api/runs/compare/snapshots/mock-run-001/rename',
+      ],
+      route_counts: {
+        '/api/runs/compare/snapshots/mock-run-001/metadata': 1,
+        '/api/runs/compare/snapshots/mock-run-001/rename': 1,
+      },
+    },
+    entries: [
+      {
+        timestamp: new Date().toISOString(),
+        action: 'compare_snapshot_metadata',
+        result_status: 'updated',
+        role: 'operator',
+        auth_source: 'header_or_env',
+        canonical_method: 'PATCH',
+        canonical_path: '/api/runs/compare/snapshots/mock-run-001',
+        legacy_path: '/api/runs/compare/snapshots/mock-run-001/metadata',
+        snapshot_id: 'mock-run-001',
+      },
+    ],
   };
 }
 
@@ -806,13 +871,19 @@ function trustCardTone(key, summary) {
 function renderTrustWidget() {
   const cardsNode = el('trustCards');
   const actionsNode = el('trustActions');
+  const narrativeNode = el('trustNarrative');
+  const residualNode = el('trustResidual');
   const emptyNode = el('trustEmpty');
   const errorNode = el('trustError');
   const metaNode = el('trustMeta');
-  if (!cardsNode || !actionsNode || !emptyNode || !errorNode || !metaNode) return;
+  if (!cardsNode || !actionsNode || !narrativeNode || !residualNode || !emptyNode || !errorNode || !metaNode) return;
 
   cardsNode.innerHTML = '';
   actionsNode.innerHTML = '';
+  narrativeNode.innerHTML = '';
+  residualNode.innerHTML = '';
+  narrativeNode.classList.add('hidden');
+  residualNode.classList.add('hidden');
   errorNode.classList.add('hidden');
   errorNode.textContent = '';
 
@@ -902,6 +973,32 @@ function renderTrustWidget() {
   const actions = Array.isArray(payload?.packet?.operator_next?.top_actions)
     ? payload.packet.operator_next.top_actions
     : [];
+  const reviewReasons = Array.isArray(summary.human_review_reasons) ? summary.human_review_reasons : [];
+  const trustExplanation = String(summary.trust_explanation || '').trim();
+  const residualRiskSummary = String(summary.residual_risk_summary || '').trim();
+  const residualRiskLevel = String(summary.residual_risk_level || '').trim();
+
+  if (trustExplanation || reviewReasons.length) {
+    const reasonsHtml = reviewReasons.length
+      ? `<ul>${reviewReasons.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('')}</ul>`
+      : '<div class="muted">No explicit human-review reasons.</div>';
+    narrativeNode.innerHTML = `
+      <strong>Why This Trust State?</strong>
+      <div>${escapeHtml(trustExplanation || 'No explicit trust explanation is available.')}</div>
+      ${reasonsHtml}
+    `;
+    narrativeNode.classList.remove('hidden');
+  }
+
+  if (residualRiskSummary || residualRiskLevel) {
+    residualNode.innerHTML = `
+      <strong>Residual Risk</strong>
+      <div>${escapeHtml(residualRiskSummary || 'No material residual risk detected from current trust signals.')}</div>
+      <div class="muted">level=${escapeHtml(residualRiskLevel || 'low')}</div>
+    `;
+    residualNode.classList.remove('hidden');
+  }
+
   if (actions.length) {
     actions.slice(0, 3).forEach((item) => {
       const article = document.createElement('article');
@@ -1245,6 +1342,152 @@ function renderDeprecationNotice() {
   const latestAt = summary?.latest_at ? new Date(summary.latest_at).toLocaleTimeString() : 'recently';
   banner.textContent = `Deprecated snapshot helper usage detected (${count}) at ${latestAt}.${routeText}`;
   banner.classList.remove('hidden');
+}
+
+function buildApiNoticeMarkdown() {
+  const docs = state.apiDocsPayload || {};
+  const dep = state.deprecationNoticePayload || {};
+  const summary = dep.summary || {};
+  const entries = Array.isArray(dep.entries) ? dep.entries : [];
+  const routeCount = Array.isArray(docs.sections)
+    ? docs.sections.reduce((acc, section) => acc + (Array.isArray(section?.routes) ? section.routes.length : 0), 0)
+    : 0;
+  const deprecatedCount = Array.isArray(docs.deprecated_routes) ? docs.deprecated_routes.length : 0;
+  const lines = [
+    '# API Notices',
+    '',
+    `- route_count: ${routeCount}`,
+    `- deprecated_route_count: ${deprecatedCount}`,
+    `- deprecated_usage_count: ${summary.deprecated_usage_count || 0}`,
+    `- latest_at: ${summary.latest_at || '-'}`,
+    '',
+    '## Route Counts',
+  ];
+  const routeCounts = summary.route_counts && typeof summary.route_counts === 'object'
+    ? Object.entries(summary.route_counts)
+    : [];
+  if (!routeCounts.length) {
+    lines.push('- none');
+  } else {
+    routeCounts.forEach(([route, count]) => {
+      lines.push(`- ${route}: ${count}`);
+    });
+  }
+  lines.push(
+    '',
+    '## Recent Deprecated Usage',
+  );
+  if (!entries.length) {
+    lines.push('- none');
+  } else {
+    entries.slice(0, 10).forEach((entry) => {
+      lines.push(
+        `- ${entry.legacy_path || '-'} -> ${entry.canonical_method || '-'} ${entry.canonical_path || '-'} (${entry.timestamp || '-'})`,
+      );
+    });
+  }
+  return lines.join('\n');
+}
+
+function renderApiNoticesPanel() {
+  const summaryNode = el('apiNoticeSummary');
+  const listNode = el('apiNoticeList');
+  const emptyNode = el('apiNoticeEmpty');
+  const errorNode = el('apiNoticeError');
+  const metaNode = el('apiNoticeMeta');
+  if (!summaryNode || !listNode || !emptyNode || !errorNode || !metaNode) return;
+
+  summaryNode.innerHTML = '';
+  listNode.innerHTML = '';
+  errorNode.classList.add('hidden');
+  errorNode.textContent = '';
+
+  if (state.apiDocsLoading || state.deprecationNoticeLoading) {
+    summaryNode.classList.add('hidden');
+    listNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = 'Loading API notices…';
+    metaNode.textContent = '';
+    return;
+  }
+
+  if (state.apiDocsError || state.deprecationNoticeError) {
+    summaryNode.classList.add('hidden');
+    listNode.classList.add('hidden');
+    emptyNode.classList.add('hidden');
+    errorNode.classList.remove('hidden');
+    errorNode.textContent = [state.apiDocsError, state.deprecationNoticeError].filter(Boolean).join(' • ');
+    metaNode.textContent = '';
+    return;
+  }
+
+  const docs = state.apiDocsPayload;
+  const dep = state.deprecationNoticePayload;
+  if (!docs) {
+    summaryNode.classList.add('hidden');
+    listNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = 'API reference is not available yet.';
+    metaNode.textContent = '';
+    return;
+  }
+
+  const routeCount = Array.isArray(docs.sections)
+    ? docs.sections.reduce((acc, section) => acc + (Array.isArray(section?.routes) ? section.routes.length : 0), 0)
+    : 0;
+  const deprecatedRouteCount = Array.isArray(docs.deprecated_routes) ? docs.deprecated_routes.length : 0;
+  const depSummary = dep?.summary || {};
+  const deprecatedUsageCount = Number(depSummary.deprecated_usage_count || 0);
+  const latestAt = depSummary.latest_at ? formatTime(depSummary.latest_at) : '-';
+  const routeCountSummary = depSummary.route_counts && typeof depSummary.route_counts === 'object'
+    ? Object.keys(depSummary.route_counts).length
+    : 0;
+
+  [
+    ['route_count', 'Catalog Routes', routeCount],
+    ['deprecated_route_count', 'Deprecated Routes', deprecatedRouteCount],
+    ['deprecated_usage_count', 'Recent Usage', deprecatedUsageCount],
+    ['route_count_summary', 'Routes In Use', routeCountSummary],
+    ['latest_at', 'Latest Activity', latestAt],
+  ].forEach(([key, label, value]) => {
+    const article = document.createElement('article');
+    const tone = key === 'deprecated_usage_count' && deprecatedUsageCount > 0 ? 'warning' : 'neutral';
+    article.className = `scorecard-card tone-${tone}`;
+    article.innerHTML = `
+      <div class="value">${escapeHtml(String(value))}</div>
+      <div class="label">${escapeHtml(label)}</div>
+    `;
+    summaryNode.appendChild(article);
+  });
+
+  const entries = Array.isArray(dep?.entries) ? dep.entries : [];
+  if (!entries.length) {
+    const row = document.createElement('div');
+    row.className = 'api-notice-entry';
+    row.innerHTML = `
+      <div class="api-notice-entry-title">No deprecated helper usage detected.</div>
+      <div class="api-notice-entry-meta">Internal GUI consumers are already using the canonical REST routes.</div>
+    `;
+    listNode.appendChild(row);
+  } else {
+    entries.slice(0, 5).forEach((entry) => {
+      const row = document.createElement('article');
+      row.className = 'api-notice-entry';
+      row.innerHTML = `
+        <div class="api-notice-entry-title">${escapeHtml(entry.legacy_path || '-')}</div>
+        <div class="api-notice-entry-meta">${escapeHtml(entry.timestamp || '-')} • role=${escapeHtml(entry.role || '-')} • auth=${escapeHtml(entry.auth_source || '-')}</div>
+        <div>Canonical: <code>${escapeHtml(`${entry.canonical_method || '-'} ${entry.canonical_path || '-'}`)}</code></div>
+      `;
+      listNode.appendChild(row);
+    });
+  }
+
+  metaNode.textContent = deprecatedUsageCount > 0
+    ? 'Recent deprecated helper usage is summarized from the GUI audit trail.'
+    : 'No recent deprecated helper usage detected.';
+  emptyNode.classList.add('hidden');
+  summaryNode.classList.remove('hidden');
+  listNode.classList.remove('hidden');
 }
 
 function renderProcessTabState() {
@@ -1597,7 +1840,7 @@ async function refreshDeprecationNotice({ silent = false } = {}) {
   if (state.useMock) {
     state.deprecationNoticeLoading = false;
     state.deprecationNoticeError = '';
-    state.deprecationNoticePayload = { empty: true, summary: { deprecated_usage_count: 0, latest_at: '', routes: [] }, entries: [] };
+    state.deprecationNoticePayload = { empty: true, summary: { deprecated_usage_count: 0, latest_at: '', routes: [], route_counts: {} }, entries: [] };
     renderDeprecationNotice();
     return;
   }
@@ -1617,6 +1860,34 @@ async function refreshDeprecationNotice({ silent = false } = {}) {
   } finally {
     state.deprecationNoticeLoading = false;
     renderDeprecationNotice();
+    renderApiNoticesPanel();
+  }
+}
+
+async function refreshApiDocsCatalog({ silent = false } = {}) {
+  if (state.useMock) {
+    state.apiDocsLoading = false;
+    state.apiDocsError = '';
+    state.apiDocsPayload = buildMockApiDocsPayload();
+    renderApiNoticesPanel();
+    return;
+  }
+
+  if (!silent) {
+    state.apiDocsLoading = true;
+    state.apiDocsError = '';
+    renderApiNoticesPanel();
+  }
+
+  try {
+    const payload = await fetchJson('/api/docs/routes');
+    state.apiDocsPayload = payload;
+    state.apiDocsError = '';
+  } catch (err) {
+    state.apiDocsError = String(err?.message || 'request failed');
+  } finally {
+    state.apiDocsLoading = false;
+    renderApiNoticesPanel();
   }
 }
 
@@ -4680,10 +4951,12 @@ async function loadRuns() {
     await refreshTrends({ silent: true });
     await refreshScorecardWidget({ silent: true });
     await refreshTrustWidget({ silent: true });
+    await refreshApiDocsCatalog({ silent: true });
     await refreshTrustTrendWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     await refreshDeprecationNotice({ silent: true });
+    renderApiNoticesPanel();
     state.runsLoading = false;
     state.runsError = '';
     renderOverviewState();
@@ -4713,10 +4986,12 @@ async function loadRuns() {
     await refreshTrends({ silent: true });
     await refreshScorecardWidget({ silent: true });
     await refreshTrustWidget({ silent: true });
+    await refreshApiDocsCatalog({ silent: true });
     await refreshTrustTrendWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     await refreshDeprecationNotice({ silent: true });
+    renderApiNoticesPanel();
     state.runsLoading = false;
     state.runsError = '';
     renderOverviewState();
@@ -4733,10 +5008,14 @@ async function loadRuns() {
     await loadCompareSnapshots({ preserveSelection: false, silent: true });
     renderTrends(null);
     state.scorecardPayload = null;
+    state.apiDocsPayload = null;
+    state.apiDocsError = '';
+    state.apiDocsLoading = false;
     state.deprecationNoticePayload = null;
     state.deprecationNoticeError = '';
     state.deprecationNoticeLoading = false;
     renderDeprecationNotice();
+    renderApiNoticesPanel();
     state.scorecardError = 'Latest scorecard unavailable: unable to load runs list.';
     state.scorecardLoading = false;
     renderScorecardWidget();
@@ -5773,6 +6052,40 @@ function initLiveUpdateControls() {
   });
 }
 
+function initApiNoticeControls() {
+  const openBtn = el('apiNoticeOpenRefBtn');
+  const exportJsonBtn = el('apiNoticeExportJsonBtn');
+  const exportMdBtn = el('apiNoticeExportMdBtn');
+  const copyMdBtn = el('apiNoticeCopyMdBtn');
+
+  openBtn?.addEventListener('click', () => {
+    window.open('/api-reference.html', '_blank', 'noopener,noreferrer');
+  });
+
+  exportJsonBtn?.addEventListener('click', () => {
+    const payload = {
+      routes: state.apiDocsPayload || {},
+      deprecations: state.deprecationNoticePayload || {},
+    };
+    downloadTextFile(JSON.stringify(payload, null, 2), 'autodev-api-notices.json', 'application/json');
+    el('statusLine').textContent = 'Exported API notices JSON.';
+  });
+
+  exportMdBtn?.addEventListener('click', () => {
+    downloadTextFile(buildApiNoticeMarkdown(), 'autodev-api-notices.md', 'text/markdown');
+    el('statusLine').textContent = 'Exported API notices markdown.';
+  });
+
+  copyMdBtn?.addEventListener('click', async () => {
+    try {
+      await copyTextToClipboard(buildApiNoticeMarkdown());
+      el('statusLine').textContent = 'Copied API notices markdown.';
+    } catch (err) {
+      el('statusLine').textContent = `Copy failed: ${err.message || 'request failed'}`;
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Experiment Log tab
 // ---------------------------------------------------------------------------
@@ -5887,6 +6200,7 @@ initProcessControls();
 initCompareControls();
 initTrendControls();
 initLiveUpdateControls();
+initApiNoticeControls();
 initExperimentLogControls();
 renderScorecardWidget();
 loadRuns();

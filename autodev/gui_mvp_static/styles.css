@@ -119,6 +119,50 @@ body {
   color: var(--muted);
 }
 
+.trust-narrative,
+.trust-residual {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+  font-size: 13px;
+}
+.trust-narrative strong,
+.trust-residual strong {
+  display: block;
+  margin-bottom: 6px;
+}
+.trust-residual ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.api-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+.api-notice-list {
+  display: grid;
+  gap: 10px;
+}
+.api-notice-entry {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+}
+.api-notice-entry-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.api-notice-entry-meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
 .layout {
   display: grid;
   grid-template-columns: 320px 1fr;

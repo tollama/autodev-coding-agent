@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _now_stamp() -> str:
-    return datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
 
 
 def _find_free_port() -> int:
@@ -486,6 +486,7 @@ def run_smoke(*, artifacts_dir: Path, keep_tmp: bool) -> Path:
         env["AUTODEV_GUI_LOCAL_SIMPLE"] = "1"
         env["AUTODEV_GUI_ROLE"] = "developer"
         env["AUTODEV_GUI_PROCESS_STATE_FILE"] = str(process_state_file)
+        env["AUTODEV_GUI_AUDIT_DIR"] = str(tmp_root / "gui-audit")
 
         port = _find_free_port()
         base_url = f"http://127.0.0.1:{port}"
@@ -513,14 +514,28 @@ def run_smoke(*, artifacts_dir: Path, keep_tmp: bool) -> Path:
             _wait_for_health(base_url)
 
             index_html = _http_text(f"{base_url}/index.html")
+            api_reference_html = _http_text(f"{base_url}/api-reference.html")
             static_checks = {
                 "has_trust_trend_cards": "trustTrendCards" in index_html,
                 "has_saved_comparisons_panel": "Saved Comparisons" in index_html,
                 "has_trust_diff_filter": "compareTrustDiffSeveritySelect" in index_html,
+                "has_api_notice_panel": "API Notices" in index_html,
+                "has_deprecation_notice": 'id="deprecationNotice"' in index_html,
+                "has_api_reference_loader": "loadApiReference()" in api_reference_html,
             }
             snapshots["static_index"] = static_checks
             if not all(static_checks.values()):
                 raise RuntimeError(f"static trust/compare UI markers missing: {static_checks}")
+
+            api_docs = _http_json("GET", f"{base_url}/api/docs/routes")
+            snapshots["api_docs"] = api_docs
+            if str(api_docs.get("title") or "") != "AutoDev GUI API Reference":
+                raise RuntimeError(f"unexpected API docs payload: {api_docs}")
+
+            deprecations_empty = _http_json("GET", f"{base_url}/api/docs/deprecations/latest")
+            snapshots["deprecations_empty"] = deprecations_empty
+            if deprecations_empty.get("empty") is not True:
+                raise RuntimeError(f"expected empty deprecation payload before legacy helper usage: {deprecations_empty}")
 
             context = _http_json("GET", f"{base_url}/api/gui/context")
             snapshots["gui_context"] = context
@@ -673,6 +688,20 @@ def run_smoke(*, artifacts_dir: Path, keep_tmp: bool) -> Path:
             updated_snapshot = compare_update.get("snapshot") if isinstance(compare_update, dict) else {}
             if not isinstance(updated_snapshot, dict) or updated_snapshot.get("pinned") is not True:
                 raise RuntimeError(f"compare snapshot metadata update failed: {compare_update}")
+
+            legacy_update = _http_json(
+                "POST",
+                f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/metadata",
+                payload={"archived": True},
+            )
+            snapshots["compare_snapshot_legacy_update"] = legacy_update
+            if not isinstance((legacy_update.get("meta") or {}).get("deprecation"), dict):
+                raise RuntimeError(f"expected deprecation metadata on legacy helper response: {legacy_update}")
+
+            deprecations_after_legacy = _http_json("GET", f"{base_url}/api/docs/deprecations/latest")
+            snapshots["deprecations_after_legacy"] = deprecations_after_legacy
+            if deprecations_after_legacy.get("empty") is not False:
+                raise RuntimeError(f"expected populated deprecation payload after legacy helper usage: {deprecations_after_legacy}")
 
             compare_delete = _http_json("DELETE", f"{base_url}/api/runs/compare/snapshots/{snapshot_id}")
             snapshots["compare_snapshot_delete"] = compare_delete

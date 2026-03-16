@@ -1477,6 +1477,7 @@ def test_api_deprecations_endpoint_reports_recent_legacy_snapshot_helper_usage(g
     assert empty_status == 200
     assert empty_body["empty"] is True
     assert empty_body["summary"]["deprecated_usage_count"] == 0
+    assert empty_body["summary"]["route_counts"] == {}
 
     rename_status, _, _ = _request_json_with_headers(
         f"{base_url}/api/runs/compare/snapshots/{snapshot_id}/rename",
@@ -1496,6 +1497,7 @@ def test_api_deprecations_endpoint_reports_recent_legacy_snapshot_helper_usage(g
     assert deprecated_status == 200
     assert deprecated_body["empty"] is False
     assert deprecated_body["summary"]["deprecated_usage_count"] >= 2
+    assert deprecated_body["summary"]["route_counts"]
     assert "/api/runs/compare/snapshots/<snapshot_id>/metadata" not in deprecated_body["summary"]["routes"]
     assert any(entry["legacy_path"].endswith("/metadata") for entry in deprecated_body["entries"])
     assert any(entry["legacy_path"].endswith("/rename") for entry in deprecated_body["entries"])
@@ -1586,6 +1588,15 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="apiReferenceLink"' in index_html
     assert 'href="/api-reference.html"' in index_html
     assert 'id="deprecationNotice"' in index_html
+    assert 'id="apiNoticeMeta"' in index_html
+    assert 'id="apiNoticeSummary"' in index_html
+    assert 'id="apiNoticeOpenRefBtn"' in index_html
+    assert 'id="apiNoticeExportJsonBtn"' in index_html
+    assert 'id="apiNoticeExportMdBtn"' in index_html
+    assert 'id="apiNoticeCopyMdBtn"' in index_html
+    assert 'id="apiNoticeList"' in index_html
+    assert 'id="trustNarrative"' in index_html
+    assert 'id="trustResidual"' in index_html
     assert 'id="scorecardCards"' in index_html
     assert 'id="scorecardEmpty"' in index_html
     assert 'id="scorecardError"' in index_html
@@ -1661,6 +1672,10 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "function refreshTrustTrendWidget({ silent = false } = {})" in app_js
     assert "function renderDeprecationNotice()" in app_js
     assert "function refreshDeprecationNotice({ silent = false } = {})" in app_js
+    assert "function buildApiNoticeMarkdown()" in app_js
+    assert "function renderApiNoticesPanel()" in app_js
+    assert "function refreshApiDocsCatalog({ silent = false } = {})" in app_js
+    assert "function initApiNoticeControls()" in app_js
     assert "function renderCompareTrustDrilldown(payload)" in app_js
     assert "function renderCompareTrustPacketDiff(payload)" in app_js
     assert "function buildTrustPacketDiffRows(leftPacket, rightPacket)" in app_js
@@ -1712,6 +1727,7 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "/api/runs/compare/snapshots/import" in app_js
     assert "/api/runs/compare/snapshots/retention/apply" in app_js
     assert "/api/docs/deprecations/latest" in app_js
+    assert "/api/docs/routes" in app_js
     assert "method: 'PATCH'" in app_js
     assert "method: 'DELETE'" in app_js
     assert ".autodev/autonomous_trust_intelligence.json" in app_js
@@ -1719,6 +1735,11 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "/api/autonomous/trust/trends" in app_js
     assert "/api/scorecard/latest" in app_js
     assert "/api/autonomous/trust/latest" in app_js
+    assert "human_review_reasons" in app_js
+    assert "residual_risk_summary" in app_js
+    assert "/api/runs/compare/snapshots/${encodeURIComponent(snapshotId)}/metadata" not in app_js
+    assert "/api/runs/compare/snapshots/${encodeURIComponent(snapshotId)}/rename" not in app_js
+    assert "/api/runs/compare/snapshots/${encodeURIComponent(snapshotId)}/delete" not in app_js
 
     with request.urlopen(f"{base_url}/api-reference.html", timeout=5) as resp:
         api_reference_html = resp.read().decode("utf-8")

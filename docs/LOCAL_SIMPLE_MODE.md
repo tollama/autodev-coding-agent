@@ -134,6 +134,7 @@ Legacy compatibility note:
 - `POST /api/runs/compare/snapshots/<snapshot_id>/delete`
 
 These legacy helper routes still work for older clients, but they are deprecated. Responses now include canonical replacement guidance pointing to the preferred `PATCH` or `DELETE` item route.
+The shipped GUI uses only the canonical `PATCH` and `DELETE` item routes. If older external clients still hit the helper routes, the Overview tab now surfaces that activity in the API Notices panel.
 
 Failure artifacts:
 - Stored under `artifacts/local-simple-e2e-smoke/<timestamp>/`

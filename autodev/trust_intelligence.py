@@ -700,14 +700,35 @@ def build_trust_summary(packet: Mapping[str, Any]) -> dict[str, Any]:
     latest_quality = _safe_dict(packet.get("latest_quality"))
     operator_next = _safe_dict(packet.get("operator_next"))
     runtime_observability = _safe_dict(packet.get("runtime_observability"))
+    review_reasons = _safe_list(overall.get("review_reasons"))
+    quality_status = str(latest_quality.get("status") or "unknown")
+    residual_risk_level = "low"
+    if overall.get("requires_human_review") is True:
+        residual_risk_level = "high"
+    elif quality_status not in {"passed", "ok"}:
+        residual_risk_level = "moderate"
+
+    residual_risk_summary = (
+        "Human review remains required before closure."
+        if overall.get("requires_human_review") is True
+        else (
+            f"Latest quality signal remains {quality_status}."
+            if quality_status not in {"passed", "ok"}
+            else "No material residual risk detected from current trust signals."
+        )
+    )
+    if review_reasons:
+        residual_risk_summary = f"{residual_risk_summary} Reasons: {', '.join(str(item) for item in review_reasons[:3])}."
 
     return {
         "status": packet.get("status"),
         "trust_status": overall.get("status"),
         "trust_score": overall.get("score"),
         "requires_human_review": overall.get("requires_human_review"),
-        "human_review_reasons": _safe_list(overall.get("review_reasons")),
+        "human_review_reasons": review_reasons,
         "trust_explanation": overall.get("explanation"),
+        "residual_risk_level": residual_risk_level,
+        "residual_risk_summary": residual_risk_summary,
         "latest_quality_status": latest_quality.get("status"),
         "latest_quality_score": latest_quality.get("composite_score"),
         "incident_owner_team": operator_next.get("owner_team"),
