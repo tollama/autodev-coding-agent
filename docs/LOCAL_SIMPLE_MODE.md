@@ -118,6 +118,23 @@ What it verifies:
 - Run comparison via `/api/runs/compare`
 - Saved compare snapshot lifecycle via `/api/runs/compare/snapshots` save/list/detail/update/delete
 
+Canonical compare snapshot API:
+- `POST /api/runs/compare/snapshots`: persist the current compare payload as a saved snapshot
+- `GET /api/runs/compare/snapshots`: list saved snapshots with query/tag/date/pinned/archive filters
+- `GET /api/runs/compare/snapshots/<snapshot_id>`: load one saved snapshot
+- `PATCH /api/runs/compare/snapshots/<snapshot_id>`: rename or update metadata (`display_name`, `pinned`, `archived`, `tags`)
+- `DELETE /api/runs/compare/snapshots/<snapshot_id>`: delete one saved snapshot
+- `POST /api/runs/compare/snapshots/import`: import an exported snapshot record/export payload
+- `POST /api/runs/compare/snapshots/bulk`: bulk metadata updates or deletes
+- `POST /api/runs/compare/snapshots/retention/apply`: preview/apply retention cleanup
+
+Legacy compatibility note:
+- `POST /api/runs/compare/snapshots/<snapshot_id>/rename`
+- `POST /api/runs/compare/snapshots/<snapshot_id>/metadata`
+- `POST /api/runs/compare/snapshots/<snapshot_id>/delete`
+
+These legacy helper routes still work for older clients, but they are deprecated. Responses now include canonical replacement guidance pointing to the preferred `PATCH` or `DELETE` item route.
+
 Failure artifacts:
 - Stored under `artifacts/local-simple-e2e-smoke/<timestamp>/`
 - Includes GUI server stdout/stderr logs, process-state snapshot, and captured API payload snapshots for triage
