@@ -1742,6 +1742,126 @@ def _parse_compare_snapshot_filter_datetime(raw: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _gui_api_reference_payload() -> dict[str, Any]:
+    return {
+        "title": "AutoDev GUI API Reference",
+        "version": "gui-mvp-v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "sections": [
+            {
+                "name": "Run Detail",
+                "routes": [
+                    {
+                        "method": "GET",
+                        "path": "/api/runs",
+                        "summary": "List runs for the dashboard.",
+                    },
+                    {
+                        "method": "GET",
+                        "path": "/api/runs/<run_id>",
+                        "summary": "Load selected run detail, including trust summary when available.",
+                    },
+                    {
+                        "method": "GET",
+                        "path": "/api/runs/<run_id>/artifacts/read",
+                        "summary": "Read an artifact from a run directory.",
+                    },
+                ],
+            },
+            {
+                "name": "Trust Intelligence",
+                "routes": [
+                    {
+                        "method": "GET",
+                        "path": "/api/autonomous/quality-gate/latest",
+                        "summary": "Latest autonomous quality gate snapshot.",
+                    },
+                    {
+                        "method": "GET",
+                        "path": "/api/autonomous/trust/latest",
+                        "summary": "Latest trust summary and full packet.",
+                    },
+                    {
+                        "method": "GET",
+                        "path": "/api/autonomous/trust/trends",
+                        "summary": "Historical trust trend summary across recent runs.",
+                    },
+                ],
+            },
+            {
+                "name": "Compare Snapshots",
+                "routes": [
+                    {
+                        "method": "GET",
+                        "path": "/api/runs/compare",
+                        "summary": "Compare two runs by trust, validation, and execution metrics.",
+                    },
+                    {
+                        "method": "POST",
+                        "path": "/api/runs/compare/snapshots",
+                        "summary": "Persist a compare payload as a saved snapshot.",
+                    },
+                    {
+                        "method": "GET",
+                        "path": "/api/runs/compare/snapshots",
+                        "summary": "List saved compare snapshots with filters and pagination.",
+                    },
+                    {
+                        "method": "GET",
+                        "path": "/api/runs/compare/snapshots/<snapshot_id>",
+                        "summary": "Open one saved compare snapshot.",
+                    },
+                    {
+                        "method": "PATCH",
+                        "path": "/api/runs/compare/snapshots/<snapshot_id>",
+                        "summary": "Canonical route for rename and metadata updates.",
+                    },
+                    {
+                        "method": "DELETE",
+                        "path": "/api/runs/compare/snapshots/<snapshot_id>",
+                        "summary": "Canonical route for deleting a saved snapshot.",
+                    },
+                    {
+                        "method": "POST",
+                        "path": "/api/runs/compare/snapshots/import",
+                        "summary": "Import an exported compare snapshot payload.",
+                    },
+                    {
+                        "method": "POST",
+                        "path": "/api/runs/compare/snapshots/bulk",
+                        "summary": "Bulk metadata updates or deletes for saved snapshots.",
+                    },
+                    {
+                        "method": "POST",
+                        "path": "/api/runs/compare/snapshots/retention/apply",
+                        "summary": "Preview or apply retention cleanup for saved snapshots.",
+                    },
+                ],
+            },
+        ],
+        "deprecated_routes": [
+            {
+                "method": "POST",
+                "path": "/api/runs/compare/snapshots/<snapshot_id>/rename",
+                "canonical_method": "PATCH",
+                "canonical_path": "/api/runs/compare/snapshots/<snapshot_id>",
+            },
+            {
+                "method": "POST",
+                "path": "/api/runs/compare/snapshots/<snapshot_id>/metadata",
+                "canonical_method": "PATCH",
+                "canonical_path": "/api/runs/compare/snapshots/<snapshot_id>",
+            },
+            {
+                "method": "POST",
+                "path": "/api/runs/compare/snapshots/<snapshot_id>/delete",
+                "canonical_method": "DELETE",
+                "canonical_path": "/api/runs/compare/snapshots/<snapshot_id>",
+            },
+        ],
+    }
+
+
 def _parse_compare_snapshot_item_path(path: str) -> str | None:
     prefix = "/api/runs/compare/snapshots/"
     if not path.startswith(prefix):
@@ -2502,6 +2622,10 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             self._json_response({"runs": _list_runs(self.config.runs_root)})
             return
 
+        if path == "/api/docs/routes":
+            self._json_response(_gui_api_reference_payload())
+            return
+
         if path == "/api/runs/compare/snapshots":
             query = parse_qs(parsed.query)
             payload = _list_compare_snapshots(
@@ -2645,6 +2769,7 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         static_map = {
             "/": "index.html",
             "/index.html": "index.html",
+            "/api-reference.html": "api-reference.html",
             "/styles.css": "styles.css",
             "/app.js": "app.js",
         }

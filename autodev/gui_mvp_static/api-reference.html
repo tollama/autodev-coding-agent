@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AutoDev API Reference</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>AutoDev API Reference</h1>
+      <div class="topbar-meta">
+        <a class="topbar-link" href="/index.html">Back to GUI</a>
+        <a class="topbar-link" href="/api/docs/routes" target="_blank" rel="noreferrer">JSON Catalog</a>
+      </div>
+    </header>
+
+    <main class="docs-layout">
+      <section class="docs-panel">
+        <h2>Canonical Routes</h2>
+        <p class="muted">
+          The GUI consumes these routes directly. Saved compare snapshot item mutations should use the canonical
+          <code>PATCH</code> and <code>DELETE</code> resource routes.
+        </p>
+      </section>
+
+      <section class="docs-panel">
+        <h3>Run Detail</h3>
+        <div class="docs-route-list">
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method">GET</span>
+              <span class="docs-route-path">/api/runs</span>
+            </div>
+            <div>List dashboard runs.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method">GET</span>
+              <span class="docs-route-path">/api/runs/&lt;run_id&gt;</span>
+            </div>
+            <div>Load selected run detail and trust context.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method">GET</span>
+              <span class="docs-route-path">/api/runs/&lt;run_id&gt;/artifacts/read</span>
+            </div>
+            <div>Read `.autodev` artifacts in the Validation tab.</div>
+          </article>
+        </div>
+      </section>
+
+      <section class="docs-panel">
+        <h3>Trust Intelligence</h3>
+        <div class="docs-route-list">
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method">GET</span>
+              <span class="docs-route-path">/api/autonomous/quality-gate/latest</span>
+            </div>
+            <div>Latest autonomous quality-gate summary.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method">GET</span>
+              <span class="docs-route-path">/api/autonomous/trust/latest</span>
+            </div>
+            <div>Latest trust summary and full trust packet.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method">GET</span>
+              <span class="docs-route-path">/api/autonomous/trust/trends</span>
+            </div>
+            <div>Historical trust trend summary.</div>
+          </article>
+        </div>
+      </section>
+
+      <section class="docs-panel">
+        <h3>Compare Snapshots</h3>
+        <div class="docs-route-list">
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method">GET</span>
+              <span class="docs-route-path">/api/runs/compare</span>
+            </div>
+            <div>Compare two runs across trust, validation, and execution metrics.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method docs-method-post">POST</span>
+              <span class="docs-route-path">/api/runs/compare/snapshots</span>
+            </div>
+            <div>Persist a compare payload as a saved snapshot.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method">GET</span>
+              <span class="docs-route-path">/api/runs/compare/snapshots</span>
+            </div>
+            <div>List saved snapshots with query, tag, date, pinned, archive, and pagination filters.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method">GET</span>
+              <span class="docs-route-path">/api/runs/compare/snapshots/&lt;snapshot_id&gt;</span>
+            </div>
+            <div>Open one saved snapshot.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method docs-method-patch">PATCH</span>
+              <span class="docs-route-path">/api/runs/compare/snapshots/&lt;snapshot_id&gt;</span>
+            </div>
+            <div>Canonical route for rename and metadata updates.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method docs-method-delete">DELETE</span>
+              <span class="docs-route-path">/api/runs/compare/snapshots/&lt;snapshot_id&gt;</span>
+            </div>
+            <div>Canonical route for deleting a saved snapshot.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method docs-method-post">POST</span>
+              <span class="docs-route-path">/api/runs/compare/snapshots/import</span>
+            </div>
+            <div>Import an exported compare snapshot payload.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method docs-method-post">POST</span>
+              <span class="docs-route-path">/api/runs/compare/snapshots/bulk</span>
+            </div>
+            <div>Bulk metadata updates or deletes.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method docs-method-post">POST</span>
+              <span class="docs-route-path">/api/runs/compare/snapshots/retention/apply</span>
+            </div>
+            <div>Preview or apply retention cleanup.</div>
+          </article>
+        </div>
+      </section>
+
+      <section class="docs-panel">
+        <h3>Deprecated Helpers</h3>
+        <div class="docs-route-list">
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method docs-method-post">POST</span>
+              <span class="docs-route-path">/api/runs/compare/snapshots/&lt;snapshot_id&gt;/rename</span>
+            </div>
+            <div>Deprecated helper. Use <code>PATCH /api/runs/compare/snapshots/&lt;snapshot_id&gt;</code>.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method docs-method-post">POST</span>
+              <span class="docs-route-path">/api/runs/compare/snapshots/&lt;snapshot_id&gt;/metadata</span>
+            </div>
+            <div>Deprecated helper. Use <code>PATCH /api/runs/compare/snapshots/&lt;snapshot_id&gt;</code>.</div>
+          </article>
+          <article class="docs-route-card">
+            <div class="docs-route-meta">
+              <span class="docs-method docs-method-post">POST</span>
+              <span class="docs-route-path">/api/runs/compare/snapshots/&lt;snapshot_id&gt;/delete</span>
+            </div>
+            <div>Deprecated helper. Use <code>DELETE /api/runs/compare/snapshots/&lt;snapshot_id&gt;</code>.</div>
+          </article>
+        </div>
+        <div class="docs-note">
+          Legacy helper responses include deprecation metadata and canonical replacement guidance.
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

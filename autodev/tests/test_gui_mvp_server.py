@@ -1420,6 +1420,35 @@ def test_trust_trends_endpoint_returns_payload(gui_server):
     assert body["runs"][0]["run_id"] == "run-trust-trend-endpoint"
 
 
+def test_api_docs_routes_endpoint_and_static_reference_are_served(gui_server):
+    base_url, _ = gui_server
+
+    docs_status, docs_body = _get_json(f"{base_url}/api/docs/routes")
+    assert docs_status == 200
+    assert docs_body["title"] == "AutoDev GUI API Reference"
+    route_paths = {
+        row["path"]
+        for section in docs_body["sections"]
+        if isinstance(section, dict)
+        for row in (section.get("routes") or [])
+        if isinstance(row, dict)
+    }
+    assert "/api/autonomous/trust/latest" in route_paths
+    assert "/api/runs/compare/snapshots/<snapshot_id>" in route_paths
+    assert any(
+        row["path"] == "/api/runs/compare/snapshots/<snapshot_id>/delete" and row["canonical_method"] == "DELETE"
+        for row in docs_body["deprecated_routes"]
+        if isinstance(row, dict)
+    )
+
+    with request.urlopen(f"{base_url}/api-reference.html", timeout=5) as resp:
+        html = resp.read().decode("utf-8")
+        assert resp.status == 200
+    assert "AutoDev API Reference" in html
+    assert "/api/docs/routes" in html
+    assert "PATCH /api/runs/compare/snapshots/&lt;snapshot_id&gt;" in html
+
+
 def test_artifact_read_endpoint_returns_json_payload(gui_server):
     base_url, runs_root = gui_server
     run = runs_root / "run-artifact"
@@ -1501,6 +1530,8 @@ def test_overview_scorecard_static_contract(gui_server):
 
     with request.urlopen(f"{base_url}/index.html", timeout=5) as resp:
         index_html = resp.read().decode("utf-8")
+    assert 'id="apiReferenceLink"' in index_html
+    assert 'href="/api-reference.html"' in index_html
     assert 'id="scorecardCards"' in index_html
     assert 'id="scorecardEmpty"' in index_html
     assert 'id="scorecardError"' in index_html
@@ -1631,6 +1662,12 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "/api/autonomous/trust/trends" in app_js
     assert "/api/scorecard/latest" in app_js
     assert "/api/autonomous/trust/latest" in app_js
+
+    with request.urlopen(f"{base_url}/api-reference.html", timeout=5) as resp:
+        api_reference_html = resp.read().decode("utf-8")
+    assert "Canonical Routes" in api_reference_html
+    assert "/api/runs/compare/snapshots/&lt;snapshot_id&gt;" in api_reference_html
+    assert "/api/docs/routes" in api_reference_html
 
 
 def test_artifact_read_endpoint_rejects_invalid_query(gui_server):
