@@ -3409,8 +3409,11 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     trust_delivery_send.add_argument("--run-id", default=None)
     trust_delivery_send.add_argument("--window", type=int, default=10)
     trust_delivery_send.add_argument("--format", choices=["json", "markdown"], default="json")
-    trust_delivery_send.add_argument("--target", action="append", default=None, help="stdout, log:/path, or webhook:<url>")
+    trust_delivery_send.add_argument("--target", action="append", default=None, help="stdout, log:/path, webhook:<url>, ticket-json:/path, ticket-md:/path, bundle-dir:/dir, github-issue-json:/path, jira-ticket-json:/path, or notify-inbox-json:/path")
     trust_delivery_send.add_argument("--dry-run", default="true", type=_parse_cli_bool)
+    trust_delivery_send.add_argument("--webhook-secret", default=None)
+    trust_delivery_send.add_argument("--webhook-retry-limit", type=int, default=0)
+    trust_delivery_send.add_argument("--webhook-timeout-sec", type=float, default=5.0)
 
     trust_delivery_audit = trust_delivery_sub.add_parser("audit", help="inspect recorded trust delivery activity")
     trust_delivery_audit.add_argument("--runs-root", required=True)
@@ -3427,6 +3430,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     trust_delivery_retry.add_argument("--runs-root", required=True)
     trust_delivery_retry.add_argument("--delivery-id", required=True)
     trust_delivery_retry.add_argument("--dry-run", default="false", type=_parse_cli_bool)
+    trust_delivery_retry.add_argument("--webhook-secret", default=None)
     trust_delivery_retry.add_argument("--format", choices=["json", "text"], default="json")
 
     browser_automation_status = sub.add_parser("browser-automation-status", help="show the latest persisted browser automation result")
@@ -5172,6 +5176,7 @@ def _trust_delivery(argv: list[str]) -> None:
             delivery_id=str(args.delivery_id),
             dry_run=bool(args.dry_run),
             source="cli-retry",
+            webhook_secret=args.webhook_secret,
         )
         if args.format == "text":
             if payload.get("error"):
@@ -5190,6 +5195,9 @@ def _trust_delivery(argv: list[str]) -> None:
         targets=args.target,
         dry_run=bool(args.dry_run),
         source="cli",
+        webhook_secret=args.webhook_secret,
+        webhook_retry_limit=int(args.webhook_retry_limit),
+        webhook_timeout_sec=float(args.webhook_timeout_sec),
     )
     if args.format == "markdown":
         print(_render_trust_delivery_text(payload))

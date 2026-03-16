@@ -4299,6 +4299,9 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             targets=payload.get("targets"),
             dry_run=bool(payload.get("dry_run", True)),
             source=f"api:{auth.source}",
+            webhook_secret=str(payload.get("webhook_secret") or "") or None,
+            webhook_retry_limit=int(payload.get("webhook_retry_limit") or 0),
+            webhook_timeout_sec=float(payload.get("webhook_timeout_sec") or 5.0),
         )
         status = HTTPStatus.OK if not body.get("error") else HTTPStatus.BAD_REQUEST
         self._audit_then_respond(
@@ -4350,6 +4353,7 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             delivery_id=str(payload.get("delivery_id") or ""),
             dry_run=bool(payload.get("dry_run") if payload.get("dry_run") is not None else False),
             source=f"api-retry:{auth.source}",
+            webhook_secret=str(payload.get("webhook_secret") or "") or None,
         )
         status = HTTPStatus.OK if not body.get("error") else HTTPStatus.BAD_REQUEST
         self._audit_then_respond(

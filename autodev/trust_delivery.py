@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,6 +99,49 @@ def _render_ticket_payload(preview: Mapping[str, Any]) -> dict[str, Any]:
         "item_count": len(items),
         "body_markdown": str(preview.get("markdown") or ""),
     }
+
+
+def _render_github_issue_payload(preview: Mapping[str, Any]) -> dict[str, Any]:
+    ticket = _render_ticket_payload(preview)
+    return {
+        "title": ticket.get("title"),
+        "body": ticket.get("body_markdown"),
+        "labels": ["trust-intelligence", f"mode:{ticket.get('mode') or 'inbox'}"],
+    }
+
+
+def _render_jira_ticket_payload(preview: Mapping[str, Any]) -> dict[str, Any]:
+    ticket = _render_ticket_payload(preview)
+    return {
+        "fields": {
+            "summary": ticket.get("title"),
+            "description": ticket.get("body_markdown"),
+            "issuetype": {"name": "Task"},
+            "labels": ["trust-intelligence", f"mode-{ticket.get('mode') or 'inbox'}"],
+        }
+    }
+
+
+def _render_notification_payload(preview: Mapping[str, Any]) -> dict[str, Any]:
+    ticket = _render_ticket_payload(preview)
+    return {
+        "title": ticket.get("title"),
+        "channel": "trust-ops",
+        "severity": "high" if "Trust inbox" in str(ticket.get("title") or "") else "info",
+        "body_markdown": ticket.get("body_markdown"),
+    }
+
+
+def _webhook_headers(output_format: str, body: str, *, webhook_secret: str | None = None) -> dict[str, str]:
+    headers = {"Content-Type": "application/json" if output_format == "json" else "text/markdown"}
+    if webhook_secret:
+        signature = hmac.new(
+            webhook_secret.encode("utf-8"),
+            body.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        headers["X-Autodev-Signature"] = f"sha256={signature}"
+    return headers
 
 
 def _attempt_number(rows: list[dict[str, Any]], *, target: str, dedupe_key: str) -> int:
@@ -306,6 +350,9 @@ def send_trust_delivery(
     source: str = "api",
     delivery_id: str | None = None,
     retry_of: str | None = None,
+    webhook_secret: str | None = None,
+    webhook_retry_limit: int = 0,
+    webhook_timeout_sec: float = 5.0,
 ) -> dict[str, Any]:
     root = Path(runs_root).expanduser().resolve()
     preview = preview_trust_delivery(root, mode=mode, run_id=run_id, window=window, output_format=output_format)
@@ -316,6 +363,9 @@ def send_trust_delivery(
     text_payload = preview.get("markdown") if str(output_format or "json").lower() == "markdown" else json.dumps(preview, indent=2)
     json_payload = json.dumps(preview, indent=2)
     ticket_payload = _render_ticket_payload(preview)
+    github_payload = _render_github_issue_payload(preview)
+    jira_payload = _render_jira_ticket_payload(preview)
+    notification_payload = _render_notification_payload(preview)
     current_delivery_id = str(delivery_id or uuid4().hex[:12])
     prior_rows = _load_delivery_state_rows(root)
     outcomes: list[dict[str, Any]] = []
@@ -345,14 +395,51 @@ def send_trust_delivery(
                     outcome["path"] = str(dest)
                 elif target_text.startswith("webhook:"):
                     url = target_text.split(":", 1)[1]
-                    req = request.Request(
-                        url=url,
-                        data=text_payload.encode("utf-8"),
-                        method="POST",
-                        headers={"Content-Type": "application/json" if output_format == "json" else "text/markdown"},
-                    )
-                    with request.urlopen(req, timeout=5):  # noqa: S310
-                        pass
+                    for webhook_attempt in range(1, int(webhook_retry_limit or 0) + 2):
+                        try:
+                            req = request.Request(
+                                url=url,
+                                data=text_payload.encode("utf-8"),
+                                method="POST",
+                                headers=_webhook_headers(
+                                    str(output_format or "json").lower(),
+                                    text_payload,
+                                    webhook_secret=str(webhook_secret or "").strip() or None,
+                                ),
+                            )
+                            with request.urlopen(req, timeout=float(webhook_timeout_sec or 5.0)):  # noqa: S310
+                                pass
+                            outcome["webhook_attempts"] = webhook_attempt
+                            break
+                        except Exception as exc:  # noqa: BLE001
+                            outcome["webhook_attempts"] = webhook_attempt
+                            if webhook_attempt > int(webhook_retry_limit or 0):
+                                raise exc
+                    outcome["url"] = url
+                elif target_text.startswith("webhook-signed:"):
+                    if not str(webhook_secret or "").strip():
+                        raise ValueError("webhook_secret is required for webhook-signed targets")
+                    url = target_text.split(":", 1)[1]
+                    for webhook_attempt in range(1, int(webhook_retry_limit or 0) + 2):
+                        try:
+                            req = request.Request(
+                                url=url,
+                                data=text_payload.encode("utf-8"),
+                                method="POST",
+                                headers=_webhook_headers(
+                                    str(output_format or "json").lower(),
+                                    text_payload,
+                                    webhook_secret=str(webhook_secret or "").strip(),
+                                ),
+                            )
+                            with request.urlopen(req, timeout=float(webhook_timeout_sec or 5.0)):  # noqa: S310
+                                pass
+                            outcome["webhook_attempts"] = webhook_attempt
+                            break
+                        except Exception as exc:  # noqa: BLE001
+                            outcome["webhook_attempts"] = webhook_attempt
+                            if webhook_attempt > int(webhook_retry_limit or 0):
+                                raise exc
                     outcome["url"] = url
                 elif target_text.startswith("ticket-json:"):
                     dest = Path(destination).expanduser()
@@ -375,6 +462,21 @@ def send_trust_delivery(
                     md_path.write_text(str(preview.get("markdown") or ""), encoding="utf-8")
                     ticket_path.write_text(json.dumps(ticket_payload, indent=2), encoding="utf-8")
                     outcome["paths"] = [str(json_path), str(md_path), str(ticket_path)]
+                elif target_text.startswith("github-issue-json:"):
+                    dest = Path(destination).expanduser()
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_text(json.dumps(github_payload, indent=2), encoding="utf-8")
+                    outcome["path"] = str(dest)
+                elif target_text.startswith("jira-ticket-json:"):
+                    dest = Path(destination).expanduser()
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_text(json.dumps(jira_payload, indent=2), encoding="utf-8")
+                    outcome["path"] = str(dest)
+                elif target_text.startswith("notify-inbox-json:"):
+                    dest = Path(destination).expanduser()
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_text(json.dumps(notification_payload, indent=2), encoding="utf-8")
+                    outcome["path"] = str(dest)
                 else:
                     outcome["status"] = "failed"
                     outcome["error"] = f"unsupported target: {target_text}"
@@ -400,6 +502,8 @@ def send_trust_delivery(
             "status": outcome.get("status"),
             "error": outcome.get("error"),
             "dedupe_key": dedupe_key,
+            "webhook_retry_limit": int(webhook_retry_limit or 0),
+            "webhook_timeout_sec": float(webhook_timeout_sec or 5.0),
         }
         _append_delivery_state(root, state_row)
         prior_rows.append(state_row)
@@ -435,6 +539,7 @@ def retry_trust_delivery(
     delivery_id: str,
     dry_run: bool = False,
     source: str = "api-retry",
+    webhook_secret: str | None = None,
 ) -> dict[str, Any]:
     root = Path(runs_root).expanduser().resolve()
     rows = _load_delivery_state_rows(root)
@@ -461,4 +566,7 @@ def retry_trust_delivery(
         dry_run=bool(dry_run),
         source=source,
         retry_of=str(delivery_id),
+        webhook_secret=webhook_secret,
+        webhook_retry_limit=int(latest.get("webhook_retry_limit") or 0),
+        webhook_timeout_sec=float(latest.get("webhook_timeout_sec") or 5.0),
     )

@@ -138,6 +138,7 @@ The shipped GUI uses only the canonical `PATCH` and `DELETE` item routes. If old
 The same Overview area now also exposes trust delivery audit history and the latest persisted browser automation result through `GET /api/autonomous/trust/delivery/audit` and `GET /api/autonomous/browser-automation/latest`.
 Trust workflow escalation is now a first-class mutation surface as well: `POST /api/autonomous/trust/workflow/actions` supports explicit actions like `escalate`, `clear_escalation`, and `extend_due`, and the Overview tab maps those directly to operator buttons.
 Trust delivery now also persists per-target attempt state for retry-safe outbound delivery. The canonical operator surfaces are `GET /api/autonomous/trust/delivery/state` and `POST /api/autonomous/trust/delivery/retry`, and supported targets now include `ticket-json:`, `ticket-md:`, and `bundle-dir:` alongside `stdout`, `log:`, and `webhook:`.
+For deeper external integrations, delivery now also supports `webhook-signed:`, `github-issue-json:`, `jira-ticket-json:`, and `notify-inbox-json:` targets. API/CLI callers can tune webhook behavior with `webhook_secret`, `webhook_retry_limit`, and `webhook_timeout_sec`.
 
 Failure artifacts:
 - Stored under `artifacts/local-simple-e2e-smoke/<timestamp>/`
