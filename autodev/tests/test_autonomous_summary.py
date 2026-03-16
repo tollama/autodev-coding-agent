@@ -602,6 +602,67 @@ def test_compare_snapshots_cli_supports_operator_management_workflow(tmp_path: P
     delete_text = capsys.readouterr().out
     assert f"deleted compare snapshot: {second_snapshot_id}" in delete_text
 
+
+def test_trust_cli_supports_analytics_inbox_and_approvals(tmp_path: Path, capsys) -> None:
+    runs_root = tmp_path / "runs-root"
+    run_dir = runs_root / "run-trust-cli"
+    artifacts = run_dir / ".autodev"
+    _write_json(
+        artifacts / "autonomous_report.json",
+        {
+            "ok": False,
+            "run_id": "run-trust-cli",
+            "profile": "enterprise",
+            "status": "failed",
+            "preflight": {"status": "passed", "reason_codes": []},
+            "operator_guidance": {"top": [{"code": "tests_failed", "actions": ["Review failing tests."]}]},
+            "incident_routing": {"primary": {"owner_team": "Feature Eng", "severity": "high", "target_sla": "4h", "escalation_class": "manual_triage"}},
+            "guard_decision": {"decision": "stop", "reason_code": "tests_failed"},
+            "gate_results": {"passed": False, "gates": {"composite_quality": {"status": "failed", "composite_score": 41.0, "hard_blocked": True, "components": {"tests": 30.0}}}, "fail_reasons": [{"code": "tests_failed"}]},
+        },
+    )
+    _write_json(artifacts / "autonomous_gate_results.json", {"attempts": [{"iteration": 1, "gate_results": {"passed": False, "fail_reasons": [{"code": "tests_failed"}]}}]})
+    _write_json(artifacts / "autonomous_strategy_trace.json", {"latest": {"name": "mixed"}})
+    _write_json(artifacts / "autonomous_guard_decisions.json", {"decisions": [{"decision": "stop"}], "latest": {"decision": "stop"}})
+    _write_json(artifacts / "run_trace.json", {"events": [{"event_type": "quality_score.computed"}], "phases": [], "llm_metrics": {}})
+    _write_json(artifacts / "run_metadata.json", {"model": "gpt-test"})
+
+    autonomous_mode.cli(["trust-analytics", "--runs-root", str(runs_root), "--format", "text"])
+    analytics_text = capsys.readouterr().out
+    assert "# Trust Analytics" in analytics_text
+    assert "blocked_count" in analytics_text
+
+    autonomous_mode.cli(["trust-model-eval", "--runs-root", str(runs_root)])
+    model_eval = json.loads(capsys.readouterr().out)
+    assert any(row["model"] == "gpt-test" for row in model_eval["models"])
+
+    autonomous_mode.cli(["trust-inbox", "--runs-root", str(runs_root), "--format", "text"])
+    inbox_text = capsys.readouterr().out
+    assert "# Trust Inbox" in inbox_text
+    assert "run-trust-cli" in inbox_text
+
+    autonomous_mode.cli(
+        [
+            "trust-approvals",
+            "record",
+            "--run-dir",
+            str(run_dir),
+            "--decision",
+            "approve",
+            "--reviewer",
+            "alice",
+            "--note",
+            "ready for follow-up review",
+        ]
+    )
+    approval_payload = json.loads(capsys.readouterr().out)
+    assert approval_payload["recorded"]["decision"] == "approve"
+
+    autonomous_mode.cli(["trust-approvals", "list", "--run-dir", str(run_dir), "--format", "text"])
+    approvals_text = capsys.readouterr().out
+    assert "# Trust Approvals" in approvals_text
+    assert "alice" in approvals_text
+
 def test_extract_autonomous_summary_builds_operator_guidance_with_fallbacks(tmp_path: Path) -> None:
     run_dir = tmp_path / "run-guidance-fallback"
     artifacts = run_dir / ".autodev"

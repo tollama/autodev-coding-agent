@@ -3338,6 +3338,36 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     trust_summary.add_argument("--run-dir", required=True)
     trust_summary.add_argument("--format", choices=["json", "text"], default="json")
 
+    trust_analytics = sub.add_parser("trust-analytics", help="summarize trust analytics across recent runs")
+    trust_analytics.add_argument("--runs-root", required=True)
+    trust_analytics.add_argument("--window", type=int, default=10)
+    trust_analytics.add_argument("--format", choices=["json", "text"], default="json")
+
+    trust_model_eval = sub.add_parser("trust-model-eval", help="compare trust posture across models")
+    trust_model_eval.add_argument("--runs-root", required=True)
+    trust_model_eval.add_argument("--window", type=int, default=10)
+    trust_model_eval.add_argument("--format", choices=["json", "text"], default="json")
+
+    trust_inbox = sub.add_parser("trust-inbox", help="list review-required trust inbox items")
+    trust_inbox.add_argument("--runs-root", required=True)
+    trust_inbox.add_argument("--window", type=int, default=10)
+    trust_inbox.add_argument("--format", choices=["json", "text"], default="json")
+
+    trust_approvals = sub.add_parser("trust-approvals", help="list or record trust approval decisions")
+    trust_approvals_sub = trust_approvals.add_subparsers(dest="trust_approvals_action", required=True)
+
+    trust_approvals_list = trust_approvals_sub.add_parser("list", help="list trust approvals for a run")
+    trust_approvals_list.add_argument("--run-dir", required=True)
+    trust_approvals_list.add_argument("--format", choices=["json", "text"], default="json")
+
+    trust_approvals_record = trust_approvals_sub.add_parser("record", help="record a trust approval decision for a run")
+    trust_approvals_record.add_argument("--run-dir", required=True)
+    trust_approvals_record.add_argument("--decision", choices=["approve", "reject", "acknowledge"], required=True)
+    trust_approvals_record.add_argument("--reviewer", default="cli-operator")
+    trust_approvals_record.add_argument("--role", default="operator")
+    trust_approvals_record.add_argument("--note", default="")
+    trust_approvals_record.add_argument("--format", choices=["json", "text"], default="json")
+
     compare_snapshots = sub.add_parser("compare-snapshots", help="manage persisted compare snapshots")
     compare_snapshots_sub = compare_snapshots.add_subparsers(dest="compare_action", required=True)
 
@@ -4700,6 +4730,168 @@ def _trust_summary(argv: list[str]) -> None:
     print(json_dumps(packet))
 
 
+def _render_trust_analytics_text(payload: dict[str, Any]) -> str:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    lines = [
+        "# Trust Analytics",
+        f"- runs_considered: {summary.get('runs_considered', 0)}",
+        f"- avg_trust_score: {summary.get('avg_trust_score', '-')}",
+        f"- review_required_count: {summary.get('review_required_count', 0)}",
+        f"- blocked_count: {summary.get('blocked_count', 0)}",
+    ]
+    for label, key in (
+        ("risk_tier_counts", "risk_tier_counts"),
+        ("policy_decision_counts", "policy_decision_counts"),
+        ("approval_state_counts", "approval_state_counts"),
+    ):
+        counts = payload.get(key) if isinstance(payload.get(key), dict) else {}
+        if counts:
+            lines.append(f"- {label}:")
+            for name, count in sorted(counts.items()):
+                lines.append(f"  - {name}: {count}")
+    reasons = payload.get("review_reason_counts") if isinstance(payload.get("review_reason_counts"), list) else []
+    if reasons:
+        lines.append("- top_review_reasons:")
+        for row in reasons:
+            if not isinstance(row, dict):
+                continue
+            lines.append(f"  - {row.get('name')}: {row.get('count')}")
+    return "\n".join(lines)
+
+
+def _render_trust_model_eval_text(payload: dict[str, Any]) -> str:
+    rows = payload.get("models") if isinstance(payload.get("models"), list) else []
+    lines = ["# Trust Model Evaluation"]
+    if not rows:
+        lines.append("- models: -")
+        return "\n".join(lines)
+    lines.append("- models:")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        lines.append(
+            f"  - {row.get('model')}: runs={row.get('run_count', 0)} avg_trust={row.get('avg_trust_score', '-')} "
+            f"review_required={row.get('review_required_count', 0)} blocked={row.get('blocked_count', 0)}"
+        )
+    return "\n".join(lines)
+
+
+def _render_trust_inbox_text(payload: dict[str, Any]) -> str:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    rows = payload.get("items") if isinstance(payload.get("items"), list) else []
+    lines = [
+        "# Trust Inbox",
+        f"- items_total: {summary.get('items_total', 0)}",
+        f"- blocked_count: {summary.get('blocked_count', 0)}",
+        f"- pending_approval_count: {summary.get('pending_approval_count', 0)}",
+    ]
+    if rows:
+        lines.append("- items:")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"  - {row.get('run_id')}: risk={row.get('risk_tier', '-')} decision={row.get('policy_decision', '-')} "
+                f"approval={row.get('approval_state', '-')} trust={row.get('trust_score', '-')}"
+            )
+    else:
+        lines.append("- items: -")
+    return "\n".join(lines)
+
+
+def _render_trust_approvals_text(payload: dict[str, Any]) -> str:
+    governance = payload.get("governance") if isinstance(payload.get("governance"), dict) else {}
+    approvals = payload.get("approvals") if isinstance(payload.get("approvals"), list) else []
+    lines = [
+        "# Trust Approvals",
+        f"- run_id: {payload.get('run_id') or '-'}",
+        f"- approval_state: {governance.get('approval_state', '-')}",
+        f"- approved_count: {governance.get('approved_count', 0)}",
+        f"- min_approvals: {governance.get('min_approvals', 0)}",
+    ]
+    if approvals:
+        lines.append("- approvals:")
+        for row in approvals:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"  - {row.get('recorded_at') or '-'} {row.get('reviewer') or '-'} "
+                f"[{row.get('role') or '-'}] {row.get('decision') or '-'}"
+            )
+    else:
+        lines.append("- approvals: -")
+    return "\n".join(lines)
+
+
+def _trust_analytics(argv: list[str]) -> None:
+    parser = _build_cli_parser()
+    args = parser.parse_args(["trust-analytics", *argv])
+    from .gui_mvp_server import _trust_analytics as _server_trust_analytics
+
+    payload = _server_trust_analytics(Path(str(args.runs_root)).expanduser().resolve(), int(args.window))
+    if args.format == "text":
+        print(_render_trust_analytics_text(payload))
+        return
+    print(json_dumps(payload))
+
+
+def _trust_model_eval(argv: list[str]) -> None:
+    parser = _build_cli_parser()
+    args = parser.parse_args(["trust-model-eval", *argv])
+    from .gui_mvp_server import _trust_model_eval as _server_trust_model_eval
+
+    payload = _server_trust_model_eval(Path(str(args.runs_root)).expanduser().resolve(), int(args.window))
+    if args.format == "text":
+        print(_render_trust_model_eval_text(payload))
+        return
+    print(json_dumps(payload))
+
+
+def _trust_inbox(argv: list[str]) -> None:
+    parser = _build_cli_parser()
+    args = parser.parse_args(["trust-inbox", *argv])
+    from .gui_mvp_server import _trust_inbox as _server_trust_inbox
+
+    payload = _server_trust_inbox(Path(str(args.runs_root)).expanduser().resolve(), int(args.window))
+    if args.format == "text":
+        print(_render_trust_inbox_text(payload))
+        return
+    print(json_dumps(payload))
+
+
+def _trust_approvals(argv: list[str]) -> None:
+    parser = _build_cli_parser()
+    args = parser.parse_args(["trust-approvals", *argv])
+    from .gui_mvp_server import _append_trust_approval, _trust_approvals as _server_trust_approvals
+
+    run_dir = Path(str(args.run_dir)).expanduser().resolve()
+    if args.trust_approvals_action == "list":
+        payload = _server_trust_approvals(run_dir)
+        if args.format == "text":
+            print(_render_trust_approvals_text(payload))
+            return
+        print(json_dumps(payload))
+        return
+
+    payload, status = _append_trust_approval(
+        run_dir.parent,
+        run_id=run_dir.name,
+        decision=str(args.decision),
+        reviewer=str(args.reviewer),
+        role=str(args.role),
+        note=str(args.note),
+        source="cli",
+    )
+    if status != HTTPStatus.OK:
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        raise SystemExit(str(error.get("message") or "trust approval record failed"))
+    approvals = payload.get("approvals") if isinstance(payload.get("approvals"), dict) else {}
+    if args.format == "text":
+        print(_render_trust_approvals_text(approvals))
+        return
+    print(json_dumps(payload))
+
+
 def _compare_snapshot_tags_arg(raw: str | None) -> list[str] | None:
     if raw is None:
         return None
@@ -5041,7 +5233,7 @@ def _incident_replay(argv: list[str]) -> None:
 
 def cli(argv: list[str]) -> None:
     if not argv:
-        raise SystemExit("Usage: autodev autonomous <start|status|summary|triage-summary|trust-summary|compare-snapshots|incident-export|incident-send|ticket-draft|issue-export|incident-replay> ...")
+        raise SystemExit("Usage: autodev autonomous <start|status|summary|triage-summary|trust-summary|trust-analytics|trust-model-eval|trust-inbox|trust-approvals|compare-snapshots|incident-export|incident-send|ticket-draft|issue-export|incident-replay> ...")
     action = argv[0]
     if action == "start":
         _start(argv[1:])
@@ -5057,6 +5249,18 @@ def cli(argv: list[str]) -> None:
         return
     if action == "trust-summary":
         _trust_summary(argv[1:])
+        return
+    if action == "trust-analytics":
+        _trust_analytics(argv[1:])
+        return
+    if action == "trust-model-eval":
+        _trust_model_eval(argv[1:])
+        return
+    if action == "trust-inbox":
+        _trust_inbox(argv[1:])
+        return
+    if action == "trust-approvals":
+        _trust_approvals(argv[1:])
         return
     if action == "compare-snapshots":
         _compare_snapshots(argv[1:])

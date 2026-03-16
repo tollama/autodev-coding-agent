@@ -1420,6 +1420,63 @@ def test_trust_trends_endpoint_returns_payload(gui_server):
     assert body["runs"][0]["run_id"] == "run-trust-trend-endpoint"
 
 
+def test_trust_analytics_model_eval_inbox_and_approvals_endpoints(gui_server):
+    base_url, runs_root = gui_server
+    run = runs_root / "run-trust-ops"
+    _write_json(
+        run / ".autodev" / "autonomous_report.json",
+        {
+            "ok": False,
+            "run_id": "run-trust-ops",
+            "profile": "enterprise",
+            "status": "failed",
+            "preflight": {"status": "passed", "reason_codes": []},
+            "operator_guidance": {"top": [{"code": "tests_failed", "actions": ["Review failing tests."]}]},
+            "incident_routing": {"primary": {"owner_team": "Feature Eng", "severity": "high", "target_sla": "4h", "escalation_class": "manual_triage"}},
+            "guard_decision": {"decision": "stop", "reason_code": "tests_failed"},
+            "gate_results": {"passed": False, "gates": {"composite_quality": {"status": "failed", "composite_score": 41.0, "hard_blocked": True, "components": {"tests": 30.0}}}, "fail_reasons": [{"code": "tests_failed"}]},
+        },
+    )
+    _write_json(run / ".autodev" / "autonomous_gate_results.json", {"attempts": [{"iteration": 1, "gate_results": {"passed": False, "fail_reasons": [{"code": "tests_failed"}]}}]})
+    _write_json(run / ".autodev" / "autonomous_strategy_trace.json", {"latest": {"name": "mixed"}})
+    _write_json(run / ".autodev" / "autonomous_guard_decisions.json", {"decisions": [{"decision": "stop"}], "latest": {"decision": "stop"}})
+    _write_json(run / ".autodev" / "run_trace.json", {"events": [{"event_type": "quality_score.computed"}], "phases": [], "llm_metrics": {}})
+    _write_json(run / ".autodev" / "run_metadata.json", {"model": "gpt-test"})
+
+    analytics_status, analytics_body = _get_json(f"{base_url}/api/autonomous/trust/analytics?window=5")
+    assert analytics_status == 200
+    assert analytics_body["empty"] is False
+    assert analytics_body["summary"]["runs_considered"] >= 1
+    assert "high" in analytics_body["risk_tier_counts"]
+
+    model_eval_status, model_eval_body = _get_json(f"{base_url}/api/autonomous/trust/model-eval?window=5")
+    assert model_eval_status == 200
+    assert model_eval_body["empty"] is False
+    assert any(row["model"] == "gpt-test" for row in model_eval_body["models"])
+
+    inbox_status, inbox_body = _get_json(f"{base_url}/api/autonomous/trust/inbox?window=5")
+    assert inbox_status == 200
+    assert inbox_body["empty"] is False
+    assert any(item["run_id"] == "run-trust-ops" for item in inbox_body["items"])
+
+    record_status, record_body = _post_json(
+        f"{base_url}/api/autonomous/trust/approvals",
+        {"run_id": "run-trust-ops", "decision": "approve", "reviewer": "alice", "note": "ready for second review"},
+        headers={"X-Autodev-Role": "operator"},
+    )
+    assert record_status == 200
+    assert record_body["recorded"]["decision"] == "approve"
+
+    approvals_status, approvals_body = _get_json(f"{base_url}/api/autonomous/trust/approvals?run_id=run-trust-ops")
+    assert approvals_status == 200
+    assert approvals_body["run_id"] == "run-trust-ops"
+    assert approvals_body["governance"]["approved_count"] >= 1
+
+    events_status, events_body = _get_json(f"{base_url}/api/autonomous/trust/events?window=5")
+    assert events_status == 200
+    assert any(event["run_id"] == "run-trust-ops" for event in events_body["events"])
+
+
 def test_api_docs_routes_endpoint_and_static_reference_are_served(gui_server):
     base_url, _ = gui_server
 
@@ -1434,6 +1491,10 @@ def test_api_docs_routes_endpoint_and_static_reference_are_served(gui_server):
         if isinstance(row, dict)
     }
     assert "/api/autonomous/trust/latest" in route_paths
+    assert "/api/autonomous/trust/analytics" in route_paths
+    assert "/api/autonomous/trust/model-eval" in route_paths
+    assert "/api/autonomous/trust/inbox" in route_paths
+    assert "/api/autonomous/trust/approvals" in route_paths
     assert "/api/runs/compare/snapshots/<snapshot_id>" in route_paths
     assert any(
         row["path"] == "/api/runs/compare/snapshots/<snapshot_id>/delete" and row["canonical_method"] == "DELETE"
@@ -1608,6 +1669,14 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="trustTrendList"' in index_html
     assert 'id="trustTrendEmpty"' in index_html
     assert 'id="trustTrendError"' in index_html
+    assert 'id="trustOpsCards"' in index_html
+    assert 'id="trustApprovalDecision"' in index_html
+    assert 'id="trustApprovalRecordBtn"' in index_html
+    assert 'id="trustApprovalHistory"' in index_html
+    assert 'id="trustAnalyticsCards"' in index_html
+    assert 'id="trustAnalyticsReasons"' in index_html
+    assert 'id="trustModelEvalList"' in index_html
+    assert 'id="trustInboxList"' in index_html
     assert 'id="compareTrustPanel"' in index_html
     assert 'id="compareTrustEmpty"' in index_html
     assert 'id="compareTrustDiffPanel"' in index_html
@@ -1670,6 +1739,15 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "function buildMockTrustTrendPayload()" in app_js
     assert "function renderTrustTrendWidget()" in app_js
     assert "function refreshTrustTrendWidget({ silent = false } = {})" in app_js
+    assert "function renderTrustOpsWidget()" in app_js
+    assert "function renderTrustAnalyticsWidget()" in app_js
+    assert "function renderTrustModelEvalWidget()" in app_js
+    assert "function renderTrustInboxWidget()" in app_js
+    assert "function refreshTrustAnalyticsWidget({ silent = false } = {})" in app_js
+    assert "function refreshTrustModelEvalWidget({ silent = false } = {})" in app_js
+    assert "function refreshTrustInboxWidget({ silent = false } = {})" in app_js
+    assert "function refreshTrustApprovalsWidget({ silent = false } = {})" in app_js
+    assert "function initTrustOpsControls()" in app_js
     assert "function renderDeprecationNotice()" in app_js
     assert "function refreshDeprecationNotice({ silent = false } = {})" in app_js
     assert "function buildApiNoticeMarkdown()" in app_js
@@ -1733,10 +1811,17 @@ def test_overview_scorecard_static_contract(gui_server):
     assert ".autodev/autonomous_trust_intelligence.json" in app_js
     assert ".autodev/autonomous_trust_intelligence.md" in app_js
     assert "/api/autonomous/trust/trends" in app_js
+    assert "/api/autonomous/trust/analytics" in app_js
+    assert "/api/autonomous/trust/model-eval" in app_js
+    assert "/api/autonomous/trust/inbox" in app_js
+    assert "/api/autonomous/trust/approvals" in app_js
     assert "/api/scorecard/latest" in app_js
     assert "/api/autonomous/trust/latest" in app_js
     assert "human_review_reasons" in app_js
     assert "residual_risk_summary" in app_js
+    assert "policy_decision" in app_js
+    assert "approval_state" in app_js
+    assert "attestation_packet_sha256" in app_js
     assert "/api/runs/compare/snapshots/${encodeURIComponent(snapshotId)}/metadata" not in app_js
     assert "/api/runs/compare/snapshots/${encodeURIComponent(snapshotId)}/rename" not in app_js
     assert "/api/runs/compare/snapshots/${encodeURIComponent(snapshotId)}/delete" not in app_js

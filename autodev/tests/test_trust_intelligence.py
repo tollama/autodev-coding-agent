@@ -313,8 +313,10 @@ def test_persist_trust_intelligence_artifacts_writes_trust_and_xai_packets(tmp_p
     paths = persist_trust_intelligence_artifacts(run_dir, packet)
 
     trust_json = Path(paths["trust_json"])
+    trust_attestation = Path(paths["trust_attestation"])
     xai_json = Path(paths["xai_json"])
     assert trust_json.exists()
+    assert trust_attestation.exists()
     assert xai_json.exists()
     trust_payload = json.loads(trust_json.read_text(encoding="utf-8"))
     xai_payload = json.loads(xai_json.read_text(encoding="utf-8"))
@@ -353,6 +355,38 @@ def test_build_trust_summary_includes_explanation_and_residual_risk(tmp_path: Pa
     assert trust_summary["trust_explanation"]
     assert trust_summary["residual_risk_level"] == "high"
     assert "Human review remains required" in trust_summary["residual_risk_summary"]
+
+
+def test_trust_packet_includes_policy_governance_and_attestation(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-governed"
+    _seed_failed_review_run(run_dir)
+    _write_jsonl(
+        run_dir / ".autodev" / "trust_approvals.jsonl",
+        [
+            {
+                "recorded_at": "2026-03-15T01:00:00Z",
+                "decision": "approve",
+                "reviewer": "alice",
+                "role": "operator",
+                "note": "Needs second reviewer before closure.",
+            }
+        ],
+    )
+
+    summary = autonomous_mode.extract_autonomous_summary(str(run_dir))
+    packet = build_trust_intelligence_packet(run_dir, summary=summary)
+    trust_summary = build_trust_summary(packet)
+
+    assert packet["policy"]["risk_tier"] == "high"
+    assert packet["policy"]["decision"] in {"blocked", "review_required"}
+    assert packet["governance"]["approval_state"] in {"pending", "blocked"}
+    assert packet["governance"]["approved_count"] == 1
+    assert packet["explainability"]["narrative"]
+    assert packet["attestation"]["packet_sha256"]
+    assert packet["provenance"]["manifest_sha256"]
+    assert trust_summary["risk_tier"] == packet["policy"]["risk_tier"]
+    assert trust_summary["approval_state"] == packet["governance"]["approval_state"]
+    assert trust_summary["attestation_packet_sha256"] == packet["attestation"]["packet_sha256"]
 
 
 def test_trust_summary_cli_outputs_json_and_text(tmp_path: Path, capsys) -> None:

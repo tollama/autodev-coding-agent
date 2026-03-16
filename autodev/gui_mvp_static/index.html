@@ -140,6 +140,51 @@
           </section>
 
           <section>
+            <h3>Trust Governance</h3>
+            <div id="trustOpsMeta" class="muted"></div>
+            <div id="trustOpsCards" class="scorecard-grid hidden"></div>
+            <div class="run-controls-grid compact">
+              <select id="trustApprovalDecision" aria-label="Trust approval decision">
+                <option value="approve">Approve</option>
+                <option value="acknowledge">Acknowledge</option>
+                <option value="reject">Reject</option>
+              </select>
+              <input id="trustApprovalReviewer" type="text" placeholder="Reviewer name (optional)" />
+              <input id="trustApprovalNote" type="text" placeholder="Approval note" />
+              <button id="trustApprovalRecordBtn" type="button">Record decision</button>
+            </div>
+            <div id="trustApprovalStatus" class="empty subtle"></div>
+            <div id="trustApprovalHistory" class="simple-list hidden"></div>
+            <div id="trustOpsEmpty" class="empty">Loading trust governance…</div>
+            <div id="trustOpsError" class="empty error-text hidden"></div>
+          </section>
+
+          <section>
+            <h3>Trust Analytics</h3>
+            <div id="trustAnalyticsMeta" class="muted"></div>
+            <div id="trustAnalyticsCards" class="scorecard-grid hidden"></div>
+            <div id="trustAnalyticsReasons" class="simple-list hidden"></div>
+            <div id="trustAnalyticsEmpty" class="empty">Loading trust analytics…</div>
+            <div id="trustAnalyticsError" class="empty error-text hidden"></div>
+          </section>
+
+          <section>
+            <h3>Model Eval</h3>
+            <div id="trustModelEvalMeta" class="muted"></div>
+            <div id="trustModelEvalList" class="simple-list hidden"></div>
+            <div id="trustModelEvalEmpty" class="empty">Loading trust model evaluation…</div>
+            <div id="trustModelEvalError" class="empty error-text hidden"></div>
+          </section>
+
+          <section>
+            <h3>Trust Inbox</h3>
+            <div id="trustInboxMeta" class="muted"></div>
+            <div id="trustInboxList" class="simple-list hidden"></div>
+            <div id="trustInboxEmpty" class="empty">Loading trust inbox…</div>
+            <div id="trustInboxError" class="empty error-text hidden"></div>
+          </section>
+
+          <section>
             <h3>Phase Timeline</h3>
             <div id="phaseTimeline" class="timeline"></div>
             <div id="phaseEmpty" class="empty">No phase timeline yet.</div>

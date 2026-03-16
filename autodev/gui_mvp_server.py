@@ -77,6 +77,7 @@ COMPARE_SNAPSHOT_EXPORT_VERSION = "compare-trust-snapshot-v1"
 DEFAULT_COMPARE_SNAPSHOT_PAGE_SIZE = 20
 MAX_COMPARE_SNAPSHOT_PAGE_SIZE = 100
 COMPARE_SNAPSHOT_SORTS = {"newest", "oldest", "name", "baseline", "candidate"}
+TRUST_APPROVALS_JSONL = ".autodev/trust_approvals.jsonl"
 
 GUI_API_ROUTE_SECTIONS: list[dict[str, Any]] = [
     {
@@ -112,6 +113,36 @@ GUI_API_ROUTE_SECTIONS: list[dict[str, Any]] = [
                 "method": "GET",
                 "path": "/api/autonomous/trust/trends",
                 "summary": "Historical trust trend summary across recent runs.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/autonomous/trust/analytics",
+                "summary": "Aggregated trust policy, review-reason, and governance analytics.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/autonomous/trust/model-eval",
+                "summary": "Compare trust posture across recent models.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/autonomous/trust/inbox",
+                "summary": "Operator inbox for review-required or policy-blocked trust items.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/autonomous/trust/events",
+                "summary": "Recent trust and approval events for external consumers.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/autonomous/trust/approvals",
+                "summary": "List recorded approval decisions for a run.",
+            },
+            {
+                "method": "POST",
+                "path": "/api/autonomous/trust/approvals",
+                "summary": "Record a trust approval, rejection, or acknowledgement for a run.",
             },
         ],
     },
@@ -590,6 +621,40 @@ def _load_json(
         }
 
     return parsed, None
+
+
+def _load_jsonl(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    if not path.exists():
+        return [], None
+
+    rows: list[dict[str, Any]] = []
+    try:
+        for line_no, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                rows.append(parsed)
+    except OSError as exc:
+        return [], {
+            "kind": "artifact_jsonl_error",
+            "code": "artifact_read_failed",
+            "path": str(path),
+            "message": str(exc),
+        }
+    except json.JSONDecodeError as exc:
+        return [], {
+            "kind": "artifact_jsonl_error",
+            "code": "artifact_json_malformed",
+            "path": str(path),
+            "message": exc.msg,
+            "line": exc.lineno,
+            "column": exc.colno,
+            "position": exc.pos,
+            "line_number": line_no,
+        }
+    return rows, None
 
 
 def _run_status(quality: dict[str, Any] | None) -> str:
@@ -1159,6 +1224,329 @@ def _trust_trends(runs_root: Path, window: int) -> dict[str, Any]:
         "runs": rows,
         "warnings": warnings,
     }
+
+
+def _trust_run_rows(runs_root: Path, window: int) -> dict[str, Any]:
+    trend_window = max(1, min(int(window), MAX_TREND_WINDOW))
+    if not runs_root.exists() or not runs_root.is_dir():
+        return {"window": {"requested": int(window), "applied": trend_window}, "rows": [], "warnings": ["runs_root_missing"]}
+
+    run_dirs = sorted((p for p in runs_root.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for run_dir in run_dirs[:trend_window]:
+        if not (run_dir / AUTONOMOUS_REPORT_JSON).exists():
+            continue
+        try:
+            snapshot = extract_autonomous_summary(str(run_dir))
+            packet = build_trust_intelligence_packet(run_dir, summary=snapshot)
+            summary = build_trust_summary(packet)
+        except Exception as exc:  # pragma: no cover - defensive aggregation path
+            warnings.append(f"{run_dir.name}: {exc}")
+            continue
+
+        provenance = packet.get("provenance") if isinstance(packet.get("provenance"), dict) else {}
+        run_metadata = provenance.get("run_metadata") if isinstance(provenance.get("run_metadata"), dict) else {}
+        rows.append(
+            {
+                "run_id": run_dir.name,
+                "updated_at": datetime.fromtimestamp(run_dir.stat().st_mtime).isoformat(),
+                "model": str(run_metadata.get("model") or "unknown"),
+                "summary": summary,
+                "policy": packet.get("policy") if isinstance(packet.get("policy"), dict) else {},
+                "governance": packet.get("governance") if isinstance(packet.get("governance"), dict) else {},
+                "explainability": packet.get("explainability") if isinstance(packet.get("explainability"), dict) else {},
+                "operator_next": packet.get("operator_next") if isinstance(packet.get("operator_next"), dict) else {},
+                "packet": packet,
+            }
+        )
+    return {"window": {"requested": int(window), "applied": trend_window}, "rows": rows, "warnings": warnings}
+
+
+def _top_count_rows(counter: dict[str, int], *, limit: int = 10) -> list[dict[str, Any]]:
+    return [{"name": name, "count": count} for name, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:limit]]
+
+
+def _trust_analytics(runs_root: Path, window: int) -> dict[str, Any]:
+    base = _trust_run_rows(runs_root, window)
+    rows = base["rows"]
+    if not rows:
+        return {
+            "window": base["window"],
+            "empty": True,
+            "message": "No trust analytics data available yet.",
+            "summary": None,
+            "review_reason_counts": [],
+            "policy_decision_counts": {},
+            "approval_state_counts": {},
+            "risk_tier_counts": {},
+            "warnings": base["warnings"],
+        }
+
+    review_reason_counts: dict[str, int] = {}
+    policy_decision_counts: dict[str, int] = {}
+    approval_state_counts: dict[str, int] = {}
+    risk_tier_counts: dict[str, int] = {}
+    residual_risk_counts: dict[str, int] = {}
+    model_counts: dict[str, int] = {}
+    trust_scores: list[float] = []
+    review_required_count = 0
+    blocked_count = 0
+
+    for row in rows:
+        summary = row["summary"]
+        policy = row["policy"]
+        governance = row["governance"]
+        if isinstance(summary.get("trust_score"), (int, float)):
+            trust_scores.append(float(summary.get("trust_score")))
+        if summary.get("requires_human_review") is True:
+            review_required_count += 1
+        decision = str(policy.get("decision") or "unknown")
+        policy_decision_counts[decision] = policy_decision_counts.get(decision, 0) + 1
+        if decision == "blocked":
+            blocked_count += 1
+        approval_state = str(governance.get("approval_state") or "unknown")
+        approval_state_counts[approval_state] = approval_state_counts.get(approval_state, 0) + 1
+        risk_tier = str(policy.get("risk_tier") or "unknown")
+        risk_tier_counts[risk_tier] = risk_tier_counts.get(risk_tier, 0) + 1
+        residual_risk = str(summary.get("residual_risk_level") or "unknown")
+        residual_risk_counts[residual_risk] = residual_risk_counts.get(residual_risk, 0) + 1
+        model = str(row.get("model") or "unknown")
+        model_counts[model] = model_counts.get(model, 0) + 1
+        reasons = summary.get("human_review_reasons") if isinstance(summary.get("human_review_reasons"), list) else []
+        for reason in reasons:
+            text = str(reason or "").strip()
+            if not text:
+                continue
+            review_reason_counts[text] = review_reason_counts.get(text, 0) + 1
+
+    avg_score = round(sum(trust_scores) / len(trust_scores), 2) if trust_scores else None
+    return {
+        "window": base["window"],
+        "empty": False,
+        "summary": {
+            "runs_considered": len(rows),
+            "avg_trust_score": avg_score,
+            "review_required_count": review_required_count,
+            "blocked_count": blocked_count,
+            "model_count": len(model_counts),
+        },
+        "review_reason_counts": _top_count_rows(review_reason_counts),
+        "policy_decision_counts": policy_decision_counts,
+        "approval_state_counts": approval_state_counts,
+        "risk_tier_counts": risk_tier_counts,
+        "residual_risk_counts": residual_risk_counts,
+        "model_counts": _top_count_rows(model_counts),
+        "runs": [
+            {
+                "run_id": row["run_id"],
+                "updated_at": row["updated_at"],
+                "model": row["model"],
+                "trust_status": row["summary"].get("trust_status"),
+                "trust_score": row["summary"].get("trust_score"),
+                "policy_decision": row["policy"].get("decision"),
+                "risk_tier": row["policy"].get("risk_tier"),
+                "approval_state": row["governance"].get("approval_state"),
+                "requires_human_review": row["summary"].get("requires_human_review"),
+            }
+            for row in rows[:20]
+        ],
+        "warnings": base["warnings"],
+    }
+
+
+def _trust_model_eval(runs_root: Path, window: int) -> dict[str, Any]:
+    base = _trust_run_rows(runs_root, window)
+    rows = base["rows"]
+    if not rows:
+        return {
+            "window": base["window"],
+            "empty": True,
+            "message": "No trust model-eval data available yet.",
+            "models": [],
+            "warnings": base["warnings"],
+        }
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.get("model") or "unknown"), []).append(row)
+
+    models: list[dict[str, Any]] = []
+    for model, model_rows in grouped.items():
+        scores = [float(r["summary"].get("trust_score")) for r in model_rows if isinstance(r["summary"].get("trust_score"), (int, float))]
+        models.append(
+            {
+                "model": model,
+                "run_count": len(model_rows),
+                "avg_trust_score": round(sum(scores) / len(scores), 2) if scores else None,
+                "review_required_count": sum(1 for r in model_rows if r["summary"].get("requires_human_review") is True),
+                "blocked_count": sum(1 for r in model_rows if str(r["policy"].get("decision") or "") == "blocked"),
+                "high_risk_count": sum(1 for r in model_rows if str(r["policy"].get("risk_tier") or "") == "high"),
+                "latest_run_id": model_rows[0]["run_id"],
+                "latest_updated_at": model_rows[0]["updated_at"],
+            }
+        )
+
+    models.sort(key=lambda row: (-int(row.get("run_count") or 0), str(row.get("model") or "")))
+    return {
+        "window": base["window"],
+        "empty": False,
+        "models": models,
+        "warnings": base["warnings"],
+    }
+
+
+def _trust_inbox(runs_root: Path, window: int) -> dict[str, Any]:
+    base = _trust_run_rows(runs_root, window)
+    rows = base["rows"]
+    items: list[dict[str, Any]] = []
+    priority_order = {"high": 0, "moderate": 1, "low": 2, "unknown": 3}
+
+    for row in rows:
+        summary = row["summary"]
+        policy = row["policy"]
+        governance = row["governance"]
+        decision = str(policy.get("decision") or "approved")
+        approval_state = str(governance.get("approval_state") or "not_required")
+        if summary.get("requires_human_review") is not True and decision == "approved" and approval_state in {"approved", "not_required"}:
+            continue
+        items.append(
+            {
+                "run_id": row["run_id"],
+                "updated_at": row["updated_at"],
+                "model": row["model"],
+                "trust_status": summary.get("trust_status"),
+                "trust_score": summary.get("trust_score"),
+                "risk_tier": policy.get("risk_tier"),
+                "policy_decision": decision,
+                "approval_state": approval_state,
+                "requires_human_review": summary.get("requires_human_review"),
+                "human_review_reasons": summary.get("human_review_reasons"),
+                "summary": summary.get("explainability_narrative") or summary.get("trust_explanation"),
+                "operator_actions": (row["operator_next"].get("top_actions") if isinstance(row["operator_next"].get("top_actions"), list) else [])[:2],
+            }
+        )
+
+    items.sort(
+        key=lambda item: (
+            priority_order.get(str(item.get("risk_tier") or "unknown"), 3),
+            0 if str(item.get("policy_decision") or "") == "blocked" else 1,
+            str(item.get("updated_at") or ""),
+        )
+    )
+    return {
+        "window": base["window"],
+        "empty": len(items) == 0,
+        "message": "No trust inbox items." if not items else "",
+        "summary": {
+            "items_total": len(items),
+            "blocked_count": sum(1 for item in items if item.get("policy_decision") == "blocked"),
+            "pending_approval_count": sum(1 for item in items if item.get("approval_state") == "pending"),
+        },
+        "items": items[:50],
+        "warnings": base["warnings"],
+    }
+
+
+def _trust_events(runs_root: Path, window: int) -> dict[str, Any]:
+    base = _trust_run_rows(runs_root, window)
+    events: list[dict[str, Any]] = []
+    for row in base["rows"]:
+        summary = row["summary"]
+        policy = row["policy"]
+        governance = row["governance"]
+        events.append(
+            {
+                "timestamp": row["updated_at"],
+                "type": "trust.snapshot",
+                "run_id": row["run_id"],
+                "model": row["model"],
+                "trust_status": summary.get("trust_status"),
+                "trust_score": summary.get("trust_score"),
+                "policy_decision": policy.get("decision"),
+                "risk_tier": policy.get("risk_tier"),
+                "approval_state": governance.get("approval_state"),
+            }
+        )
+        approvals = governance.get("approvals") if isinstance(governance.get("approvals"), list) else []
+        for approval in approvals:
+            if not isinstance(approval, dict):
+                continue
+            events.append(
+                {
+                    "timestamp": str(approval.get("recorded_at") or row["updated_at"]),
+                    "type": f"trust.approval.{approval.get('decision') or 'recorded'}",
+                    "run_id": row["run_id"],
+                    "reviewer": approval.get("reviewer"),
+                    "role": approval.get("role"),
+                    "note": approval.get("note"),
+                }
+            )
+    events.sort(key=lambda event: str(event.get("timestamp") or ""), reverse=True)
+    return {
+        "window": base["window"],
+        "empty": len(events) == 0,
+        "events": events[:100],
+        "warnings": base["warnings"],
+    }
+
+
+def _trust_approvals(run_dir: Path) -> dict[str, Any]:
+    rows, error = _load_jsonl(run_dir / TRUST_APPROVALS_JSONL)
+    snapshot = extract_autonomous_summary(str(run_dir))
+    packet = build_trust_intelligence_packet(run_dir, summary=snapshot)
+    governance = packet.get("governance") if isinstance(packet.get("governance"), dict) else {}
+    return {
+        "run_id": run_dir.name,
+        "approval_log_path": str(run_dir / TRUST_APPROVALS_JSONL),
+        "error": error,
+        "governance": governance,
+        "approvals": governance.get("approvals") if isinstance(governance.get("approvals"), list) else rows,
+    }
+
+
+def _append_trust_approval(
+    runs_root: Path,
+    *,
+    run_id: str,
+    decision: str,
+    reviewer: str,
+    role: str,
+    note: str,
+    source: str,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    normalized_run_id = str(run_id or "").strip()
+    if not normalized_run_id:
+        return {"error": _error_payload("missing_run_id", "run_id is required")}, HTTPStatus.BAD_REQUEST
+    run_dir = runs_root / normalized_run_id
+    if not run_dir.exists() or not run_dir.is_dir():
+        return {"error": _error_payload("run_not_found", f"run not found: {normalized_run_id}")}, HTTPStatus.NOT_FOUND
+    if not (run_dir / AUTONOMOUS_REPORT_JSON).exists():
+        return {"error": _error_payload("trust_not_available", "trust intelligence is not available for this run")}, HTTPStatus.BAD_REQUEST
+
+    normalized_decision = str(decision or "").strip().lower()
+    if normalized_decision not in {"approve", "reject", "acknowledge"}:
+        return {"error": _error_payload("invalid_decision", "decision must be approve, reject, or acknowledge")}, HTTPStatus.BAD_REQUEST
+
+    entry = {
+        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "decision": normalized_decision,
+        "reviewer": str(reviewer or "unknown").strip() or "unknown",
+        "role": str(role or "unknown").strip().lower() or "unknown",
+        "note": str(note or "").strip(),
+        "source": str(source or "api").strip() or "api",
+    }
+    approval_path = run_dir / TRUST_APPROVALS_JSONL
+    approval_path.parent.mkdir(parents=True, exist_ok=True)
+    with approval_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=True, sort_keys=True))
+        handle.write("\n")
+
+    return {
+        "run_id": normalized_run_id,
+        "recorded": entry,
+        "approvals": _trust_approvals(run_dir),
+    }, HTTPStatus.OK
 
 
 def _read_experiment_log(run_dir: Path, *, task_id: str | None = None) -> dict[str, Any]:
@@ -2700,6 +3088,44 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             window = _parse_trend_window(str((query.get("window") or [""])[0]))
             self._json_response(_trust_trends(self.config.runs_root, window))
             return
+        if path == "/api/autonomous/trust/analytics":
+            query = parse_qs(parsed.query)
+            window = _parse_trend_window(str((query.get("window") or [""])[0]))
+            self._json_response(_trust_analytics(self.config.runs_root, window))
+            return
+        if path == "/api/autonomous/trust/model-eval":
+            query = parse_qs(parsed.query)
+            window = _parse_trend_window(str((query.get("window") or [""])[0]))
+            self._json_response(_trust_model_eval(self.config.runs_root, window))
+            return
+        if path == "/api/autonomous/trust/inbox":
+            query = parse_qs(parsed.query)
+            window = _parse_trend_window(str((query.get("window") or [""])[0]))
+            self._json_response(_trust_inbox(self.config.runs_root, window))
+            return
+        if path == "/api/autonomous/trust/events":
+            query = parse_qs(parsed.query)
+            window = _parse_trend_window(str((query.get("window") or [""])[0]))
+            self._json_response(_trust_events(self.config.runs_root, window))
+            return
+        if path == "/api/autonomous/trust/approvals":
+            query = parse_qs(parsed.query)
+            run_id = str((query.get("run_id") or [""])[0]).strip()
+            if not run_id:
+                self._json_response(
+                    {"error": _error_payload("missing_run_id", "query param 'run_id' is required")},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            run_dir = self.config.runs_root / run_id
+            if not run_dir.exists() or not run_dir.is_dir():
+                self._json_response(
+                    {"error": _error_payload("run_not_found", f"run not found: {run_id}")},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            self._json_response(_trust_approvals(run_dir))
+            return
 
         if path == "/api/runs":
             self._json_response({"runs": _list_runs(self.config.runs_root)})
@@ -2892,6 +3318,9 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/runs/compare/snapshots/retention/apply":
             self._handle_compare_snapshot_retention()
+            return
+        if path == "/api/autonomous/trust/approvals":
+            self._handle_trust_approval_record()
             return
         snapshot_id = _parse_compare_snapshot_legacy_action_path(path, "metadata")
         if snapshot_id is not None:
@@ -3338,6 +3767,59 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                 },
                 result_status="updated" if status == HTTPStatus.OK else "failed",
             ),
+        )
+
+    def _handle_trust_approval_record(self) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+
+        auth = _resolve_request_auth(headers=self.headers, payload=payload, action="trust_approval_record")
+        if not _is_mutation_allowed(auth.role):
+            self._json_response(
+                {
+                    "error": _error_payload(
+                        "forbidden_role",
+                        f"Role '{auth.role}' cannot record trust approvals.",
+                        role=auth.role,
+                        allowed_roles=sorted(MUTATING_ROLES),
+                    )
+                },
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return
+
+        reviewer = str(payload.get("reviewer") or auth.subject or auth.role or "unknown").strip() or "unknown"
+        body, status = _append_trust_approval(
+            self.config.runs_root,
+            run_id=str(payload.get("run_id") or ""),
+            decision=str(payload.get("decision") or ""),
+            reviewer=reviewer,
+            role=auth.role,
+            note=str(payload.get("note") or ""),
+            source=f"api:{auth.source}",
+        )
+        self._audit_then_respond(
+            body=body,
+            status=status,
+            audit_event={
+                "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "action": "trust_approval_record",
+                "result_status": "recorded" if status == HTTPStatus.OK else "failed",
+                "role": auth.role,
+                "auth": {
+                    "source": auth.source,
+                    "subject": auth.subject,
+                    "scope": auth.scope,
+                    "policy_name": auth.policy_name,
+                    "policy_allowed_roles": auth.policy_allowed_roles,
+                },
+                "payload": {
+                    "run_id": str(payload.get("run_id") or ""),
+                    "decision": str(payload.get("decision") or ""),
+                    "reviewer": reviewer,
+                },
+            },
         )
 
     def _read_json_payload(self) -> dict[str, Any] | None:

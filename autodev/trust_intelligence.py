@@ -12,6 +12,7 @@ from .xai_delivery_packet import build_xai_delivery_packet, write_xai_delivery_p
 TRUST_INTELLIGENCE_SCHEMA_VERSION = "av3-trust-v1"
 TRUST_INTELLIGENCE_JSON = ".autodev/autonomous_trust_intelligence.json"
 TRUST_INTELLIGENCE_MD = ".autodev/autonomous_trust_intelligence.md"
+TRUST_ATTESTATION_JSON = ".autodev/autonomous_trust_attestation.json"
 
 
 def _utc_now() -> str:
@@ -67,6 +68,14 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _stable_json_bytes(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
 def _is_present_status(status: str) -> bool:
     return status in {"ok", "not_generated", "generated"}
 
@@ -93,6 +102,25 @@ def _normalize_percent_like(value: Any) -> float | None:
     if numeric > 1.0:
         numeric = numeric / 100.0
     return _clamp_score(numeric)
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        out.append(text)
+    return out
 
 
 def _artifact_ref(name: str, details: Mapping[str, Any]) -> dict[str, Any]:
@@ -361,6 +389,35 @@ def _derive_validation_signal(
     }
 
 
+def _derive_change_surface(
+    summary: Mapping[str, Any],
+    latest_quality: Mapping[str, Any],
+) -> dict[str, Any]:
+    dominant_fail_codes = _normalize_string_list(summary.get("dominant_fail_codes"))
+    quality_reasons = _normalize_string_list(latest_quality.get("fail_reasons"))
+    validators_failed = _normalize_string_list(latest_quality.get("validators_failed"))
+    combined = [item.lower() for item in [*dominant_fail_codes, *quality_reasons, *validators_failed]]
+
+    categories: list[str] = []
+    if any("security" in item or "semgrep" in item or "bandit" in item for item in combined):
+        categories.append("security")
+    if any("performance" in item or "perf" in item or "regression" in item for item in combined):
+        categories.append("performance")
+    if any("test" in item or "pytest" in item for item in combined):
+        categories.append("tests")
+    if any("preflight" in item or "guard" in item or "budget" in item for item in combined):
+        categories.append("operations")
+    if not categories:
+        categories.append("general")
+
+    primary = categories[0] if len(categories) == 1 else "mixed"
+    return {
+        "primary": primary,
+        "categories": categories,
+        "evidence_codes": dominant_fail_codes[:10],
+    }
+
+
 def _derive_policy_traceability_signal(summary: Mapping[str, Any]) -> dict[str, Any]:
     status = str(summary.get("status") or "unknown")
     operator_guidance = _safe_dict(summary.get("operator_guidance"))
@@ -398,6 +455,95 @@ def _derive_policy_traceability_signal(summary: Mapping[str, Any]) -> dict[str, 
         "score": round(score, 2),
         "status": _score_band(score),
         "reasons": reasons,
+    }
+
+
+def _derive_policy_enforcement_signal(
+    summary: Mapping[str, Any],
+    latest_quality: Mapping[str, Any],
+    refs: list[dict[str, Any]],
+    run_metadata_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    status = str(summary.get("status") or "unknown")
+    preflight_status = str(summary.get("preflight_status") or "unknown")
+    quality_status = str(latest_quality.get("status") or "unknown")
+    hard_blocked = latest_quality.get("hard_blocked") is True
+    incident_severity = str(summary.get("incident_severity") or "").strip().lower()
+    gate_counts = _safe_dict(summary.get("gate_counts"))
+    gate_failures = int(gate_counts.get("fail") or 0)
+    change_surface = _derive_change_surface(summary, latest_quality)
+    by_name = {str(item.get("name")): item for item in refs}
+    policy_source = "default_autonomous_trust_policy_v1"
+    if isinstance(run_metadata_payload.get("autonomous_quality_gate_policy"), dict):
+        policy_source = "run_metadata.autonomous_quality_gate_policy"
+
+    risk_tier = "low"
+    if hard_blocked or status == "failed" or preflight_status not in {"passed", "ok"} or incident_severity in {"high", "critical"}:
+        risk_tier = "high"
+    elif gate_failures > 0 or quality_status not in {"passed", "accepted", "ok"} or change_surface.get("primary") in {"mixed", "security", "performance"}:
+        risk_tier = "moderate"
+
+    required_evidence = ["report", "run_trace"]
+    if risk_tier in {"moderate", "high"}:
+        required_evidence.extend(["run_metadata", "gate_results", "guard_decisions", "experiment_log"])
+    if risk_tier == "high":
+        required_evidence.extend(["incident_packet", "ticket_draft_markdown", "ticket_draft_json"])
+
+    missing_evidence = [
+        name
+        for name in required_evidence
+        if not _is_present_status(_safe_status(_safe_dict(by_name.get(name)).get("status")))
+    ]
+
+    reasons: list[str] = []
+    if preflight_status not in {"passed", "ok"}:
+        reasons.append(f"preflight_status={preflight_status}")
+    if hard_blocked:
+        reasons.append("quality_gate_hard_blocked")
+    if status == "failed":
+        reasons.append("run_status=failed")
+    if gate_failures > 0:
+        reasons.append(f"gate_failures={gate_failures}")
+    if quality_status not in {"passed", "accepted", "ok"}:
+        reasons.append(f"quality_status={quality_status}")
+    if missing_evidence:
+        reasons.append(f"missing_policy_evidence={','.join(missing_evidence)}")
+
+    decision = "approved"
+    if hard_blocked or preflight_status not in {"passed", "ok"} or (risk_tier == "high" and missing_evidence):
+        decision = "blocked"
+    elif risk_tier != "low" or missing_evidence or quality_status not in {"passed", "accepted", "ok"}:
+        decision = "review_required"
+
+    min_approvals = 0
+    required_roles: list[str] = []
+    if decision != "approved":
+        min_approvals = 2 if risk_tier == "high" else 1
+        required_roles = ["operator", "developer"] if risk_tier == "high" else ["operator"]
+
+    score = 1.0
+    if decision == "review_required":
+        score = 0.62
+    elif decision == "blocked":
+        score = 0.22
+    if missing_evidence:
+        score = _clamp_score(score - min(0.25, len(missing_evidence) * 0.05))
+
+    return {
+        "score": round(score, 2),
+        "status": _score_band(score),
+        "policy_source": policy_source,
+        "risk_tier": risk_tier,
+        "change_surface": change_surface,
+        "decision": decision,
+        "required_evidence": required_evidence,
+        "missing_evidence": missing_evidence,
+        "reasons": reasons,
+        "approval_requirements": {
+            "min_approvals": min_approvals,
+            "required_roles": required_roles,
+            "unique_roles_required": len(required_roles),
+        },
     }
 
 
@@ -443,6 +589,194 @@ def _derive_operator_readiness_signal(
     }
 
 
+def _normalize_approval_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        decision = str(row.get("decision") or "").strip().lower()
+        if decision not in {"approve", "reject", "acknowledge"}:
+            continue
+        role = str(row.get("role") or "unknown").strip().lower() or "unknown"
+        reviewer = str(row.get("reviewer") or row.get("subject") or "").strip() or "unknown"
+        out.append(
+            {
+                "recorded_at": str(row.get("recorded_at") or row.get("timestamp") or ""),
+                "decision": decision,
+                "role": role,
+                "reviewer": reviewer,
+                "note": str(row.get("note") or "").strip(),
+                "source": str(row.get("source") or "trust_approval_log").strip() or "trust_approval_log",
+            }
+        )
+    return out
+
+
+def _derive_governance_signal(
+    policy_enforcement: Mapping[str, Any],
+    approval_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    normalized = _normalize_approval_rows(approval_rows)
+    requirements = _safe_dict(policy_enforcement.get("approval_requirements"))
+    required_roles = _normalize_string_list(requirements.get("required_roles"))
+    min_approvals = int(requirements.get("min_approvals") or 0)
+    decision = str(policy_enforcement.get("decision") or "review_required")
+
+    approved = [row for row in normalized if row.get("decision") == "approve"]
+    rejected = [row for row in normalized if row.get("decision") == "reject"]
+    acknowledged = [row for row in normalized if row.get("decision") == "acknowledge"]
+    approved_roles = {str(row.get("role") or "").strip().lower() for row in approved}
+    missing_roles = [role for role in required_roles if role.lower() not in approved_roles]
+
+    state = "not_required"
+    reasons: list[str] = []
+    score = 1.0
+    if decision == "blocked":
+        state = "blocked"
+        reasons.append("policy_decision_blocked")
+        score = 0.15
+    elif min_approvals > 0:
+        if rejected:
+            state = "rejected"
+            reasons.append("approval_rejected")
+            score = 0.1
+        elif len(approved) >= min_approvals and not missing_roles:
+            state = "approved"
+            score = 1.0
+        else:
+            state = "pending"
+            score = 0.45 if approved else 0.3
+            if len(approved) < min_approvals:
+                reasons.append(f"approvals_needed={min_approvals - len(approved)}")
+            if missing_roles:
+                reasons.append(f"missing_roles={','.join(missing_roles)}")
+
+    return {
+        "score": round(score, 2),
+        "status": _score_band(score),
+        "approval_state": state,
+        "min_approvals": min_approvals,
+        "approved_count": len(approved),
+        "rejected_count": len(rejected),
+        "acknowledged_count": len(acknowledged),
+        "required_roles": required_roles,
+        "missing_roles": missing_roles,
+        "approvals": normalized[-10:],
+        "reasons": reasons,
+    }
+
+
+def _derive_provenance_signal(
+    refs: list[dict[str, Any]],
+    run_metadata_payload: Mapping[str, Any],
+    run_trace_payload: Mapping[str, Any],
+    experiment_rows: list[dict[str, Any]],
+    approval_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    manifest = [
+        {
+            "name": str(item.get("name") or ""),
+            "path": str(item.get("path") or ""),
+            "sha256": str(item.get("sha256") or ""),
+            "status": str(item.get("status") or ""),
+        }
+        for item in refs
+        if isinstance(item, dict)
+    ]
+    ok_hashes = [item for item in manifest if item.get("sha256")]
+    manifest_sha256 = _sha256_bytes(_stable_json_bytes(ok_hashes))
+    run_metadata_sha256 = _sha256_bytes(_stable_json_bytes(_safe_dict(run_metadata_payload))) if run_metadata_payload else ""
+    run_trace_sha256 = _sha256_bytes(_stable_json_bytes(_safe_dict(run_trace_payload))) if run_trace_payload else ""
+    experiment_log_sha256 = _sha256_bytes(_stable_json_bytes(experiment_rows)) if experiment_rows else ""
+    approval_log_sha256 = _sha256_bytes(_stable_json_bytes(approval_rows)) if approval_rows else ""
+    score_parts = [
+        1.0 if manifest_sha256 else 0.0,
+        1.0 if run_metadata_sha256 else 0.0,
+        1.0 if run_trace_sha256 else 0.0,
+    ]
+    score = sum(score_parts) / len(score_parts) if score_parts else 0.0
+    return {
+        "score": round(score, 2),
+        "status": _score_band(score),
+        "artifact_manifest": manifest,
+        "manifest_sha256": manifest_sha256,
+        "run_metadata_sha256": run_metadata_sha256,
+        "run_trace_sha256": run_trace_sha256,
+        "experiment_log_sha256": experiment_log_sha256,
+        "approval_log_sha256": approval_log_sha256,
+        "experiment_entry_count": len(experiment_rows),
+        "approval_entry_count": len(approval_rows),
+    }
+
+
+def _derive_explainability(
+    *,
+    overall: Mapping[str, Any],
+    validation_signal: Mapping[str, Any],
+    policy_enforcement: Mapping[str, Any],
+    governance: Mapping[str, Any],
+    operator_readiness: Mapping[str, Any],
+) -> dict[str, Any]:
+    decision = str(policy_enforcement.get("decision") or "review_required")
+    approval_state = str(governance.get("approval_state") or "unknown")
+    risk_tier = str(policy_enforcement.get("risk_tier") or "unknown")
+    quality_status = str(validation_signal.get("latest_quality_status") or "unknown")
+    if overall.get("requires_human_review") is False:
+        narrative = (
+            f"Trust is approval-ready because validation is {quality_status}, "
+            f"policy decision is {decision}, and governance state is {approval_state}."
+        )
+    else:
+        review_reasons = _normalize_string_list(overall.get("review_reasons"))
+        reason_text = ", ".join(review_reasons[:3]) if review_reasons else "policy or evidence signals remain unresolved"
+        narrative = (
+            f"Human review is required because the run is {risk_tier}-risk, "
+            f"policy decision is {decision}, governance is {approval_state}, and {reason_text}."
+        )
+
+    return {
+        "narrative": narrative,
+        "evidence_tree": [
+            {
+                "node": "validation_signal",
+                "status": validation_signal.get("status"),
+                "summary": {
+                    "latest_quality_status": validation_signal.get("latest_quality_status"),
+                    "gate_pass_rate": validation_signal.get("gate_pass_rate"),
+                    "repeatability": validation_signal.get("repeatability"),
+                },
+            },
+            {
+                "node": "policy_enforcement",
+                "status": policy_enforcement.get("status"),
+                "summary": {
+                    "decision": policy_enforcement.get("decision"),
+                    "risk_tier": policy_enforcement.get("risk_tier"),
+                    "change_surface": _safe_dict(policy_enforcement.get("change_surface")).get("primary"),
+                    "missing_evidence": _safe_list(policy_enforcement.get("missing_evidence")),
+                },
+            },
+            {
+                "node": "governance",
+                "status": governance.get("status"),
+                "summary": {
+                    "approval_state": governance.get("approval_state"),
+                    "approved_count": governance.get("approved_count"),
+                    "required_roles": governance.get("required_roles"),
+                    "missing_roles": governance.get("missing_roles"),
+                },
+            },
+            {
+                "node": "operator_readiness",
+                "status": operator_readiness.get("status"),
+                "summary": {
+                    "reasons": operator_readiness.get("reasons"),
+                },
+            },
+        ],
+    }
+
+
 def _derive_overall_trust_signal(
     *,
     summary: Mapping[str, Any],
@@ -451,10 +785,12 @@ def _derive_overall_trust_signal(
     runtime_observability: Mapping[str, Any],
 ) -> dict[str, Any]:
     weights = {
-        "evidence_integrity": 0.25,
-        "validation_signal": 0.4,
-        "policy_traceability": 0.15,
-        "operator_readiness": 0.2,
+        "evidence_integrity": 0.2,
+        "validation_signal": 0.32,
+        "policy_traceability": 0.1,
+        "operator_readiness": 0.13,
+        "policy_enforcement": 0.15,
+        "governance": 0.1,
     }
     weighted_total = 0.0
     breakdown: list[dict[str, Any]] = []
@@ -500,6 +836,14 @@ def _derive_overall_trust_signal(
         review_reasons.append("run_trace_events_missing")
     if quality_status not in {"passed", "accepted"}:
         review_reasons.append(f"latest_quality_status={quality_status}")
+    policy_enforcement = _safe_dict(components.get("policy_enforcement"))
+    policy_decision = str(policy_enforcement.get("decision") or "").strip()
+    if policy_decision and policy_decision != "approved":
+        review_reasons.append(f"policy_decision={policy_decision}")
+    governance = _safe_dict(components.get("governance"))
+    approval_state = str(governance.get("approval_state") or "").strip()
+    if approval_state and approval_state not in {"approved", "not_required"}:
+        review_reasons.append(f"approval_state={approval_state}")
 
     score = _clamp_score(weighted_total)
     if diagnostics and status != "completed":
@@ -509,7 +853,7 @@ def _derive_overall_trust_signal(
     status_band = _score_band(score)
     requires_human_review = bool(review_reasons) or score < 0.85 or status_band != "high"
 
-    explanation = "Autonomous approval-ready." if not requires_human_review else "Human review required because evidence or policy signals remain unresolved."
+    explanation = "Autonomous approval-ready." if not requires_human_review else "Human review required because evidence, policy, or governance signals remain unresolved."
     return {
         "score": round(score, 2),
         "status": status_band,
@@ -532,6 +876,7 @@ def build_trust_intelligence_packet(
     run_trace_payload, _ = _safe_load_json(artifacts_dir / "run_trace.json")
     run_metadata_payload, _ = _safe_load_json(artifacts_dir / "run_metadata.json")
     experiment_rows, _ = _safe_load_jsonl(artifacts_dir / "experiment_log.jsonl")
+    approval_rows, _ = _safe_load_jsonl(artifacts_dir / "trust_approvals.jsonl")
 
     artifact_refs = _collect_artifact_refs(run_path, summary)
     latest_quality = _derive_latest_quality(_safe_dict(report_payload), experiment_rows)
@@ -547,11 +892,27 @@ def build_trust_intelligence_packet(
     validation_signal = _derive_validation_signal(summary, latest_quality, experiment_rows)
     policy_traceability = _derive_policy_traceability_signal(summary)
     operator_readiness = _derive_operator_readiness_signal(summary, artifact_refs)
+    policy_enforcement = _derive_policy_enforcement_signal(
+        summary,
+        latest_quality,
+        artifact_refs,
+        _safe_dict(run_metadata_payload),
+    )
+    governance = _derive_governance_signal(policy_enforcement, approval_rows)
+    provenance_signal = _derive_provenance_signal(
+        artifact_refs,
+        _safe_dict(run_metadata_payload),
+        _safe_dict(run_trace_payload),
+        experiment_rows,
+        approval_rows,
+    )
     component_signals = {
         "evidence_integrity": evidence_integrity,
         "validation_signal": validation_signal,
         "policy_traceability": policy_traceability,
         "operator_readiness": operator_readiness,
+        "policy_enforcement": policy_enforcement,
+        "governance": governance,
     }
     overall = _derive_overall_trust_signal(
         summary=summary,
@@ -564,8 +925,15 @@ def build_trust_intelligence_packet(
     incident_routing = _safe_dict(summary.get("incident_routing"))
     top_guidance = _safe_list(operator_guidance.get("top"))
     primary_routing = _safe_dict(incident_routing.get("primary"))
+    explainability = _derive_explainability(
+        overall=overall,
+        validation_signal=validation_signal,
+        policy_enforcement=policy_enforcement,
+        governance=governance,
+        operator_readiness=operator_readiness,
+    )
 
-    return {
+    packet = {
         "schema_version": TRUST_INTELLIGENCE_SCHEMA_VERSION,
         "mode": "autonomous_v1_trust_intelligence",
         "generated_at": _utc_now(),
@@ -595,9 +963,18 @@ def build_trust_intelligence_packet(
             "validation_signal": validation_signal,
             "policy_traceability": policy_traceability,
             "operator_readiness": operator_readiness,
+            "policy_enforcement": policy_enforcement,
+            "governance": governance,
+            "provenance": {
+                "score": provenance_signal.get("score"),
+                "status": provenance_signal.get("status"),
+            },
         },
+        "policy": policy_enforcement,
+        "governance": governance,
         "latest_quality": latest_quality,
         "runtime_observability": runtime_observability,
+        "explainability": explainability,
         "decision_trace": {
             "latest_strategy": summary.get("latest_strategy"),
             "guard_decision": summary.get("guard_decision"),
@@ -611,6 +988,9 @@ def build_trust_intelligence_packet(
             "target_sla": primary_routing.get("target_sla") or "-",
             "escalation_class": primary_routing.get("escalation_class") or "-",
             "review_reasons": _safe_list(overall.get("review_reasons")),
+            "policy_decision": policy_enforcement.get("decision"),
+            "risk_tier": policy_enforcement.get("risk_tier"),
+            "approval_state": governance.get("approval_state"),
             "top_actions": [
                 {
                     "code": item.get("code"),
@@ -626,9 +1006,32 @@ def build_trust_intelligence_packet(
             "run_metadata": _safe_dict(run_metadata_payload),
             "run_trace_available": bool(run_trace_payload),
             "experiment_log_available": len(experiment_rows) > 0,
+            "approval_log_available": len(approval_rows) > 0,
+            "artifact_manifest": provenance_signal.get("artifact_manifest"),
+            "manifest_sha256": provenance_signal.get("manifest_sha256"),
+            "run_metadata_sha256": provenance_signal.get("run_metadata_sha256"),
+            "run_trace_sha256": provenance_signal.get("run_trace_sha256"),
+            "experiment_log_sha256": provenance_signal.get("experiment_log_sha256"),
+            "approval_log_sha256": provenance_signal.get("approval_log_sha256"),
         },
         "warnings": [str(item) for item in _safe_list(summary.get("warnings")) if item],
     }
+    attestation_payload = {
+        "schema_version": "autonomous_trust_attestation_v1",
+        "generated_at": packet.get("generated_at"),
+        "run_dir": packet.get("run_dir"),
+        "manifest_sha256": provenance_signal.get("manifest_sha256"),
+        "run_metadata_sha256": provenance_signal.get("run_metadata_sha256"),
+        "run_trace_sha256": provenance_signal.get("run_trace_sha256"),
+        "experiment_log_sha256": provenance_signal.get("experiment_log_sha256"),
+        "approval_log_sha256": provenance_signal.get("approval_log_sha256"),
+        "policy_decision": policy_enforcement.get("decision"),
+        "risk_tier": policy_enforcement.get("risk_tier"),
+        "approval_state": governance.get("approval_state"),
+    }
+    attestation_payload["packet_sha256"] = _sha256_bytes(_stable_json_bytes(packet))
+    packet["attestation"] = attestation_payload
+    return packet
 
 
 def build_xai_delivery_packet_from_trust(packet: Mapping[str, Any]) -> dict[str, Any]:
@@ -700,6 +1103,10 @@ def build_trust_summary(packet: Mapping[str, Any]) -> dict[str, Any]:
     latest_quality = _safe_dict(packet.get("latest_quality"))
     operator_next = _safe_dict(packet.get("operator_next"))
     runtime_observability = _safe_dict(packet.get("runtime_observability"))
+    policy = _safe_dict(packet.get("policy"))
+    governance = _safe_dict(packet.get("governance"))
+    explainability = _safe_dict(packet.get("explainability"))
+    attestation = _safe_dict(packet.get("attestation"))
     review_reasons = _safe_list(overall.get("review_reasons"))
     quality_status = str(latest_quality.get("status") or "unknown")
     residual_risk_level = "low"
@@ -729,6 +1136,17 @@ def build_trust_summary(packet: Mapping[str, Any]) -> dict[str, Any]:
         "trust_explanation": overall.get("explanation"),
         "residual_risk_level": residual_risk_level,
         "residual_risk_summary": residual_risk_summary,
+        "risk_tier": policy.get("risk_tier"),
+        "policy_decision": policy.get("decision"),
+        "policy_change_surface": _safe_dict(policy.get("change_surface")).get("primary"),
+        "policy_missing_evidence": _safe_list(policy.get("missing_evidence")),
+        "approval_state": governance.get("approval_state"),
+        "approval_required_roles": _safe_list(governance.get("required_roles")),
+        "approval_missing_roles": _safe_list(governance.get("missing_roles")),
+        "approved_count": governance.get("approved_count"),
+        "min_approvals": governance.get("min_approvals"),
+        "explainability_narrative": explainability.get("narrative"),
+        "attestation_packet_sha256": attestation.get("packet_sha256"),
         "latest_quality_status": latest_quality.get("status"),
         "latest_quality_score": latest_quality.get("composite_score"),
         "incident_owner_team": operator_next.get("owner_team"),
@@ -753,6 +1171,10 @@ def render_trust_intelligence_packet(
     latest_quality = _safe_dict(packet.get("latest_quality"))
     operator_next = _safe_dict(packet.get("operator_next"))
     decision_trace = _safe_dict(packet.get("decision_trace"))
+    policy = _safe_dict(packet.get("policy"))
+    governance = _safe_dict(packet.get("governance"))
+    explainability = _safe_dict(packet.get("explainability"))
+    attestation = _safe_dict(packet.get("attestation"))
     guidance = _safe_list(operator_next.get("top_actions"))
 
     lines = [
@@ -763,13 +1185,18 @@ def render_trust_intelligence_packet(
         f"- trust_score: {overall.get('score', 0)}",
         f"- requires_human_review: {overall.get('requires_human_review', True)}",
         f"- trust_explanation: {overall.get('explanation', '-')}",
+        f"- explainability_narrative: {explainability.get('narrative', '-')}",
         f"- latest_quality_source: {latest_quality.get('source', 'unavailable')}",
         f"- latest_quality_status: {latest_quality.get('status', 'unknown')}",
         f"- latest_quality_score: {latest_quality.get('composite_score', '-')}",
+        f"- risk_tier: {policy.get('risk_tier', '-')}",
+        f"- policy_decision: {policy.get('decision', '-')}",
+        f"- approval_state: {governance.get('approval_state', '-')}",
         f"- incident_owner_team: {operator_next.get('owner_team', '-')}",
         f"- incident_severity: {operator_next.get('severity', '-')}",
         f"- incident_target_sla: {operator_next.get('target_sla', '-')}",
         f"- incident_escalation_class: {operator_next.get('escalation_class', '-')}",
+        f"- attestation_packet_sha256: {attestation.get('packet_sha256', '-')}",
     ]
 
     for key in (
@@ -777,6 +1204,8 @@ def render_trust_intelligence_packet(
         "validation_signal",
         "policy_traceability",
         "operator_readiness",
+        "policy_enforcement",
+        "governance",
     ):
         signal = _safe_dict(trust_signals.get(key))
         lines.append(
@@ -835,9 +1264,14 @@ def persist_trust_intelligence_artifacts(
 
     trust_json = artifacts_dir / Path(TRUST_INTELLIGENCE_JSON).name
     trust_md = artifacts_dir / Path(TRUST_INTELLIGENCE_MD).name
+    trust_attestation = artifacts_dir / Path(TRUST_ATTESTATION_JSON).name
     trust_json.write_text(json_dumps(dict(packet)), encoding="utf-8")
     trust_md.write_text(
         render_trust_intelligence_packet(packet, output_format="markdown"),
+        encoding="utf-8",
+    )
+    trust_attestation.write_text(
+        json_dumps(_safe_dict(packet.get("attestation"))),
         encoding="utf-8",
     )
 
@@ -856,6 +1290,7 @@ def persist_trust_intelligence_artifacts(
     return {
         "trust_json": str(trust_json),
         "trust_markdown": str(trust_md),
+        "trust_attestation": str(trust_attestation),
         "xai_json": str(xai_json),
         "xai_markdown": str(xai_md),
     }

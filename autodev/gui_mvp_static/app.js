@@ -52,6 +52,19 @@ const state = {
   trustTrendPayload: null,
   trustTrendError: '',
   trustTrendLoading: false,
+  trustAnalyticsPayload: null,
+  trustAnalyticsError: '',
+  trustAnalyticsLoading: false,
+  trustModelEvalPayload: null,
+  trustModelEvalError: '',
+  trustModelEvalLoading: false,
+  trustInboxPayload: null,
+  trustInboxError: '',
+  trustInboxLoading: false,
+  trustApprovalsPayload: null,
+  trustApprovalsError: '',
+  trustApprovalsLoading: false,
+  trustApprovalStatus: '',
   deprecationNoticePayload: null,
   deprecationNoticeError: '',
   deprecationNoticeLoading: false,
@@ -671,6 +684,106 @@ function buildMockTrustTrendPayload() {
   };
 }
 
+function buildMockTrustAnalyticsPayload() {
+  return {
+    empty: false,
+    summary: {
+      runs_considered: 4,
+      avg_trust_score: 0.74,
+      review_required_count: 2,
+      blocked_count: 1,
+      model_count: 2,
+    },
+    risk_tier_counts: { high: 1, moderate: 2, low: 1 },
+    policy_decision_counts: { blocked: 1, review_required: 1, approved: 2 },
+    approval_state_counts: { pending: 1, approved: 2, not_required: 1 },
+    review_reason_counts: [
+      { name: 'policy_decision=blocked', count: 1 },
+      { name: 'approval_state=pending', count: 1 },
+    ],
+    model_counts: [
+      { name: 'mock-model', count: 2 },
+      { name: 'mock-model-v2', count: 2 },
+    ],
+    runs: [],
+    warnings: [],
+  };
+}
+
+function buildMockTrustModelEvalPayload() {
+  return {
+    empty: false,
+    models: [
+      {
+        model: 'mock-model',
+        run_count: 2,
+        avg_trust_score: 0.61,
+        review_required_count: 2,
+        blocked_count: 1,
+        high_risk_count: 1,
+        latest_run_id: 'mock-run-001',
+      },
+      {
+        model: 'mock-model-v2',
+        run_count: 2,
+        avg_trust_score: 0.88,
+        review_required_count: 0,
+        blocked_count: 0,
+        high_risk_count: 0,
+        latest_run_id: 'mock-run-002',
+      },
+    ],
+    warnings: [],
+  };
+}
+
+function buildMockTrustInboxPayload() {
+  return {
+    empty: false,
+    summary: {
+      items_total: 1,
+      blocked_count: 1,
+      pending_approval_count: 1,
+    },
+    items: [
+      {
+        run_id: 'mock-run-001',
+        model: 'mock-model',
+        trust_status: 'moderate',
+        trust_score: 0.58,
+        risk_tier: 'high',
+        policy_decision: 'blocked',
+        approval_state: 'pending',
+        summary: 'Human review is required because the run is high-risk and policy evidence remains unresolved.',
+        human_review_reasons: ['policy_decision=blocked', 'approval_state=pending'],
+      },
+    ],
+    warnings: [],
+  };
+}
+
+function buildMockTrustApprovalsPayload(runId = 'mock-run-001') {
+  return {
+    run_id: runId,
+    governance: {
+      approval_state: runId === 'mock-run-001' ? 'pending' : 'approved',
+      approved_count: runId === 'mock-run-001' ? 1 : 1,
+      min_approvals: runId === 'mock-run-001' ? 2 : 1,
+      required_roles: runId === 'mock-run-001' ? ['operator', 'developer'] : ['operator'],
+      missing_roles: runId === 'mock-run-001' ? ['developer'] : [],
+    },
+    approvals: [
+      {
+        recorded_at: new Date(Date.now() - 1800_000).toISOString(),
+        reviewer: 'alice',
+        role: 'operator',
+        decision: 'approve',
+        note: 'Validation looks stable enough for the next handoff.',
+      },
+    ],
+  };
+}
+
 function buildMockDetailTrust(detail) {
   const runId = String(detail?.run_id || '');
   if (runId === 'mock-run-001') {
@@ -680,6 +793,21 @@ function buildMockDetailTrust(detail) {
         trust_status: 'moderate',
         trust_score: 0.58,
         requires_human_review: true,
+        human_review_reasons: ['policy_decision=blocked', 'approval_state=pending'],
+        trust_explanation: 'Validation quality is below target and policy evidence remains incomplete.',
+        residual_risk_level: 'high',
+        residual_risk_summary: 'High residual risk remains because policy blocked closure and approval coverage is incomplete.',
+        risk_tier: 'high',
+        policy_decision: 'blocked',
+        policy_change_surface: 'tests',
+        policy_missing_evidence: ['incident_packet'],
+        approval_state: 'pending',
+        approval_required_roles: ['operator', 'developer'],
+        approval_missing_roles: ['developer'],
+        approved_count: 1,
+        min_approvals: 2,
+        explainability_narrative: 'Human review is required because the run is high-risk, policy decision is blocked, governance is pending, and evidence remains incomplete.',
+        attestation_packet_sha256: 'mock-attestation-sha-001',
         latest_quality_status: 'advisory_warning',
         latest_quality_score: 42,
         incident_owner_team: 'Feature Engineering',
@@ -690,6 +818,24 @@ function buildMockDetailTrust(detail) {
         experiment_entry_count: 3,
       },
       trust_packet: {
+        policy: {
+          risk_tier: 'high',
+          decision: 'blocked',
+          change_surface: { primary: 'tests', categories: ['tests'] },
+          missing_evidence: ['incident_packet'],
+        },
+        governance: {
+          approval_state: 'pending',
+          approved_count: 1,
+          min_approvals: 2,
+          required_roles: ['operator', 'developer'],
+          missing_roles: ['developer'],
+          approvals: buildMockTrustApprovalsPayload(runId).approvals,
+        },
+        explainability: {
+          narrative: 'Human review is required because the run is high-risk, policy decision is blocked, governance is pending, and evidence remains incomplete.',
+        },
+        attestation: { packet_sha256: 'mock-attestation-sha-001' },
         operator_next: {
           top_actions: [
             {
@@ -705,29 +851,58 @@ function buildMockDetailTrust(detail) {
   }
 
   return {
-    trust_summary: {
-      status: 'completed',
-      trust_status: 'high',
-      trust_score: 0.93,
-      requires_human_review: false,
+      trust_summary: {
+        status: 'completed',
+        trust_status: 'high',
+        trust_score: 0.93,
+        requires_human_review: false,
       human_review_reasons: [],
       trust_explanation: 'Evidence is complete and the latest validation signals are stable.',
-      residual_risk_level: 'low',
-      residual_risk_summary: 'No material residual risk detected from current trust signals.',
-      latest_quality_status: 'passed',
-      latest_quality_score: 96,
-      incident_owner_team: 'Autonomy On-Call',
-      incident_severity: 'medium',
-      incident_target_sla: '12h',
+        residual_risk_level: 'low',
+        residual_risk_summary: 'No material residual risk detected from current trust signals.',
+        risk_tier: 'low',
+        policy_decision: 'approved',
+        policy_change_surface: 'general',
+        policy_missing_evidence: [],
+        approval_state: 'not_required',
+        approval_required_roles: [],
+        approval_missing_roles: [],
+        approved_count: 0,
+        min_approvals: 0,
+        explainability_narrative: 'Trust is approval-ready because validation is passed, policy decision is approved, and governance state is not_required.',
+        attestation_packet_sha256: 'mock-attestation-sha-002',
+        latest_quality_status: 'passed',
+        latest_quality_score: 96,
+        incident_owner_team: 'Autonomy On-Call',
+        incident_severity: 'medium',
+        incident_target_sla: '12h',
       event_count: 8,
       llm_call_count: 4,
       experiment_entry_count: 2,
     },
-    trust_packet: {
-      operator_next: {
-        top_actions: [
-          {
-            code: 'autonomous.unmapped_or_missing_code',
+      trust_packet: {
+        policy: {
+          risk_tier: 'low',
+          decision: 'approved',
+          change_surface: { primary: 'general', categories: ['general'] },
+          missing_evidence: [],
+        },
+        governance: {
+          approval_state: 'not_required',
+          approved_count: 0,
+          min_approvals: 0,
+          required_roles: [],
+          missing_roles: [],
+          approvals: [],
+        },
+        explainability: {
+          narrative: 'Trust is approval-ready because validation is passed, policy decision is approved, and governance state is not_required.',
+        },
+        attestation: { packet_sha256: 'mock-attestation-sha-002' },
+        operator_next: {
+          top_actions: [
+            {
+              code: 'autonomous.unmapped_or_missing_code',
             title: 'Routine review',
             actions: ['Review final artifacts and approve closure.'],
           },
@@ -1171,6 +1346,349 @@ async function refreshTrustTrendWidget({ silent = false } = {}) {
   } finally {
     state.trustTrendLoading = false;
     renderTrustTrendWidget();
+  }
+}
+
+function renderTrustOpsWidget() {
+  const cardsNode = el('trustOpsCards');
+  const metaNode = el('trustOpsMeta');
+  const emptyNode = el('trustOpsEmpty');
+  const errorNode = el('trustOpsError');
+  const historyNode = el('trustApprovalHistory');
+  const statusNode = el('trustApprovalStatus');
+  if (!cardsNode || !metaNode || !emptyNode || !errorNode || !historyNode || !statusNode) return;
+
+  cardsNode.innerHTML = '';
+  historyNode.innerHTML = '';
+  errorNode.classList.add('hidden');
+  errorNode.textContent = '';
+  statusNode.textContent = state.trustApprovalStatus || '';
+
+  if (state.detailLoading) {
+    cardsNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = 'Loading trust policy and governance…';
+    metaNode.textContent = '';
+    return;
+  }
+
+  if (state.trustApprovalsError) {
+    cardsNode.classList.add('hidden');
+    emptyNode.classList.add('hidden');
+    errorNode.classList.remove('hidden');
+    errorNode.textContent = state.trustApprovalsError;
+    metaNode.textContent = '';
+    return;
+  }
+
+  const summary = state.detail?.trust_summary || state.trustPayload?.summary || null;
+  const packet = state.detail?.trust_packet || state.trustPayload?.packet || null;
+  const approvalsPayload = state.trustApprovalsPayload || {};
+  const governance = packet?.governance || approvalsPayload?.governance || {};
+  if (!summary) {
+    cardsNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = 'Trust policy data is not available yet.';
+    metaNode.textContent = '';
+    return;
+  }
+
+  const cardDefs = [
+    ['Risk Tier', summary.risk_tier || '-'],
+    ['Policy Decision', summary.policy_decision || '-'],
+    ['Change Surface', summary.policy_change_surface || '-'],
+    ['Approval State', summary.approval_state || '-'],
+    ['Approvals', `${summary.approved_count ?? 0}/${summary.min_approvals ?? 0}`],
+    ['Attestation', summary.attestation_packet_sha256 ? String(summary.attestation_packet_sha256).slice(0, 12) : '-'],
+  ];
+  cardDefs.forEach(([label, value]) => {
+    const article = document.createElement('article');
+    article.className = 'scorecard-card tone-neutral';
+    article.innerHTML = `<div class="value">${escapeHtml(String(value))}</div><div class="label">${escapeHtml(label)}</div>`;
+    cardsNode.appendChild(article);
+  });
+
+  const metaParts = [];
+  if (state.selectedRunId) metaParts.push(`run=${state.selectedRunId}`);
+  if (Array.isArray(summary.policy_missing_evidence) && summary.policy_missing_evidence.length) {
+    metaParts.push(`missing=${summary.policy_missing_evidence.join(',')}`);
+  }
+  if (Array.isArray(summary.approval_missing_roles) && summary.approval_missing_roles.length) {
+    metaParts.push(`roles=${summary.approval_missing_roles.join(',')}`);
+  }
+  metaNode.textContent = metaParts.join(' • ');
+
+  const approvals = Array.isArray(governance?.approvals)
+    ? governance.approvals
+    : (Array.isArray(approvalsPayload?.approvals) ? approvalsPayload.approvals : []);
+  if (approvals.length) {
+    approvals.slice(0, 5).forEach((row) => {
+      const item = document.createElement('article');
+      item.className = 'simple-list-item';
+      item.innerHTML = `
+        <div class="title">${escapeHtml(String(row?.reviewer || '-'))} • ${escapeHtml(String(row?.decision || '-'))}</div>
+        <div class="meta">${escapeHtml(String(row?.role || '-'))} • ${escapeHtml(formatTime(row?.recorded_at || ''))}</div>
+        <div class="body">${escapeHtml(String(row?.note || ''))}</div>
+      `;
+      historyNode.appendChild(item);
+    });
+    historyNode.classList.remove('hidden');
+  } else {
+    historyNode.innerHTML = '<div class="empty">No recorded approvals yet.</div>';
+    historyNode.classList.remove('hidden');
+  }
+
+  emptyNode.classList.add('hidden');
+  cardsNode.classList.remove('hidden');
+}
+
+function renderTrustAnalyticsWidget() {
+  const cardsNode = el('trustAnalyticsCards');
+  const metaNode = el('trustAnalyticsMeta');
+  const reasonsNode = el('trustAnalyticsReasons');
+  const emptyNode = el('trustAnalyticsEmpty');
+  const errorNode = el('trustAnalyticsError');
+  if (!cardsNode || !metaNode || !reasonsNode || !emptyNode || !errorNode) return;
+
+  cardsNode.innerHTML = '';
+  reasonsNode.innerHTML = '';
+  errorNode.classList.add('hidden');
+  errorNode.textContent = '';
+
+  if (state.trustAnalyticsLoading) {
+    cardsNode.classList.add('hidden');
+    reasonsNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = 'Loading trust analytics…';
+    metaNode.textContent = '';
+    return;
+  }
+
+  if (state.trustAnalyticsError) {
+    cardsNode.classList.add('hidden');
+    reasonsNode.classList.add('hidden');
+    emptyNode.classList.add('hidden');
+    errorNode.classList.remove('hidden');
+    errorNode.textContent = state.trustAnalyticsError;
+    metaNode.textContent = '';
+    return;
+  }
+
+  const payload = state.trustAnalyticsPayload;
+  const summary = payload?.summary || null;
+  if (!payload || payload.empty || !summary) {
+    cardsNode.classList.add('hidden');
+    reasonsNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = payload?.message || 'No trust analytics data available yet.';
+    metaNode.textContent = '';
+    return;
+  }
+
+  [
+    ['Avg Trust', summary.avg_trust_score ?? '-'],
+    ['Review Required', summary.review_required_count ?? 0],
+    ['Blocked', summary.blocked_count ?? 0],
+    ['Models', summary.model_count ?? 0],
+  ].forEach(([label, value]) => {
+    const article = document.createElement('article');
+    article.className = 'scorecard-card tone-neutral';
+    article.innerHTML = `<div class="value">${escapeHtml(String(value))}</div><div class="label">${escapeHtml(String(label))}</div>`;
+    cardsNode.appendChild(article);
+  });
+
+  const reasons = Array.isArray(payload.review_reason_counts) ? payload.review_reason_counts : [];
+  reasons.slice(0, 5).forEach((row) => {
+    const item = document.createElement('article');
+    item.className = 'simple-list-item';
+    item.innerHTML = `<div class="title">${escapeHtml(String(row?.name || '-'))}</div><div class="meta">count=${escapeHtml(String(row?.count ?? 0))}</div>`;
+    reasonsNode.appendChild(item);
+  });
+
+  metaNode.textContent = `window=${payload?.window?.applied || '-'} • risk=${Object.keys(payload?.risk_tier_counts || {}).length} tiers`;
+  emptyNode.classList.add('hidden');
+  cardsNode.classList.remove('hidden');
+  reasonsNode.classList.toggle('hidden', reasons.length === 0);
+  if (reasons.length) reasonsNode.classList.remove('hidden');
+}
+
+function renderTrustModelEvalWidget() {
+  const listNode = el('trustModelEvalList');
+  const metaNode = el('trustModelEvalMeta');
+  const emptyNode = el('trustModelEvalEmpty');
+  const errorNode = el('trustModelEvalError');
+  if (!listNode || !metaNode || !emptyNode || !errorNode) return;
+
+  listNode.innerHTML = '';
+  errorNode.classList.add('hidden');
+  errorNode.textContent = '';
+
+  if (state.trustModelEvalLoading) {
+    listNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = 'Loading model evaluation…';
+    metaNode.textContent = '';
+    return;
+  }
+  if (state.trustModelEvalError) {
+    listNode.classList.add('hidden');
+    emptyNode.classList.add('hidden');
+    errorNode.classList.remove('hidden');
+    errorNode.textContent = state.trustModelEvalError;
+    metaNode.textContent = '';
+    return;
+  }
+  const payload = state.trustModelEvalPayload;
+  const rows = Array.isArray(payload?.models) ? payload.models : [];
+  if (!rows.length) {
+    listNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = payload?.message || 'No model evaluation data available yet.';
+    metaNode.textContent = '';
+    return;
+  }
+  rows.forEach((row) => {
+    const item = document.createElement('article');
+    item.className = 'simple-list-item';
+    item.innerHTML = `
+      <div class="title">${escapeHtml(String(row?.model || '-'))}</div>
+      <div class="meta">runs=${escapeHtml(String(row?.run_count ?? 0))} • avg_trust=${escapeHtml(String(row?.avg_trust_score ?? '-'))}</div>
+      <div class="body">review_required=${escapeHtml(String(row?.review_required_count ?? 0))} • blocked=${escapeHtml(String(row?.blocked_count ?? 0))} • high_risk=${escapeHtml(String(row?.high_risk_count ?? 0))}</div>
+    `;
+    listNode.appendChild(item);
+  });
+  metaNode.textContent = `window=${payload?.window?.applied || '-'} • models=${rows.length}`;
+  emptyNode.classList.add('hidden');
+  listNode.classList.remove('hidden');
+}
+
+function renderTrustInboxWidget() {
+  const listNode = el('trustInboxList');
+  const metaNode = el('trustInboxMeta');
+  const emptyNode = el('trustInboxEmpty');
+  const errorNode = el('trustInboxError');
+  if (!listNode || !metaNode || !emptyNode || !errorNode) return;
+
+  listNode.innerHTML = '';
+  errorNode.classList.add('hidden');
+  errorNode.textContent = '';
+
+  if (state.trustInboxLoading) {
+    listNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = 'Loading trust inbox…';
+    metaNode.textContent = '';
+    return;
+  }
+  if (state.trustInboxError) {
+    listNode.classList.add('hidden');
+    emptyNode.classList.add('hidden');
+    errorNode.classList.remove('hidden');
+    errorNode.textContent = state.trustInboxError;
+    metaNode.textContent = '';
+    return;
+  }
+  const payload = state.trustInboxPayload;
+  const rows = Array.isArray(payload?.items) ? payload.items : [];
+  if (!rows.length) {
+    listNode.classList.add('hidden');
+    emptyNode.classList.remove('hidden');
+    emptyNode.textContent = payload?.message || 'No trust inbox items.';
+    metaNode.textContent = '';
+    return;
+  }
+  rows.forEach((row) => {
+    const item = document.createElement('article');
+    item.className = 'simple-list-item';
+    item.innerHTML = `
+      <div class="title">${escapeHtml(String(row?.run_id || '-'))} • ${escapeHtml(String(row?.policy_decision || '-'))}</div>
+      <div class="meta">risk=${escapeHtml(String(row?.risk_tier || '-'))} • approval=${escapeHtml(String(row?.approval_state || '-'))} • trust=${escapeHtml(String(row?.trust_score ?? '-'))}</div>
+      <div class="body">${escapeHtml(String(row?.summary || ''))}</div>
+    `;
+    listNode.appendChild(item);
+  });
+  metaNode.textContent = `items=${payload?.summary?.items_total || rows.length} • blocked=${payload?.summary?.blocked_count || 0}`;
+  emptyNode.classList.add('hidden');
+  listNode.classList.remove('hidden');
+}
+
+async function refreshTrustAnalyticsWidget({ silent = false } = {}) {
+  state.trustAnalyticsLoading = true;
+  if (!silent) state.trustAnalyticsError = '';
+  renderTrustAnalyticsWidget();
+  try {
+    state.trustAnalyticsPayload = state.useMock
+      ? buildMockTrustAnalyticsPayload()
+      : await fetchJson('/api/autonomous/trust/analytics?window=10');
+    state.trustAnalyticsError = '';
+  } catch (err) {
+    state.trustAnalyticsPayload = null;
+    state.trustAnalyticsError = `Trust analytics unavailable: ${err.message || 'request failed'}`;
+  } finally {
+    state.trustAnalyticsLoading = false;
+    renderTrustAnalyticsWidget();
+  }
+}
+
+async function refreshTrustModelEvalWidget({ silent = false } = {}) {
+  state.trustModelEvalLoading = true;
+  if (!silent) state.trustModelEvalError = '';
+  renderTrustModelEvalWidget();
+  try {
+    state.trustModelEvalPayload = state.useMock
+      ? buildMockTrustModelEvalPayload()
+      : await fetchJson('/api/autonomous/trust/model-eval?window=10');
+    state.trustModelEvalError = '';
+  } catch (err) {
+    state.trustModelEvalPayload = null;
+    state.trustModelEvalError = `Trust model evaluation unavailable: ${err.message || 'request failed'}`;
+  } finally {
+    state.trustModelEvalLoading = false;
+    renderTrustModelEvalWidget();
+  }
+}
+
+async function refreshTrustInboxWidget({ silent = false } = {}) {
+  state.trustInboxLoading = true;
+  if (!silent) state.trustInboxError = '';
+  renderTrustInboxWidget();
+  try {
+    state.trustInboxPayload = state.useMock
+      ? buildMockTrustInboxPayload()
+      : await fetchJson('/api/autonomous/trust/inbox?window=10');
+    state.trustInboxError = '';
+  } catch (err) {
+    state.trustInboxPayload = null;
+    state.trustInboxError = `Trust inbox unavailable: ${err.message || 'request failed'}`;
+  } finally {
+    state.trustInboxLoading = false;
+    renderTrustInboxWidget();
+  }
+}
+
+async function refreshTrustApprovalsWidget({ silent = false } = {}) {
+  const runId = state.selectedRunId;
+  if (!runId) {
+    state.trustApprovalsPayload = null;
+    state.trustApprovalsError = '';
+    state.trustApprovalsLoading = false;
+    renderTrustOpsWidget();
+    return;
+  }
+  state.trustApprovalsLoading = true;
+  if (!silent) state.trustApprovalsError = '';
+  renderTrustOpsWidget();
+  try {
+    state.trustApprovalsPayload = state.useMock
+      ? buildMockTrustApprovalsPayload(runId)
+      : await fetchJson(`/api/autonomous/trust/approvals?run_id=${encodeURIComponent(runId)}`);
+    state.trustApprovalsError = '';
+  } catch (err) {
+    state.trustApprovalsPayload = null;
+    state.trustApprovalsError = `Trust approvals unavailable: ${err.message || 'request failed'}`;
+  } finally {
+    state.trustApprovalsLoading = false;
+    renderTrustOpsWidget();
   }
 }
 
@@ -4893,6 +5411,10 @@ function setupPolling() {
   state.pollTimer = setInterval(async () => {
     await refreshCurrentRun({ silent: true });
     await refreshDeprecationNotice({ silent: true });
+    await refreshTrustAnalyticsWidget({ silent: true });
+    await refreshTrustModelEvalWidget({ silent: true });
+    await refreshTrustInboxWidget({ silent: true });
+    await refreshTrustApprovalsWidget({ silent: true });
     if (state.selectedProcessDetail) {
       setProcessStaleIndicator(state.selectedProcessDetail, state.selectedProcessHistory);
     }
@@ -4953,6 +5475,10 @@ async function loadRuns() {
     await refreshTrustWidget({ silent: true });
     await refreshApiDocsCatalog({ silent: true });
     await refreshTrustTrendWidget({ silent: true });
+    await refreshTrustAnalyticsWidget({ silent: true });
+    await refreshTrustModelEvalWidget({ silent: true });
+    await refreshTrustInboxWidget({ silent: true });
+    await refreshTrustApprovalsWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     await refreshDeprecationNotice({ silent: true });
@@ -4988,6 +5514,10 @@ async function loadRuns() {
     await refreshTrustWidget({ silent: true });
     await refreshApiDocsCatalog({ silent: true });
     await refreshTrustTrendWidget({ silent: true });
+    await refreshTrustAnalyticsWidget({ silent: true });
+    await refreshTrustModelEvalWidget({ silent: true });
+    await refreshTrustInboxWidget({ silent: true });
+    await refreshTrustApprovalsWidget({ silent: true });
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     await refreshDeprecationNotice({ silent: true });
@@ -5027,6 +5557,22 @@ async function loadRuns() {
     state.trustTrendError = 'Trust trends unavailable: unable to load runs list.';
     state.trustTrendLoading = false;
     renderTrustTrendWidget();
+    state.trustAnalyticsPayload = null;
+    state.trustAnalyticsError = 'Trust analytics unavailable: unable to load runs list.';
+    state.trustAnalyticsLoading = false;
+    renderTrustAnalyticsWidget();
+    state.trustModelEvalPayload = null;
+    state.trustModelEvalError = 'Trust model evaluation unavailable: unable to load runs list.';
+    state.trustModelEvalLoading = false;
+    renderTrustModelEvalWidget();
+    state.trustInboxPayload = null;
+    state.trustInboxError = 'Trust inbox unavailable: unable to load runs list.';
+    state.trustInboxLoading = false;
+    renderTrustInboxWidget();
+    state.trustApprovalsPayload = null;
+    state.trustApprovalsError = 'Trust approvals unavailable: unable to load runs list.';
+    state.trustApprovalsLoading = false;
+    renderTrustOpsWidget();
     await loadProcesses({ silent: true });
     await refreshHealthBanner();
     setupPolling();
@@ -5047,6 +5593,7 @@ function renderDetail(detail) {
   renderValidationPanels(detail);
   renderArtifactViewer();
   renderTrustWidget();
+  renderTrustOpsWidget();
   renderOverviewState();
   renderProcessTabState();
   renderHealthBanner({
@@ -5081,10 +5628,12 @@ async function selectRun(runId, options = { rerenderList: true }) {
     state.detailLoading = false;
     state.detailError = '';
     renderDetail(detail);
+    await refreshTrustApprovalsWidget({ silent: true });
   } catch (err) {
     state.detailLoading = false;
     state.detailError = String(err?.message || 'request failed');
     renderDetail({ run_id: runId, status: 'unknown', phase_timeline: [], tasks: [], blockers: [] });
+    await refreshTrustApprovalsWidget({ silent: true });
     el('statusLine').textContent = `Failed to load detail for ${runId}: ${err.message}`;
   }
 }
@@ -6086,6 +6635,41 @@ function initApiNoticeControls() {
   });
 }
 
+function initTrustOpsControls() {
+  const reviewerInput = el('trustApprovalReviewer');
+  const noteInput = el('trustApprovalNote');
+  const decisionSelect = el('trustApprovalDecision');
+  const recordBtn = el('trustApprovalRecordBtn');
+  if (!decisionSelect || !recordBtn) return;
+
+  recordBtn.addEventListener('click', async () => {
+    if (!state.selectedRunId) {
+      state.trustApprovalStatus = 'Select a run first.';
+      renderTrustOpsWidget();
+      return;
+    }
+    try {
+      state.trustApprovalStatus = 'Recording trust approval…';
+      renderTrustOpsWidget();
+      const payload = await postJson('/api/autonomous/trust/approvals', {
+        run_id: state.selectedRunId,
+        decision: decisionSelect.value || 'approve',
+        reviewer: reviewerInput?.value || '',
+        note: noteInput?.value || '',
+      });
+      state.trustApprovalStatus = `Recorded ${payload?.recorded?.decision || decisionSelect.value} for ${state.selectedRunId}.`;
+      if (noteInput) noteInput.value = '';
+      await refreshTrustApprovalsWidget({ silent: true });
+      if (state.selectedRunId) {
+        await selectRun(state.selectedRunId, { rerenderList: false });
+      }
+    } catch (err) {
+      state.trustApprovalStatus = `Trust approval failed: ${err.message || 'request failed'}`;
+      renderTrustOpsWidget();
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Experiment Log tab
 // ---------------------------------------------------------------------------
@@ -6201,6 +6785,11 @@ initCompareControls();
 initTrendControls();
 initLiveUpdateControls();
 initApiNoticeControls();
+initTrustOpsControls();
 initExperimentLogControls();
 renderScorecardWidget();
+renderTrustOpsWidget();
+renderTrustAnalyticsWidget();
+renderTrustModelEvalWidget();
+renderTrustInboxWidget();
 loadRuns();
