@@ -811,7 +811,11 @@ function buildMockTrustWorkflowPayload(runId = 'mock-run-001') {
       current_owner: runId === 'mock-run-001' ? 'alice' : '',
       due_at: runId === 'mock-run-001' ? new Date(Date.now() + 4 * 3600_000).toISOString() : '',
       escalation_state: runId === 'mock-run-001' ? 'watch' : 'clear',
+      escalation_reason: runId === 'mock-run-001' ? 'Waiting on developer review before release handoff.' : '',
       next_approvers: runId === 'mock-run-001' ? [{ name: 'bob', role: 'developer' }] : [],
+      last_action: runId === 'mock-run-001'
+        ? { action: 'extend_due', actor: 'alice', timestamp: new Date(Date.now() - 1800_000).toISOString() }
+        : {},
     },
   };
 }
@@ -891,6 +895,12 @@ function buildMockDetailTrust(detail) {
         approval_missing_roles: ['developer'],
         approved_count: 1,
         min_approvals: 2,
+        approval_due_at: buildMockTrustWorkflowPayload(runId).governance.due_at,
+        approval_escalation_state: buildMockTrustWorkflowPayload(runId).governance.escalation_state,
+        approval_escalation_reason: buildMockTrustWorkflowPayload(runId).governance.escalation_reason,
+        approval_current_owner: buildMockTrustWorkflowPayload(runId).governance.current_owner,
+        approval_next_approvers: buildMockTrustWorkflowPayload(runId).governance.next_approvers,
+        approval_last_action: buildMockTrustWorkflowPayload(runId).governance.last_action,
         explainability_narrative: 'Human review is required because the run is high-risk, policy decision is blocked, governance is pending, and evidence remains incomplete.',
         attestation_packet_sha256: 'mock-attestation-sha-001',
         latest_quality_status: 'advisory_warning',
@@ -954,6 +964,12 @@ function buildMockDetailTrust(detail) {
         approval_missing_roles: [],
         approved_count: 0,
         min_approvals: 0,
+        approval_due_at: '',
+        approval_escalation_state: 'clear',
+        approval_escalation_reason: '',
+        approval_current_owner: '',
+        approval_next_approvers: [],
+        approval_last_action: {},
         explainability_narrative: 'Trust is approval-ready because validation is passed, policy decision is approved, and governance state is not_required.',
         attestation_packet_sha256: 'mock-attestation-sha-002',
         latest_quality_status: 'passed',
@@ -1510,6 +1526,8 @@ function renderTrustOpsWidget() {
     metaParts.push(`roles=${summary.approval_missing_roles.join(',')}`);
   }
   if (summary.approval_due_at) metaParts.push(`due=${summary.approval_due_at}`);
+  if (summary.approval_escalation_reason) metaParts.push(`reason=${summary.approval_escalation_reason}`);
+  if (summary.approval_last_action?.action) metaParts.push(`last_action=${summary.approval_last_action.action}`);
   metaNode.textContent = metaParts.join(' • ');
 
   if (assigneesInput && document.activeElement !== assigneesInput) {
@@ -6967,10 +6985,39 @@ function initTrustOpsControls() {
   const currentOwnerInput = el('trustWorkflowCurrentOwner');
   const escalationTargetsInput = el('trustWorkflowEscalationTargets');
   const saveWorkflowBtn = el('trustWorkflowSaveBtn');
+  const escalateWorkflowBtn = el('trustWorkflowEscalateBtn');
+  const clearEscalationBtn = el('trustWorkflowClearEscalationBtn');
+  const extendDueBtn = el('trustWorkflowExtendDueBtn');
   const exportInboxJsonBtn = el('trustInboxExportJsonBtn');
   const exportInboxMdBtn = el('trustInboxExportMdBtn');
   const sendInboxDryRunBtn = el('trustInboxSendDryRunBtn');
   if (!decisionSelect || !recordBtn) return;
+
+  async function applyWorkflowAction(action, extra = {}) {
+    if (!state.selectedRunId) {
+      state.trustApprovalStatus = 'Select a run first.';
+      renderTrustOpsWidget();
+      return;
+    }
+    try {
+      state.trustApprovalStatus = `Applying workflow action: ${action}…`;
+      renderTrustOpsWidget();
+      const payload = await postJson('/api/autonomous/trust/workflow/actions', {
+        run_id: state.selectedRunId,
+        action,
+        actor: currentOwnerInput?.value || reviewerInput?.value || '',
+        ...extra,
+      });
+      state.trustApprovalStatus = `Applied workflow action ${payload?.action_recorded?.action || action} for ${state.selectedRunId}.`;
+      await refreshTrustWorkflowWidget({ silent: true });
+      if (state.selectedRunId) {
+        await selectRun(state.selectedRunId, { rerenderList: false });
+      }
+    } catch (err) {
+      state.trustApprovalStatus = `Trust workflow action failed: ${err.message || 'request failed'}`;
+      renderTrustOpsWidget();
+    }
+  }
 
   recordBtn.addEventListener('click', async () => {
     if (!state.selectedRunId) {
@@ -7024,6 +7071,26 @@ function initTrustOpsControls() {
       state.trustApprovalStatus = `Trust workflow update failed: ${err.message || 'request failed'}`;
       renderTrustOpsWidget();
     }
+  });
+
+  escalateWorkflowBtn?.addEventListener('click', async () => {
+    await applyWorkflowAction('escalate', {
+      reason: noteInput?.value || 'Manual escalation requested from Overview panel.',
+    });
+  });
+
+  clearEscalationBtn?.addEventListener('click', async () => {
+    await applyWorkflowAction('clear_escalation', {
+      reason: noteInput?.value || 'Escalation cleared from Overview panel.',
+    });
+  });
+
+  extendDueBtn?.addEventListener('click', async () => {
+    await applyWorkflowAction('extend_due', {
+      extend_hours: 24,
+      due_at: dueAtInput?.value || '',
+      reason: noteInput?.value || 'Approval due date extended by operator.',
+    });
   });
 
   exportInboxJsonBtn?.addEventListener('click', () => {

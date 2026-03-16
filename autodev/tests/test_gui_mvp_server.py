@@ -1492,6 +1492,21 @@ def test_trust_analytics_model_eval_inbox_and_approvals_endpoints(gui_server):
     assert workflow_get_body["workflow"]["due_at"] == "2026-03-20T12:00:00Z"
     assert workflow_get_body["governance"]["current_owner"] == "alice"
 
+    workflow_action_status, workflow_action_body = _post_json(
+        f"{base_url}/api/autonomous/trust/workflow/actions",
+        {
+            "run_id": "run-trust-ops",
+            "action": "escalate",
+            "actor": "alice",
+            "reason": "Timed escalation for overdue review",
+        },
+        headers={"X-Autodev-Role": "operator"},
+    )
+    assert workflow_action_status == 200
+    assert workflow_action_body["action_recorded"]["action"] == "escalate"
+    assert workflow_action_body["governance"]["escalation_state"] == "escalated"
+    assert workflow_action_body["governance"]["escalation_reason"] == "Timed escalation for overdue review"
+
     events_status, events_body = _get_json(f"{base_url}/api/autonomous/trust/events?window=5")
     assert events_status == 200
     assert any(event["run_id"] == "run-trust-ops" for event in events_body["events"])
@@ -1541,6 +1556,7 @@ def test_api_docs_routes_endpoint_and_static_reference_are_served(gui_server):
     assert "/api/autonomous/trust/inbox" in route_paths
     assert "/api/autonomous/trust/approvals" in route_paths
     assert "/api/autonomous/trust/workflow" in route_paths
+    assert "/api/autonomous/trust/workflow/actions" in route_paths
     assert "/api/autonomous/trust/delivery/preview" in route_paths
     assert "/api/autonomous/trust/delivery/audit" in route_paths
     assert "/api/autonomous/trust/delivery/send" in route_paths
@@ -1725,6 +1741,9 @@ def test_overview_scorecard_static_contract(gui_server):
     assert 'id="trustWorkflowCurrentOwner"' in index_html
     assert 'id="trustWorkflowEscalationTargets"' in index_html
     assert 'id="trustWorkflowSaveBtn"' in index_html
+    assert 'id="trustWorkflowEscalateBtn"' in index_html
+    assert 'id="trustWorkflowClearEscalationBtn"' in index_html
+    assert 'id="trustWorkflowExtendDueBtn"' in index_html
     assert 'id="trustApprovalDecision"' in index_html
     assert 'id="trustApprovalRecordBtn"' in index_html
     assert 'id="trustApprovalHistory"' in index_html
@@ -1879,6 +1898,7 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "/api/autonomous/trust/inbox" in app_js
     assert "/api/autonomous/trust/approvals" in app_js
     assert "/api/autonomous/trust/workflow" in app_js
+    assert "/api/autonomous/trust/workflow/actions" in app_js
     assert "/api/autonomous/trust/delivery/preview" in app_js
     assert "/api/autonomous/trust/delivery/audit" in app_js
     assert "/api/autonomous/trust/delivery/send" in app_js
@@ -1892,6 +1912,8 @@ def test_overview_scorecard_static_contract(gui_server):
     assert "attestation_packet_sha256" in app_js
     assert "approval_due_at" in app_js
     assert "approval_escalation_state" in app_js
+    assert "approval_escalation_reason" in app_js
+    assert "approval_last_action" in app_js
     assert "trustDeliveryAuditList" in app_js
     assert "browserAutomationCards" in app_js
     assert "/api/runs/compare/snapshots/${encodeURIComponent(snapshotId)}/metadata" not in app_js

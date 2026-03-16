@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,7 +37,7 @@ from .gui_audit import persist_audit_event, resolve_audit_dir
 from .gui_failure_hints import build_run_control_fix_hints
 from .gui_mvp_dto import normalize_run_comparison_summary, normalize_run_trace, normalize_tasks, normalize_validation
 from .run_status import normalize_run_status
-from .trust_intelligence import TRUST_WORKFLOW_JSON, build_trust_intelligence_packet, build_trust_summary
+from .trust_intelligence import TRUST_WORKFLOW_JSON, _parse_iso8601, build_trust_intelligence_packet, build_trust_summary
 
 
 @dataclass
@@ -78,6 +78,7 @@ DEFAULT_COMPARE_SNAPSHOT_PAGE_SIZE = 20
 MAX_COMPARE_SNAPSHOT_PAGE_SIZE = 100
 COMPARE_SNAPSHOT_SORTS = {"newest", "oldest", "name", "baseline", "candidate"}
 TRUST_APPROVALS_JSONL = ".autodev/trust_approvals.jsonl"
+TRUST_WORKFLOW_ACTIONS_JSONL = ".autodev/trust_workflow_actions.jsonl"
 
 GUI_API_ROUTE_SECTIONS: list[dict[str, Any]] = [
     {
@@ -153,6 +154,11 @@ GUI_API_ROUTE_SECTIONS: list[dict[str, Any]] = [
                 "method": "PATCH",
                 "path": "/api/autonomous/trust/workflow",
                 "summary": "Update trust approval workflow assignment, due date, and escalation metadata.",
+            },
+            {
+                "method": "POST",
+                "path": "/api/autonomous/trust/workflow/actions",
+                "summary": "Apply a workflow action such as escalate, clear escalation, or extend due date.",
             },
             {
                 "method": "GET",
@@ -1593,15 +1599,18 @@ def _trust_workflow(run_dir: Path) -> dict[str, Any]:
         expected_type=dict,
         artifact_name=workflow_path.name,
     )
+    actions, actions_error = _load_jsonl(run_dir / TRUST_WORKFLOW_ACTIONS_JSONL)
     snapshot = extract_autonomous_summary(str(run_dir))
     packet = build_trust_intelligence_packet(run_dir, summary=snapshot)
     governance = packet.get("governance") if isinstance(packet.get("governance"), dict) else {}
     return {
         "run_id": run_dir.name,
         "workflow_path": str(workflow_path),
-        "error": error,
+        "workflow_actions_path": str(run_dir / TRUST_WORKFLOW_ACTIONS_JSONL),
+        "error": error or actions_error,
         "workflow": workflow if isinstance(workflow, dict) else {},
         "governance": governance,
+        "actions": actions[-20:] if isinstance(actions, list) else [],
     }
 
 
@@ -1674,6 +1683,96 @@ def _update_trust_workflow(
     workflow_path.parent.mkdir(parents=True, exist_ok=True)
     workflow_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return _trust_workflow(run_dir), HTTPStatus.OK
+
+
+def _append_workflow_action(run_dir: Path, row: dict[str, Any]) -> str:
+    path = run_dir / TRUST_WORKFLOW_ACTIONS_JSONL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, sort_keys=True))
+        handle.write("\n")
+    return str(path)
+
+
+def _apply_trust_workflow_action(
+    runs_root: Path,
+    *,
+    run_id: str,
+    action: str,
+    actor: str,
+    role: str,
+    reason: str = "",
+    extend_hours: int | None = None,
+    due_at: str | None = None,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    normalized_run_id = str(run_id or "").strip()
+    normalized_action = str(action or "").strip().lower()
+    if not normalized_run_id:
+        return {"error": _error_payload("missing_run_id", "run_id is required")}, HTTPStatus.BAD_REQUEST
+    if normalized_action not in {"escalate", "clear_escalation", "extend_due"}:
+        return {"error": _error_payload("invalid_action", f"unsupported workflow action: {normalized_action}")}, HTTPStatus.BAD_REQUEST
+
+    run_dir = runs_root / normalized_run_id
+    if not run_dir.exists() or not run_dir.is_dir():
+        return {"error": _error_payload("run_not_found", f"run not found: {normalized_run_id}")}, HTTPStatus.NOT_FOUND
+    if not (run_dir / AUTONOMOUS_REPORT_JSON).exists():
+        return {"error": _error_payload("trust_not_available", "trust intelligence is not available for this run")}, HTTPStatus.BAD_REQUEST
+
+    workflow_path = run_dir / Path(TRUST_WORKFLOW_JSON)
+    existing, error = _load_json(workflow_path, expected_type=dict, artifact_name=workflow_path.name)
+    if error and error.get("code") not in {"artifact_read_failed"}:
+        return {"error": _error_payload("invalid_workflow_file", str(error.get("message") or error.get("code") or "invalid workflow file"))}, HTTPStatus.UNPROCESSABLE_ENTITY
+    payload = dict(existing) if isinstance(existing, dict) else {}
+    payload["schema_version"] = "autonomous_trust_workflow_v1"
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    actor_text = str(actor or "").strip() or "unknown"
+    reason_text = str(reason or "").strip()
+    action_row: dict[str, Any] = {
+        "timestamp": now,
+        "action": normalized_action,
+        "actor": actor_text,
+        "role": str(role or "").strip(),
+        "reason": reason_text,
+    }
+
+    if normalized_action == "escalate":
+        payload["manual_escalation_state"] = "escalated"
+        payload["escalated_at"] = now
+        payload["escalated_by"] = actor_text
+        payload["snoozed_until"] = ""
+        if reason_text:
+            payload["escalation_reason"] = reason_text
+    elif normalized_action == "clear_escalation":
+        payload["manual_escalation_state"] = "cleared"
+        payload["cleared_at"] = now
+        payload["cleared_by"] = actor_text
+        payload["snoozed_until"] = ""
+        if reason_text:
+            payload["escalation_reason"] = reason_text
+    else:
+        current_due = str(payload.get("due_at") or "").strip()
+        current_due_dt = _parse_iso8601(current_due) or datetime.now(timezone.utc)
+        if due_at is not None and str(due_at).strip():
+            new_due_text = str(due_at).strip()
+        else:
+            hours = int(extend_hours or 24)
+            new_due_text = (current_due_dt + timedelta(hours=hours)).isoformat(timespec="seconds").replace("+00:00", "Z")
+            action_row["extend_hours"] = hours
+        payload["due_at"] = new_due_text
+        payload["manual_escalation_state"] = "cleared"
+        payload["cleared_at"] = now
+        payload["cleared_by"] = actor_text
+        payload["snoozed_until"] = new_due_text
+        action_row["due_at"] = new_due_text
+
+    payload["last_action"] = action_row
+    workflow_path.parent.mkdir(parents=True, exist_ok=True)
+    workflow_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    action_path = _append_workflow_action(run_dir, action_row)
+    body = _trust_workflow(run_dir)
+    body["action_recorded"] = action_row
+    body["workflow_actions_path"] = action_path
+    return body, HTTPStatus.OK
 
 
 def _append_trust_approval(
@@ -3533,6 +3632,9 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/autonomous/trust/approvals":
             self._handle_trust_approval_record()
             return
+        if path == "/api/autonomous/trust/workflow/actions":
+            self._handle_trust_workflow_action()
+            return
         if path == "/api/autonomous/trust/delivery/send":
             self._handle_trust_delivery_send()
             return
@@ -4086,6 +4188,59 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                     "run_id": str(payload.get("run_id") or ""),
                     "due_at": str(payload.get("due_at") or ""),
                     "current_owner": str(payload.get("current_owner") or ""),
+                },
+            },
+        )
+
+    def _handle_trust_workflow_action(self) -> None:
+        payload = self._read_json_payload()
+        if payload is None:
+            return
+        auth = _resolve_request_auth(headers=self.headers, payload=payload, action="trust_workflow_action")
+        if not _is_mutation_allowed(auth.role):
+            self._json_response(
+                {
+                    "error": _error_payload(
+                        "forbidden_role",
+                        f"Role '{auth.role}' cannot apply trust workflow actions.",
+                        role=auth.role,
+                        allowed_roles=sorted(MUTATING_ROLES),
+                    )
+                },
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return
+
+        actor = str(payload.get("actor") or auth.subject or auth.role or "unknown").strip() or "unknown"
+        body, status = _apply_trust_workflow_action(
+            self.config.runs_root,
+            run_id=str(payload.get("run_id") or ""),
+            action=str(payload.get("action") or ""),
+            actor=actor,
+            role=auth.role,
+            reason=str(payload.get("reason") or ""),
+            extend_hours=int(payload.get("extend_hours") or 0) if payload.get("extend_hours") is not None else None,
+            due_at=str(payload.get("due_at") or "") or None,
+        )
+        self._audit_then_respond(
+            body=body,
+            status=status,
+            audit_event={
+                "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "action": "trust_workflow_action",
+                "result_status": "updated" if status == HTTPStatus.OK else "failed",
+                "role": auth.role,
+                "auth": {
+                    "source": auth.source,
+                    "subject": auth.subject,
+                    "scope": auth.scope,
+                    "policy_name": auth.policy_name,
+                    "policy_allowed_roles": auth.policy_allowed_roles,
+                },
+                "payload": {
+                    "run_id": str(payload.get("run_id") or ""),
+                    "action": str(payload.get("action") or ""),
+                    "actor": actor,
                 },
             },
         )

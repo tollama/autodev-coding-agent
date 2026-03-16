@@ -657,6 +657,14 @@ def _normalize_workflow_payload(
     due_at = str(workflow_payload.get("due_at") or "").strip()
     workflow_status = str(workflow_payload.get("status") or "").strip().lower() or "pending"
     current_owner = str(workflow_payload.get("current_owner") or "").strip() or (assignees[0]["name"] if assignees else "")
+    manual_escalation_state = str(workflow_payload.get("manual_escalation_state") or "").strip().lower()
+    escalation_reason = str(workflow_payload.get("escalation_reason") or "").strip()
+    escalated_at = str(workflow_payload.get("escalated_at") or "").strip()
+    escalated_by = str(workflow_payload.get("escalated_by") or "").strip()
+    cleared_at = str(workflow_payload.get("cleared_at") or "").strip()
+    cleared_by = str(workflow_payload.get("cleared_by") or "").strip()
+    snoozed_until = str(workflow_payload.get("snoozed_until") or "").strip()
+    last_action = _safe_dict(workflow_payload.get("last_action"))
 
     required_roles = _normalize_string_list(approval_requirements.get("required_roles"))
     if not assignees and required_roles and policy_decision != "approved":
@@ -670,6 +678,14 @@ def _normalize_workflow_payload(
         "escalation_targets": escalation_targets,
         "status": workflow_status,
         "notes": _normalize_string_list(workflow_payload.get("notes")),
+        "manual_escalation_state": manual_escalation_state,
+        "escalation_reason": escalation_reason,
+        "escalated_at": escalated_at,
+        "escalated_by": escalated_by,
+        "cleared_at": cleared_at,
+        "cleared_by": cleared_by,
+        "snoozed_until": snoozed_until,
+        "last_action": last_action,
     }
 
 
@@ -723,6 +739,9 @@ def _derive_governance_signal(
     now = datetime.now(timezone.utc)
     overdue = bool(due_dt and due_dt < now and state == "pending")
     escalation_state = "clear"
+    manual_escalation_state = str(workflow.get("manual_escalation_state") or "").strip().lower()
+    snoozed_until = str(workflow.get("snoozed_until") or "")
+    snoozed_until_dt = _parse_iso8601(snoozed_until)
     if overdue:
         state = "expired"
         escalation_state = "escalated"
@@ -732,6 +751,16 @@ def _derive_governance_signal(
         escalation_state = "watch"
     elif state == "rejected":
         escalation_state = "blocked"
+
+    if manual_escalation_state == "escalated":
+        escalation_state = "escalated"
+        reasons.append("workflow_escalated_manually")
+        score = min(score, 0.18)
+    elif manual_escalation_state == "cleared" and escalation_state not in {"blocked"} and not overdue:
+        escalation_state = "clear"
+    if snoozed_until_dt and snoozed_until_dt > now and state in {"pending", "blocked"} and manual_escalation_state != "escalated":
+        escalation_state = "snoozed"
+        reasons.append("workflow_snoozed")
 
     next_approvers = [
         assignee
@@ -757,6 +786,14 @@ def _derive_governance_signal(
         "next_approvers": next_approvers,
         "current_owner": workflow.get("current_owner") or "",
         "escalation_targets": workflow.get("escalation_targets"),
+        "manual_escalation_state": workflow.get("manual_escalation_state") or "",
+        "escalation_reason": workflow.get("escalation_reason") or "",
+        "escalated_at": workflow.get("escalated_at") or "",
+        "escalated_by": workflow.get("escalated_by") or "",
+        "cleared_at": workflow.get("cleared_at") or "",
+        "cleared_by": workflow.get("cleared_by") or "",
+        "snoozed_until": workflow.get("snoozed_until") or "",
+        "last_action": workflow.get("last_action") if isinstance(workflow.get("last_action"), dict) else {},
         "reasons": reasons,
     }
 
@@ -1251,8 +1288,12 @@ def build_trust_summary(packet: Mapping[str, Any]) -> dict[str, Any]:
         "approval_due_at": governance.get("due_at"),
         "approval_overdue": governance.get("overdue"),
         "approval_escalation_state": governance.get("escalation_state"),
+        "approval_manual_escalation_state": governance.get("manual_escalation_state"),
+        "approval_escalation_reason": governance.get("escalation_reason"),
         "approval_current_owner": governance.get("current_owner"),
         "approval_next_approvers": _safe_list(governance.get("next_approvers")),
+        "approval_snoozed_until": governance.get("snoozed_until"),
+        "approval_last_action": _safe_dict(governance.get("last_action")),
         "explainability_narrative": explainability.get("narrative"),
         "attestation_packet_sha256": attestation.get("packet_sha256"),
         "latest_quality_status": latest_quality.get("status"),

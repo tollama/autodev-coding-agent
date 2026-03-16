@@ -688,6 +688,24 @@ def test_trust_cli_supports_analytics_inbox_and_approvals(tmp_path: Path, capsys
     assert "# Trust Workflow" in workflow_text
     assert "current_owner: alice" in workflow_text
 
+    autonomous_mode.cli(
+        [
+            "trust-workflow",
+            "action",
+            "--run-dir",
+            str(run_dir),
+            "--action",
+            "escalate",
+            "--actor",
+            "alice",
+            "--reason",
+            "Timed escalation for follow-up",
+        ]
+    )
+    workflow_action_payload = json.loads(capsys.readouterr().out)
+    assert workflow_action_payload["action_recorded"]["action"] == "escalate"
+    assert workflow_action_payload["governance"]["escalation_state"] == "escalated"
+
     autonomous_mode.cli(["trust-delivery", "preview", "--runs-root", str(runs_root), "--mode", "inbox"])
     delivery_preview = json.loads(capsys.readouterr().out)
     assert delivery_preview["mode"] == "inbox"

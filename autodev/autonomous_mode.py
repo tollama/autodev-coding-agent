@@ -3369,6 +3369,15 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     trust_workflow_update.add_argument("--notes", default=None, help="comma-separated workflow notes")
     trust_workflow_update.add_argument("--format", choices=["json", "text"], default="json")
 
+    trust_workflow_action = trust_workflow_sub.add_parser("action", help="apply a trust workflow action")
+    trust_workflow_action.add_argument("--run-dir", required=True)
+    trust_workflow_action.add_argument("--action", choices=["escalate", "clear_escalation", "extend_due"], required=True)
+    trust_workflow_action.add_argument("--actor", default="cli-operator")
+    trust_workflow_action.add_argument("--reason", default="")
+    trust_workflow_action.add_argument("--extend-hours", type=int, default=24)
+    trust_workflow_action.add_argument("--due-at", default=None)
+    trust_workflow_action.add_argument("--format", choices=["json", "text"], default="json")
+
     trust_approvals = sub.add_parser("trust-approvals", help="list or record trust approval decisions")
     trust_approvals_sub = trust_approvals.add_subparsers(dest="trust_approvals_action", required=True)
 
@@ -4871,6 +4880,7 @@ def _render_trust_workflow_text(payload: dict[str, Any]) -> str:
     governance = payload.get("governance") if isinstance(payload.get("governance"), dict) else {}
     workflow = payload.get("workflow") if isinstance(payload.get("workflow"), dict) else {}
     assignees = workflow.get("assignees") if isinstance(workflow.get("assignees"), list) else []
+    last_action = governance.get("last_action") if isinstance(governance.get("last_action"), dict) else {}
     lines = [
         "# Trust Workflow",
         f"- run_id: {payload.get('run_id') or '-'}",
@@ -4879,6 +4889,14 @@ def _render_trust_workflow_text(payload: dict[str, Any]) -> str:
         f"- due_at: {governance.get('due_at', '-')}",
         f"- escalation_state: {governance.get('escalation_state', '-')}",
     ]
+    if governance.get("escalation_reason"):
+        lines.append(f"- escalation_reason: {governance.get('escalation_reason')}")
+    if governance.get("snoozed_until"):
+        lines.append(f"- snoozed_until: {governance.get('snoozed_until')}")
+    if last_action:
+        lines.append(
+            f"- last_action: {last_action.get('action') or '-'} by {last_action.get('actor') or '-'} at {last_action.get('timestamp') or '-'}"
+        )
     if assignees:
         lines.append("- assignees:")
         for row in assignees:
@@ -5025,11 +5043,35 @@ def _trust_approvals(argv: list[str]) -> None:
 def _trust_workflow(argv: list[str]) -> None:
     parser = _build_cli_parser()
     args = parser.parse_args(["trust-workflow", *argv])
-    from .gui_mvp_server import _trust_workflow as _server_trust_workflow, _update_trust_workflow as _server_update_trust_workflow
+    from .gui_mvp_server import (
+        _apply_trust_workflow_action as _server_apply_trust_workflow_action,
+        _trust_workflow as _server_trust_workflow,
+        _update_trust_workflow as _server_update_trust_workflow,
+    )
 
     run_dir = Path(str(args.run_dir)).expanduser().resolve()
     if args.trust_workflow_action == "show":
         payload = _server_trust_workflow(run_dir)
+        if args.format == "text":
+            print(_render_trust_workflow_text(payload))
+            return
+        print(json_dumps(payload))
+        return
+
+    if args.trust_workflow_action == "action":
+        payload, status = _server_apply_trust_workflow_action(
+            run_dir.parent,
+            run_id=run_dir.name,
+            action=str(args.action),
+            actor=str(args.actor),
+            role="operator",
+            reason=str(args.reason),
+            extend_hours=int(args.extend_hours),
+            due_at=args.due_at,
+        )
+        if status != HTTPStatus.OK:
+            error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+            raise SystemExit(str(error.get("message") or "trust workflow action failed"))
         if args.format == "text":
             print(_render_trust_workflow_text(payload))
             return
