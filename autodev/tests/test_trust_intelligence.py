@@ -16,6 +16,7 @@ from autodev.trust_intelligence import (  # noqa: E402
     build_trust_intelligence_packet,
     build_trust_summary,
     persist_trust_intelligence_artifacts,
+    render_trust_intelligence_packet,
 )
 
 
@@ -376,6 +377,15 @@ def test_build_trust_summary_includes_explanation_and_residual_risk(tmp_path: Pa
     assert trust_summary["budget_guard_action"] == "stop"
     assert trust_summary["budget_guard_reason_code"] == "autonomous_budget_guard.max_autonomous_iterations_reached"
     assert "autonomous_budget_guard.estimated_token_budget_not_available" in trust_summary["budget_guard_reason_codes"]
+
+    rendered = render_trust_intelligence_packet(packet, output_format="markdown")
+    assert (
+        "latest_guard_budget_judgment: guard=stop (quality_gate_failed); "
+        "budget=stop (autonomous_budget_guard.max_autonomous_iterations_reached); "
+        "guard_status=triggered"
+    ) in rendered
+    assert "- guard_decision:" not in rendered
+    assert "- budget_guard_decision:" not in rendered
 
 
 def test_trust_packet_includes_policy_governance_and_attestation(tmp_path: Path) -> None:

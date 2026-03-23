@@ -1247,6 +1247,31 @@ def build_xai_delivery_packet_from_trust(packet: Mapping[str, Any]) -> dict[str,
     )
 
 
+def _format_guard_budget_judgment_summary(
+    guard_decision: Mapping[str, Any] | None,
+    budget_guard_decision: Mapping[str, Any] | None,
+    budget_guard_status: str | None,
+) -> str:
+    budget_status = str(budget_guard_status or "unknown").strip() or "unknown"
+    if isinstance(budget_guard_decision, Mapping):
+        budget_action = str(budget_guard_decision.get("decision") or "-")
+        budget_reason = str(budget_guard_decision.get("reason_code") or "-")
+        if isinstance(guard_decision, Mapping):
+            guard_action = str(guard_decision.get("decision") or "-")
+            guard_reason = str(guard_decision.get("reason_code") or "-")
+            return (
+                f"guard={guard_action} ({guard_reason}); "
+                f"budget={budget_action} ({budget_reason}); "
+                f"guard_status={budget_status}"
+            )
+        return f"budget={budget_action} ({budget_reason}); guard_status={budget_status}"
+    if isinstance(guard_decision, Mapping):
+        guard_action = str(guard_decision.get("decision") or "-")
+        guard_reason = str(guard_decision.get("reason_code") or "-")
+        return f"guard={guard_action} ({guard_reason}); budget_status={budget_status}"
+    return f"guard=-; budget_status={budget_status}"
+
+
 def build_trust_summary(packet: Mapping[str, Any]) -> dict[str, Any]:
     trust_signals = _safe_dict(packet.get("trust_signals"))
     overall = _safe_dict(trust_signals.get("overall"))
@@ -1395,13 +1420,16 @@ def render_trust_intelligence_packet(
         lines.append("- latest_strategy: -")
 
     guard_decision = decision_trace.get("guard_decision")
-    if isinstance(guard_decision, dict):
-        lines.append(
-            f"- guard_decision: {guard_decision.get('decision', '-')} "
-            f"({guard_decision.get('reason_code', '-')})"
+    budget_guard_decision = decision_trace.get("budget_guard_decision")
+    budget_guard_status = summary_snapshot.get("budget_guard_status", "-")
+    lines.append(
+        "- latest_guard_budget_judgment: "
+        + _format_guard_budget_judgment_summary(
+            guard_decision if isinstance(guard_decision, dict) else None,
+            budget_guard_decision if isinstance(budget_guard_decision, dict) else None,
+            str(budget_guard_status),
         )
-    else:
-        lines.append("- guard_decision: -")
+    )
 
     lines.append(
         f"- guard_decision_source: {decision_trace.get('guard_decision_source', summary_snapshot.get('guard_decision_source', '-'))}"
@@ -1409,19 +1437,7 @@ def render_trust_intelligence_packet(
     lines.append(
         f"- guard_decisions_total: {decision_trace.get('guard_decisions_total', summary_snapshot.get('guard_decisions_total', 0))}"
     )
-
-    budget_guard_decision = decision_trace.get("budget_guard_decision")
-    if isinstance(budget_guard_decision, dict):
-        lines.append(
-            f"- budget_guard_decision: {budget_guard_decision.get('decision', '-')} "
-            f"({budget_guard_decision.get('reason_code', '-')})"
-        )
-    else:
-        lines.append("- budget_guard_decision: -")
-
-    lines.append(
-        f"- budget_guard_status: {summary_snapshot.get('budget_guard_status', '-')}"
-    )
+    lines.append(f"- budget_guard_status: {budget_guard_status}")
 
     budget_guard_reason_codes = _safe_list(decision_trace.get("budget_guard_reason_codes"))
     if budget_guard_reason_codes:
