@@ -291,7 +291,7 @@ curl -sS http://127.0.0.1:8000/health
 - Source root: `autodev/`
 - Run outputs: `generated_runs/*/.autodev/`
 - Template validation contract: `docs/ops/template-validation-contract.json`
-- CI validators (required): `ruff`, `mypy`, `pytest`, `pip_audit`, `bandit`, `semgrep`, `python scripts/generate_sbom.py` @ versions in contract
+- CI validators (required): `ruff`, `mypy`, `pytest`, `pip_audit`, `bandit`, `semgrep`, and the template-local `python scripts/generate_sbom.py` step executed from each template root (for example `templates/python_fastapi/`); versions are pinned by `docs/ops/template-validation-contract.json`
 - Drift check command:
   ```bash
   bash docs/ops/check_template_ci_drift.sh

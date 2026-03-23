@@ -20,6 +20,11 @@ AutoDev brings those steps into one orchestrated flow with explicit artifacts an
 - **Run quality snapshot:** latest scorecard surfaced in the Overview (plus local demo scorecard generator)
 - **Confidence checks:** deterministic local-simple E2E smoke lane and docs/runbooks for onboarding and handoff
 
+## Start here
+- New here? Read `docs/getting-started.md` for the shortest practical path.
+- Need setup/provider details? Use `docs/onboarding.md`.
+- Want the laptop-friendly GUI flow? Use `docs/LOCAL_SIMPLE_MODE.md`.
+
 ## What This Agent Produces
 - A runnable Python project scaffolded from templates (`python_fastapi` or `python_cli`).
 - Implemented features and tests based on your PRD.
