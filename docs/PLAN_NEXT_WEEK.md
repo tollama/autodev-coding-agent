@@ -1,8 +1,8 @@
-# PLAN — Next Wave (AV6 Kickoff Active)
+# PLAN — Next Wave (AV6 Execution Active)
 
 ## Scope
 
-This plan tracks active AV6 kickoff after AV5 checkpoint capture.
+This plan tracks active AV6 execution after AV5 checkpoint capture.
 Primary objective is to operationalize existing autoresearch integration safely with deterministic blockers, thresholding, and runtime budgets.
 
 ## Current state snapshot
@@ -11,10 +11,10 @@ Primary objective is to operationalize existing autoresearch integration safely 
 - AV3 wave (`AV3-001` ~ `AV3-013`) is complete and merged.
 - AV4 wave (`AV4-001` ~ `AV4-014`) is complete and closed on `main`.
 - AV5 wave is checkpointed on `main` (`docs/AUTONOMOUS_V5_WAVE_PLAN.md`, `docs/AUTONOMOUS_V5_BACKLOG.md`, `docs/AUTONOMOUS_V5_WAVE_CHECKPOINT.md`).
-- AV6 kickoff package is started (`docs/AUTONOMOUS_V6_WAVE_PLAN.md`, `docs/AUTONOMOUS_V6_BACKLOG.md`).
-- Active status-hook event/state: `av6.kickoff.started`.
+- AV6 execution is in progress (`docs/AUTONOMOUS_V6_WAVE_PLAN.md`, `docs/AUTONOMOUS_V6_BACKLOG.md`; prioritized slices moving through implementation + validation).
+- Active status-hook event/state: `av6.execution.in_progress`.
 
-## AV6 kickoff execution plan
+## AV6 execution plan
 
 1. **Publish canonical AV6 wave docs:** keep plan/backlog/status/README links in sync.
 2. **Lock hard safety blockers:** document non-negotiable stop/escalate lanes for autoresearch-triggered actions.
@@ -33,10 +33,10 @@ Manual status-hook fallback:
 - CI drift check equivalent: `python3 scripts/status_board_automation.py <event_id> --drift-check`.
 - Event-to-transition reference: `docs/STATUS_HOOK_TRANSITION_MATRIX.md`.
 
-## Definition of done (AV6 kickoff)
+## Definition of done (AV6 execution transition)
 
-- AV6 kickoff state is visible across status/plan/backlog/README docs.
-- AV6 plan and prioritized backlog are published with explicit DoD/test/PR-split fields.
+- AV6 execution state is visible across status/plan/backlog/README docs.
+- AV6 plan and prioritized backlog continue to point at the active implementation + validation lane.
 - Docs/status automation stays drift-free (`make check-status-hooks`, `make check-docs`).
 
 ## Related docs

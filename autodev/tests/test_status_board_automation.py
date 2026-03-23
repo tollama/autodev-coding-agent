@@ -90,6 +90,7 @@ def test_event_registry_valid_default_passes_schema_validation() -> None:
         "av4.closed",
         "av5.kickoff.started",
         "av6.kickoff.started",
+        "av6.execution.in_progress",
     }
     assert set(mod.CANONICAL_EVENT_MAP) == expected_events
 
@@ -188,6 +189,40 @@ def test_detected_av5_kickoff_event_can_drive_drift_check(tmp_path: Path) -> Non
 
     detected = mod.detect_matching_event(docs_root=docs_root)
     assert detected == "av5.kickoff.started"
+    assert mod.drift_check_event(detected, docs_root=docs_root) == []
+
+
+def test_apply_and_detect_av6_execution_event(tmp_path: Path) -> None:
+    mod = _load_module()
+    docs_root = tmp_path / "docs"
+    _seed_docs(docs_root)
+
+    changed = mod.apply_event(
+        "av6.execution.in_progress",
+        docs_root=docs_root,
+        timestamp="2026-03-23 13:45 KST (Asia/Seoul)",
+    )
+    assert {p.name for p in changed} == {
+        "STATUS_BOARD_CURRENT.md",
+        "PLAN_NEXT_WEEK.md",
+        "BACKLOG_NEXT_WEEK.md",
+        "AUTONOMOUS_V4_WAVE_CLOSURE.md",
+    }
+
+    status_text = (docs_root / "STATUS_BOARD_CURRENT.md").read_text(encoding="utf-8")
+    plan_text = (docs_root / "PLAN_NEXT_WEEK.md").read_text(encoding="utf-8")
+    backlog_text = (docs_root / "BACKLOG_NEXT_WEEK.md").read_text(encoding="utf-8")
+    closure_text = (docs_root / "AUTONOMOUS_V4_WAVE_CLOSURE.md").read_text(encoding="utf-8")
+
+    assert "- **Mode:** AV6 Execution Active" in status_text
+    assert "# PLAN — Next Wave (AV6 Execution Active)" in plan_text
+    assert "- AV6 execution is in progress" in plan_text
+    assert "# BACKLOG — Next Wave (AV6 Active Delivery Queue)" in backlog_text
+    assert "- AV6 execution: 🏗️ in progress" in backlog_text
+    assert "Status: ✅ Closed on `main`" in closure_text
+
+    detected = mod.detect_matching_event(docs_root=docs_root)
+    assert detected == "av6.execution.in_progress"
     assert mod.drift_check_event(detected, docs_root=docs_root) == []
 
 

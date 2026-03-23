@@ -655,17 +655,17 @@ Stabilization handoff bundle (active):
 - `docs/DEMO_PLAYBOOK.md`
 
 Next-wave planning/governance docs:
-- `docs/PLAN_NEXT_WEEK.md` (AV6 kickoff active status + execution framing)
-- AV6 kickoff state is started (`av6.kickoff.started`); canonical status board: `docs/STATUS_BOARD_CURRENT.md`
+- `docs/PLAN_NEXT_WEEK.md` (AV6 execution active status + delivery framing)
+- AV6 execution state is in progress (`av6.execution.in_progress`); canonical status board: `docs/STATUS_BOARD_CURRENT.md`
 - `docs/AUTONOMOUS_V6_WAVE_PLAN.md` (AV6 goals, milestones, architecture deltas, risks)
 - `docs/AUTONOMOUS_V6_BACKLOG.md` (AV6 prioritized execution backlog with DoD/test/PR splits)
-- `docs/AUTONOMOUS_V6_WAVE_CHECKPOINT.md` (AV6 kickoff checkpoint scaffold)
+- `docs/AUTONOMOUS_V6_WAVE_CHECKPOINT.md` (AV6 checkpoint scaffold)
 - `docs/AUTONOMOUS_V5_WAVE_PLAN.md` (AV5 checkpoint plan and closure handoff context)
 - `docs/AUTONOMOUS_V5_BACKLOG.md` (AV5 governance backlog ledger and carryover source tickets)
 - `docs/AUTONOMOUS_V5_WAVE_CHECKPOINT.md` (AV5 checkpoint ledger)
 - `docs/AUTONOMOUS_FAILURE_TAXONOMY_V2.md` (AV5 failure-class retryability and remediation-lane mapping baseline)
 - `docs/AUTONOMOUS_V4_WAVE_CLOSURE.md` (AV4 closure ledger managed by status-hook rollup)
-- `docs/BACKLOG_NEXT_WEEK.md` (AV6 kickoff top queue quick reference)
+- `docs/BACKLOG_NEXT_WEEK.md` (AV6 execution top queue quick reference)
 - `docs/AUTONOMOUS_V3_WAVE_CLOSURE.md` (AV3 completed scope, outcomes, and AV4 handoff baseline)
 - `docs/AUTONOMOUS_V3_WAVE_PLAN.md` (AV3 planning history and closure summary)
 - `docs/AUTONOMOUS_V3_BACKLOG.md` (AV3 final execution ledger)

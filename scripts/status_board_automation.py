@@ -80,6 +80,7 @@ PLAN_SNAPSHOT_PREFIXES = (
     "- AV4 wave (",
     "- AV5 kickoff package",
     "- AV6 kickoff package",
+    "- AV6 execution is",
 )
 BACKLOG_TITLE_PREFIX = "# BACKLOG — Next Wave ("
 BACKLOG_SNAPSHOT_PREFIXES = (
@@ -89,6 +90,7 @@ BACKLOG_SNAPSHOT_PREFIXES = (
     "- AV4 closure:",
     "- AV5 kickoff:",
     "- AV6 kickoff:",
+    "- AV6 execution:",
 )
 CLOSURE_STATUS_PREFIX = "Status: "
 ACTIVE_EVENT_LINE_PREFIX = "- Active status-hook event/state:"
@@ -198,6 +200,22 @@ EVENT_REGISTRY: tuple[EventRegistryEntry, ...] = (
             plan_av4_snapshot="- AV6 kickoff package is started (`docs/AUTONOMOUS_V6_WAVE_PLAN.md`, `docs/AUTONOMOUS_V6_BACKLOG.md`).",
             backlog_title="# BACKLOG — Next Wave (AV6 Kickoff Queue)",
             backlog_av4_snapshot="- AV6 kickoff: 🚧 started (`docs/AUTONOMOUS_V6_WAVE_PLAN.md`, `docs/AUTONOMOUS_V6_BACKLOG.md`)",
+            closure_status="✅ Closed on `main`",
+        ),
+    ),
+    EventRegistryEntry(
+        event_id="av6.execution.in_progress",
+        description="Reflect active AV6 implementation and validation while preserving the AV4 closure ledger state.",
+        expected_doc_transitions=EXPECTED_DOC_TRANSITIONS,
+        spec=CanonicalEventSpec(
+            mode="AV6 Execution Active",
+            scope="AV6 delivery in progress across prioritized guardrail and observability slices",
+            state="AV6 kickoff packet is published; active implementation and validation are underway; AV4 remains closed on `main`",
+            av4_snapshot="✅ Closed (execution + stabilization complete)",
+            plan_title="# PLAN — Next Wave (AV6 Execution Active)",
+            plan_av4_snapshot="- AV6 execution is in progress (`docs/AUTONOMOUS_V6_WAVE_PLAN.md`, `docs/AUTONOMOUS_V6_BACKLOG.md`; prioritized slices moving through implementation + validation).",
+            backlog_title="# BACKLOG — Next Wave (AV6 Active Delivery Queue)",
+            backlog_av4_snapshot="- AV6 execution: 🏗️ in progress (`docs/AUTONOMOUS_V6_WAVE_PLAN.md`, `docs/AUTONOMOUS_V6_BACKLOG.md`; prioritized slices moving through implementation + validation)",
             closure_status="✅ Closed on `main`",
         ),
     ),
