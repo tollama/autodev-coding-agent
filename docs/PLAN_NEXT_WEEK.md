@@ -18,7 +18,7 @@ Primary objective is to operationalize existing autoresearch integration safely 
 
 1. **Publish canonical AV6 wave docs:** keep plan/backlog/status/README links in sync.
 2. **Lock hard safety blockers:** document non-negotiable stop/escalate lanes for autoresearch-triggered actions.
-3. **Define deterministic scoring and budget gates:** establish threshold matrix + stage/run time-budget contracts.
+3. **Define deterministic scoring and budget gates:** establish threshold matrix + runtime-aligned stage/run time-budget contracts.
 4. **Attach observability baseline:** ensure blocker/threshold/budget decisions are traceable in operator evidence.
 
 ## Workflow confidence checks

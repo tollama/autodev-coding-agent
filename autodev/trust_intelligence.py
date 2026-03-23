@@ -1078,6 +1078,11 @@ def build_trust_intelligence_packet(
             "gate_counts": summary.get("gate_counts"),
             "dominant_fail_codes": summary.get("dominant_fail_codes"),
             "guard_decision": summary.get("guard_decision"),
+            "guard_decision_source": summary.get("guard_decision_source"),
+            "guard_decisions_total": summary.get("guard_decisions_total"),
+            "budget_guard_status": summary.get("budget_guard_status"),
+            "budget_guard_decision": summary.get("budget_guard_decision"),
+            "budget_guard_reason_codes": summary.get("budget_guard_reason_codes"),
             "operator_guidance_top": top_guidance,
             "incident_owner_team": summary.get("incident_owner_team"),
             "incident_severity": summary.get("incident_severity"),
@@ -1111,6 +1116,11 @@ def build_trust_intelligence_packet(
         "decision_trace": {
             "latest_strategy": summary.get("latest_strategy"),
             "guard_decision": summary.get("guard_decision"),
+            "guard_decision_source": summary.get("guard_decision_source"),
+            "guard_decisions_total": summary.get("guard_decisions_total"),
+            "budget_guard_status": summary.get("budget_guard_status"),
+            "budget_guard_decision": summary.get("budget_guard_decision"),
+            "budget_guard_reason_codes": summary.get("budget_guard_reason_codes"),
             "dominant_fail_codes": summary.get("dominant_fail_codes"),
             "operator_guidance_top": top_guidance,
             "incident_routing_primary": primary_routing,
@@ -1241,12 +1251,16 @@ def build_trust_summary(packet: Mapping[str, Any]) -> dict[str, Any]:
     trust_signals = _safe_dict(packet.get("trust_signals"))
     overall = _safe_dict(trust_signals.get("overall"))
     latest_quality = _safe_dict(packet.get("latest_quality"))
+    summary_snapshot = _safe_dict(packet.get("summary_snapshot"))
     operator_next = _safe_dict(packet.get("operator_next"))
     runtime_observability = _safe_dict(packet.get("runtime_observability"))
     policy = _safe_dict(packet.get("policy"))
     governance = _safe_dict(packet.get("governance"))
     explainability = _safe_dict(packet.get("explainability"))
     attestation = _safe_dict(packet.get("attestation"))
+    decision_trace = _safe_dict(packet.get("decision_trace"))
+    guard_decision = _safe_dict(decision_trace.get("guard_decision"))
+    budget_guard_decision = _safe_dict(summary_snapshot.get("budget_guard_decision"))
     review_reasons = _safe_list(overall.get("review_reasons"))
     quality_status = str(latest_quality.get("status") or "unknown")
     residual_risk_level = "low"
@@ -1301,6 +1315,15 @@ def build_trust_summary(packet: Mapping[str, Any]) -> dict[str, Any]:
         "incident_owner_team": operator_next.get("owner_team"),
         "incident_severity": operator_next.get("severity"),
         "incident_target_sla": operator_next.get("target_sla"),
+        "preflight_status": summary_snapshot.get("preflight_status"),
+        "guard_decision_action": guard_decision.get("decision"),
+        "guard_decision_reason_code": guard_decision.get("reason_code"),
+        "guard_decision_source": decision_trace.get("guard_decision_source") or summary_snapshot.get("guard_decision_source"),
+        "guard_decisions_total": decision_trace.get("guard_decisions_total") or summary_snapshot.get("guard_decisions_total"),
+        "budget_guard_status": summary_snapshot.get("budget_guard_status"),
+        "budget_guard_action": budget_guard_decision.get("decision"),
+        "budget_guard_reason_code": budget_guard_decision.get("reason_code"),
+        "budget_guard_reason_codes": _safe_list(summary_snapshot.get("budget_guard_reason_codes")),
         "event_count": runtime_observability.get("event_count"),
         "llm_call_count": runtime_observability.get("llm_call_count"),
         "experiment_entry_count": runtime_observability.get("experiment_entry_count"),
@@ -1378,6 +1401,24 @@ def render_trust_intelligence_packet(
         )
     else:
         lines.append("- guard_decision: -")
+
+    budget_guard_decision = decision_trace.get("budget_guard_decision")
+    if isinstance(budget_guard_decision, dict):
+        lines.append(
+            f"- budget_guard_decision: {budget_guard_decision.get('decision', '-')} "
+            f"({budget_guard_decision.get('reason_code', '-')})"
+        )
+    else:
+        lines.append("- budget_guard_decision: -")
+
+    budget_guard_reason_codes = _safe_list(decision_trace.get("budget_guard_reason_codes"))
+    if budget_guard_reason_codes:
+        lines.append(
+            "- budget_guard_reason_codes: "
+            + ", ".join(str(item) for item in budget_guard_reason_codes if item)
+        )
+    else:
+        lines.append("- budget_guard_reason_codes: -")
 
     if guidance:
         lines.append("- top_actions:")

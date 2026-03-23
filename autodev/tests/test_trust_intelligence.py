@@ -182,6 +182,18 @@ def _seed_failed_review_run(run_dir: Path) -> None:
             "status": "failed",
             "preflight": {"status": "passed", "reason_codes": []},
             "guard_decision": {"decision": "stop", "reason_code": "quality_gate_failed"},
+            "budget_guard": {
+                "status": "triggered",
+                "decision": {
+                    "decision": "stop",
+                    "reason_code": "autonomous_budget_guard.max_autonomous_iterations_reached",
+                },
+                "diagnostics": [
+                    {
+                        "reason_code": "autonomous_budget_guard.estimated_token_budget_not_available",
+                    }
+                ],
+            },
             "operator_guidance": {
                 "top": [
                     {
@@ -355,6 +367,15 @@ def test_build_trust_summary_includes_explanation_and_residual_risk(tmp_path: Pa
     assert trust_summary["trust_explanation"]
     assert trust_summary["residual_risk_level"] == "high"
     assert "Human review remains required" in trust_summary["residual_risk_summary"]
+    assert trust_summary["preflight_status"] == "passed"
+    assert trust_summary["guard_decision_action"] == "stop"
+    assert trust_summary["guard_decision_reason_code"] == "quality_gate_failed"
+    assert trust_summary["guard_decision_source"] == "guard_decisions"
+    assert trust_summary["guard_decisions_total"] == 1
+    assert trust_summary["budget_guard_status"] == "triggered"
+    assert trust_summary["budget_guard_action"] == "stop"
+    assert trust_summary["budget_guard_reason_code"] == "autonomous_budget_guard.max_autonomous_iterations_reached"
+    assert "autonomous_budget_guard.estimated_token_budget_not_available" in trust_summary["budget_guard_reason_codes"]
 
 
 def test_trust_packet_includes_policy_governance_and_attestation(tmp_path: Path) -> None:

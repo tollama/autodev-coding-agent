@@ -18,8 +18,8 @@ Current mode is AV6 kickoff active with AV4 closure preserved and AV5 checkpoint
 |---|---|---|---|
 | AV6-001 | P0 | S | Define autoresearch hard-blocker policy contract |
 | AV6-002 | P0 | S | Publish deterministic scoring threshold matrix |
-| AV6-003 | P0 | M | Define run/stage time-budget guardrails |
-| AV6-004 | P1 | M | Establish observability baseline for guard decisions |
+| AV6-003 | P0 | M | ✅ Merged: define run/stage time-budget guardrails |
+| AV6-004 | P1 | M | Drafted: establish observability baseline for guard decisions |
 | AV6-005 | P1 | S | Draft AV6 status-hook transition matrix/update |
 | AV6-006 | P2 | S | ✅ Map AV5 deferred tickets into AV6 carryover intake |
 | AV6-007 | P2 | S | AV5-010 carryover: Docs cross-link upgrade for AV5 governance set |

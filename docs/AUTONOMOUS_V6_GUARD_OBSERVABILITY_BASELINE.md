@@ -2,7 +2,7 @@
 
 Status: ✅ Drafted for merge (docs-first observability baseline)
 Owner: @autonomous-docs
-Last updated: 2026-03-10 (Asia/Seoul)
+Last updated: 2026-03-23 (Asia/Seoul)
 Canonical schema: `docs/ops/autonomous_guard_observability_v1.schema.json`
 Canonical example: `docs/ops/autonomous_guard_observability_v1.example.json`
 
@@ -81,15 +81,25 @@ Minimum evidence envelope:
 4. Operator surface reference map
 5. Canonical sample events for blocker/threshold/budget decisions
 
+## Current implementation evidence (narrow AV6 slice)
+
+The current repo already exposes a minimal, evidence-backed operator surface for this baseline:
+
+- `autodev autonomous summary` / trust artifacts derive latest guard decisions from existing autonomous report + guard-decision artifacts.
+- `build_trust_summary()` now carries latest `guard_decision_*` and `budget_guard_*` fields, plus `guard_decision_source`, `guard_decisions_total`, and `budget_guard_status`, so operator-facing summaries can reference canonical decision outcomes without parsing raw artifacts.
+- This remains a docs/surface-alignment slice only; it does **not** claim full runtime emission of AV6-native `guard.*.decision` events yet.
+
 ## Validation gates
 
 - Evidence contract check: `python3 scripts/check_guard_observability_baseline.py`
 - Docs lane: `make check-docs`
+- Trust-summary slice: `pytest autodev/tests/test_trust_intelligence.py -k trust_summary`
 
 ## Related docs
 
 - `docs/AUTONOMOUS_V6_BACKLOG.md`
 - `docs/AUTONOMOUS_V6_SCORING_THRESHOLD_MATRIX.md`
+- `docs/AUTONOMOUS_V6_TIME_BUDGET_GUARDRAILS.md`
 - `docs/AUTONOMOUS_AUTORESEARCH_BLOCKER_POLICY.md`
 - `docs/AUTONOMOUS_OPERATOR_SUMMARY_PARITY_MAP.md`
 - `docs/STATUS_BOARD_CURRENT.md`

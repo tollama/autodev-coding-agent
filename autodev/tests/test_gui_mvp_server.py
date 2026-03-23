@@ -1192,6 +1192,9 @@ def test_quality_gate_snapshot_latest_endpoint_returns_payload(gui_server):
     assert body["summary"]["operator_guidance_top"][0]["code"] == "tests.min_pass_rate_not_met"
     assert body["trust"]["status"] == "failed"
     assert body["trust"]["requires_human_review"] is True
+    assert body["trust"]["preflight_status"] == "passed"
+    assert body["trust"]["guard_decision_source"] == "report"
+    assert body["trust"]["budget_guard_status"] == "unknown"
 
 
 def test_quality_gate_snapshot_latest_endpoint_handles_missing_artifacts(gui_server):

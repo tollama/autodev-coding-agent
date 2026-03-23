@@ -15,7 +15,7 @@ Status: 🚧 Kickoff started (2026-03-09)
 - Publish AV6 kickoff packet and status-hook alignment.
 - Lock hard blocker contract for autoresearch-triggered actions.
 - Define scoring threshold matrix and decision semantics.
-- Draft time-budget envelope (global + stage-level) with fail-fast policy.
+- Publish runtime-aligned time-budget envelope (global enforced now + stage-level contract) with fail-fast policy.
 
 ### Week 2 (Days 8-14): verification + operator visibility
 - Add observability/event schema for blocker and threshold decisions.
@@ -44,6 +44,7 @@ Status: 🚧 Kickoff started (2026-03-09)
 
 - `docs/AUTONOMOUS_V6_BACKLOG.md`
 - `docs/AUTONOMOUS_V6_WAVE_CHECKPOINT.md`
+- `docs/AUTONOMOUS_V6_TIME_BUDGET_GUARDRAILS.md`
 - `docs/AUTONOMOUS_V5_WAVE_PLAN.md`
 - `docs/AUTONOMOUS_V5_BACKLOG.md`
 - `docs/AUTONOMOUS_V5_CARRYOVER_POLICY.md`
