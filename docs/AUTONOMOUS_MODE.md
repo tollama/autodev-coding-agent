@@ -93,7 +93,8 @@ autodev autonomous trust-summary --run-dir ./generated_runs/<run_id> --format te
 
 This command combines summary, quality, guard, operator, and observability artifacts into one
 trust-intelligence view and mirrors the persisted `.autodev/autonomous_trust_intelligence.json`
-artifact.
+artifact. In `--format text`, it also exposes the latest guard provenance slice (`guard_decision_source`,
+`guard_decisions_total`, `budget_guard_status`) so operators can confirm AV6 guard evidence without opening raw JSON.
 
 ### Incident export helper
 

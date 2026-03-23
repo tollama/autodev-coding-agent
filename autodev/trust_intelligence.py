@@ -1343,6 +1343,7 @@ def render_trust_intelligence_packet(
     latest_quality = _safe_dict(packet.get("latest_quality"))
     operator_next = _safe_dict(packet.get("operator_next"))
     decision_trace = _safe_dict(packet.get("decision_trace"))
+    summary_snapshot = _safe_dict(packet.get("summary_snapshot"))
     policy = _safe_dict(packet.get("policy"))
     governance = _safe_dict(packet.get("governance"))
     explainability = _safe_dict(packet.get("explainability"))
@@ -1402,6 +1403,13 @@ def render_trust_intelligence_packet(
     else:
         lines.append("- guard_decision: -")
 
+    lines.append(
+        f"- guard_decision_source: {decision_trace.get('guard_decision_source', summary_snapshot.get('guard_decision_source', '-'))}"
+    )
+    lines.append(
+        f"- guard_decisions_total: {decision_trace.get('guard_decisions_total', summary_snapshot.get('guard_decisions_total', 0))}"
+    )
+
     budget_guard_decision = decision_trace.get("budget_guard_decision")
     if isinstance(budget_guard_decision, dict):
         lines.append(
@@ -1410,6 +1418,10 @@ def render_trust_intelligence_packet(
         )
     else:
         lines.append("- budget_guard_decision: -")
+
+    lines.append(
+        f"- budget_guard_status: {summary_snapshot.get('budget_guard_status', '-')}"
+    )
 
     budget_guard_reason_codes = _safe_list(decision_trace.get("budget_guard_reason_codes"))
     if budget_guard_reason_codes:

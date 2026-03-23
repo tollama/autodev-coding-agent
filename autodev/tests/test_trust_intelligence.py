@@ -424,3 +424,6 @@ def test_trust_summary_cli_outputs_json_and_text(tmp_path: Path, capsys) -> None
     assert "# Autonomous Trust Intelligence" in text_out
     assert "trust_status: high" in text_out
     assert "latest_quality_status: passed" in text_out
+    assert "guard_decision_source: none" in text_out
+    assert "guard_decisions_total: 0" in text_out
+    assert "budget_guard_status: unknown" in text_out
