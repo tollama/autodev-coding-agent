@@ -1,6 +1,16 @@
 __pycache__/
 *.pyc
 .venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.DS_Store
+/.autodev/
+/.autodev_subagent_run*.log
 tmp/
 autodev_agent.egg-info/
 generated_repo/
